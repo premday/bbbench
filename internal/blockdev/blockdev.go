@@ -98,6 +98,11 @@ func readOne(fsys FS, sysBlock, name string) (Device, error) {
 	model := readStr("device/model")
 	serial := readStr("device/serial")
 	if serial == "" {
+		if raw, err := fsys.ReadFile(filepath.Join(base, "device/vpd_pg80")); err == nil {
+			serial = parseVPDPage80(raw)
+		}
+	}
+	if serial == "" {
 		serial = readStr("device/wwid")
 	}
 
@@ -125,6 +130,18 @@ func readOne(fsys FS, sysBlock, name string) (Device, error) {
 		BlockCount:      blockCount,
 		BlockSize:       blockSize,
 	}, nil
+}
+
+// Extracts the serial number from a SCSI VPD page 80 blob
+func parseVPDPage80(data []byte) string {
+	if len(data) < 4 || data[1] != 0x80 {
+		return ""
+	}
+	pageLen := int(data[2])<<8 | int(data[3])
+	if len(data) < 4+pageLen {
+		return ""
+	}
+	return strings.TrimSpace(string(data[4 : 4+pageLen]))
 }
 
 func (d Device) CapacityGB() uint64 {
