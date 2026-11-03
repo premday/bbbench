@@ -208,6 +208,31 @@ Generates shell completion scripts.
 
 ---
 
+## Flush-latency workloads
+
+The default `ssd` workload list ends with three short (30 s) jobs that measure
+what a Flush costs: 4k random writes with an `fsync` after every write, so each
+write is followed by one device Flush.
+
+| Workload | Engine | I/O | Queue depth |
+|---|---|---|---|
+| `ssd_fsync_psync_qd1` | `psync` | buffered | 1 |
+| `ssd_fsync_uring_qd1` | `io_uring` | direct | 1 |
+| `ssd_fsync_uring_qd32` | `io_uring` | direct | 32 |
+
+The orchestrator summary prints `fsync avg: … us` next to the IOPS of these
+phases; the full fio JSON in the output directory has the `sync` latency
+statistics. To compare setups (write cache enabled vs cleared, stock vs patched
+kernel), run the workloads once per setup and compare the results.
+
+Like the other write workloads they overwrite the device. The `io_uring` jobs
+need an fio built with io_uring support and a kernel that has it. To run only
+these workloads, generate the job files from a config that lists just them under
+`bbbench.workloads.ssd` (`sudo ./bbbench generate --config my.yml`); the
+orchestrator has no workload-selection flag and runs whatever was generated.
+
+---
+
 ## Config and template discovery
 
 If `--config` is not provided, bbbench searches in order:
