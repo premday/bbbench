@@ -101,6 +101,11 @@ Templates are stored in `dist/templates/` with subdirectory `includes/` for reus
 
 **internal/dmi**: Reads DMI information from sysfs for host identification. Currently only uses `chassis_serial`.
 
+**internal/flushtrace**: Times device Flush commands from kernel trace events (tracefs), isolating the Flush from the rest of an fsync() that fio measures.
+- `ParseLine` parses ftrace text lines into `Event`s.
+- `NVMe` collector: `nvme_setup_cmd`/`nvme_complete_rq`, paired exactly by (controller, queue, cmdid); reports mean, min, max, p50, p99.
+- `Block` collector (any block device): `block_rq_issue`/`block_rq_complete` for requests whose rwbs starts with `F` and cover 0 sectors, paired first-in first-out. The mean is exact; percentiles are not reported because pairing is not exact under concurrent Flushes.
+
 **internal/util**: Contains `SanitizeFilename()` for making hardware identifiers filesystem-safe.
 
 ### Embedded Assets
