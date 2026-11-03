@@ -5,3 +5,4 @@ go.work.sum
 build/
 /bbbench
 /check-config
+.claude/settings.local.json
