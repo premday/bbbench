@@ -1,11 +1,14 @@
-    -
+{{- $iodepth := 128 -}}
+{{- if gt .WorkloadDef.Iodepth 0 }}{{ $iodepth = .WorkloadDef.Iodepth }}{{ end -}}
+{{- $mode := "direct" -}}
+{{- if ne .WorkloadDef.Direct nil }}{{ if not (deref .WorkloadDef.Direct) }}{{ $mode = "buffered" }}{{ end }}{{ end }}    -
         index: {{ .WorkloadIndex }}
         manufacturer: "{{ .Manufacturer }}"
         capacity: {{ index .Disk "capacity" }}
         disk_model: "{{ index .Disk "model" }}"
         serial: "{{ .Serial }}"
         path: "{{ index .Disk "path" }}"
-        iodepth: 128
+        iodepth: {{ $iodepth }}
         numjobs: {{ index .WorkloadDef.Process .ProcessType }}
         bs: {{ .WorkloadDef.Blocksize }}
         rw: "{{ .ProcessType }}"
@@ -18,8 +21,8 @@
         duration: {{ .WorkloadDef.Duration }}
 {{- end }}
 {{- if .WorkloadDef.WriteLog }}
-        write_bw_log: "{{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth128_direct_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_bw.{{ .Host }}"
-        write_iops_log: "{{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth128_direct_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_iops.{{ .Host }}"
+        write_bw_log: "{{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth{{ $iodepth }}_{{ $mode }}_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_bw.{{ .Host }}"
+        write_iops_log: "{{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth{{ $iodepth }}_{{ $mode }}_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_iops.{{ .Host }}"
 {{- end }}
 {{- if .WorkloadDef.RandomDistribution }}
         random_distribution: "{{ .WorkloadDef.RandomDistribution }}"

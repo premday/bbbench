@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Workloads can override `ioengine`, `iodepth`, `direct` and `fsync` per job in `bbbench.workloadsdb`
+
+### Changed
+
+- Generated fio log names and the fioplot `iodepth` reflect a workload's effective iodepth and `direct`/`buffered` mode (unchanged for existing workloads)
+
 ## [0.1.0] - 2026-03-31
 
 This is the first usable release.
