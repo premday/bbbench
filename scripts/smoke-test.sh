@@ -16,6 +16,13 @@ if ldd ./bbbench >/dev/null 2>&1; then
 	echo "bbbench is not statically linked" >&2
 	exit 1
 fi
-[ "$(./bbbench version)" = "bbbench $2" ] || { echo "unexpected version: $(./bbbench version)" >&2; exit 1; }
+case "$(./bbbench version)" in
+"bbbench $2 (commit "*) ;;
+*) echo "unexpected version: $(./bbbench version)" >&2; exit 1 ;;
+esac
+case "$(./check-config --version)" in
+"check-config $2 (commit "*) ;;
+*) echo "unexpected check-config version: $(./check-config --version)" >&2; exit 1 ;;
+esac
 ./bbbench validate-templates
 echo "smoke test ok: $1"

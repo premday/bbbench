@@ -1,9 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
 
-// version is overridden at build time: -ldflags "-X main.version=<v>".
-var version = "0.1.0"
+	"bbbench/internal/buildinfo"
+)
 
 func printHelp() {
 	fmt.Printf(`bbbench %s - fio job generator
@@ -24,5 +25,5 @@ Commands:
 Environment:
   BBBENCH_LOG_LEVEL    debug|info|warn|error
   BBBENCH_DIST_DIR     overrides dist search path
-`, version)
+`, buildinfo.Version)
 }

@@ -31,7 +31,12 @@ mkdir -p "$stage/dist"
 # Pure Go (no cgo): the result is statically linked on every architecture.
 export CGO_ENABLED=0 GOOS=linux GOARCH=$goarch
 [ -n "$goarm" ] && export GOARM=$goarm
-ldflags="-s -w -X main.version=$version"
+# Build identity embedded in the binaries and in the archive's VERSION file.
+# The date is the commit date, so rebuilding a commit gives identical bytes.
+commit=${COMMIT:-$(git -C "$root" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}
+date=${BUILD_DATE:-$(TZ=UTC git -C "$root" log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)}
+pkg=bbbench/internal/buildinfo
+ldflags="-s -w -X $pkg.Version=$version -X $pkg.Commit=$commit -X $pkg.Date=$date"
 (cd "$root" &&
 	go build -trimpath -ldflags "$ldflags" -o "$stage/bbbench" ./cmd/bbbench &&
 	go build -trimpath -ldflags "$ldflags" -o "$stage/check-config" ./cmd/check-config)

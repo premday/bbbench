@@ -6,10 +6,16 @@ import (
 	"os"
 	"sort"
 
+	"bbbench/internal/buildinfo"
 	"bbbench/internal/config"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Println("check-config", buildinfo.String())
+		return
+	}
+
 	configPath := "dist/default.yml"
 	if len(os.Args) > 1 {
 		configPath = os.Args[1]

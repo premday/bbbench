@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"bbbench/internal/buildinfo"
 )
 
 func main() {
@@ -27,7 +29,7 @@ func main() {
 	case "completion":
 		exitWithError(runCompletion(os.Args[2:]))
 	case "version", "-v", "--version":
-		fmt.Println("bbbench", version)
+		fmt.Println("bbbench", buildinfo.String())
 	case "help", "-h", "--help":
 		printHelp()
 	default:
