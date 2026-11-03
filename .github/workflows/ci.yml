@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Required check: every PR must pass the full Go test suite before merge.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "$out"; echo "run gofmt -w"; exit 1; fi
+      - name: go mod tidy is clean
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test -race -count=1 ./...
+      - name: templates are valid
+        run: go run ./cmd/bbbench validate-templates
+
+  # Required check: every release architecture must build and package, and the
+  # archive for the runner's own architecture is executed.
+  package:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build archives
+        run: scripts/package-all.sh "0.0.0-ci"
+      - name: smoke-test the amd64 archive
+        run: scripts/smoke-test.sh build/bbbench_0.0.0-ci_linux_amd64.tar.gz 0.0.0-ci
+      - name: checksums match
+        run: cd build && sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bbbench-archives
+          path: build/
+          retention-days: 7
