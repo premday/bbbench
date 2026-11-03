@@ -406,6 +406,10 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 					}
 					phaseResult.FlushTrace[deviceName] = result.FlushTrace
 				}
+				if result.LogPrefix != "" {
+					// Same path as reloading a saved run: from the stored log.
+					applyFlushLog(&phaseResult, deviceName, result.LogPrefix)
+				}
 				if len(result.JsonOutput) > 0 {
 					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)
 					if err == nil {
@@ -883,6 +887,11 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 					logger.Warn("flush tracing cleanup", "device", drive.Device.Name, "err", err)
 				}
 				result.FlushTrace = &sum
+				// Keep the samples with the fio logs, so the run can be
+				// re-summarized and graphed later.
+				if err := writeFlushLog(logPrefix, sum, sess.Samples()); err != nil {
+					logger.Warn("storing flush samples", "device", drive.Device.Name, "err", err)
+				}
 				stopTrace = func() {}
 			}
 		}

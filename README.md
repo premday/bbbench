@@ -267,6 +267,20 @@ comparing it with the fsync time shows how much of the cost is the drive.
   flight individual samples can be swapped, so percentiles and max are not
   reported.
 
+**Stored with the run.** Every measured Flush (completion time, latency) is also
+written to `<output>/<device>_phase<N>_<ts>_log_flush.log`, next to fio's own
+`_iops/_bw/_lat` logs, as text: a header (`source`, `exact`, `lost`) then one
+`time_ms, latency_ns` line per Flush. The summary and the per-second series
+(`flush_series` in the run, `ts_flush` and `flush` in the graph data of
+`bbbench serve`) are rebuilt from this file whenever a run is loaded, so
+changing how statistics or graphs are computed applies to tests that already
+ran, without running them again; the `flush_trace` saved in the run's JSON is
+only a fallback for runs without a log. Runs from before this have no log and
+keep their saved summary. Size: about 20 bytes per Flush, so a 30 s QD32 phase
+at 100k Flushes/s is roughly 60 MB; fsync-after-every-write phases at queue
+depth 1 are far smaller. The web UI does not draw a Flush graph yet; the data
+is in the API output for it.
+
 **Cost and limits.**
 - Tracing uses a private ftrace instance (`instances/bbbench-flush-*`), so system
   tracing settings are untouched and drives can be traced in parallel. It is only

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"bbbench/internal/flushtrace"
 )
 
 // DiskPhaseData holds metrics for one disk × one phase combination.
@@ -30,6 +32,11 @@ type DiskPhaseData struct {
 	TSiops []TimePoint `json:"ts_iops,omitempty"`
 	TSbw   []TimePoint `json:"ts_bw,omitempty"`
 	TSlat  []TimePoint `json:"ts_lat,omitempty"`
+	// Device Flush latency (µs, W column), from the kernel trace samples
+	// stored with the run; nil when the phase did not fsync or tracing was
+	// unavailable.
+	TSflush []TimePoint         `json:"ts_flush,omitempty"`
+	Flush   *flushtrace.Summary `json:"flush,omitempty"`
 }
 
 // DiskGraphData holds per-disk metrics across all phases (used by export).
@@ -132,6 +139,8 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 						dp.TSlat = ts.Lat
 					}
 				}
+				dp.TSflush = phase.FlushSeries[name]
+				dp.Flush = phase.FlushTrace[name]
 				out = append(out, *dp)
 			}
 		}
