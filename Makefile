@@ -1,8 +1,20 @@
-.PHONY: all clean test check check-tag package
+.PHONY: all bbbench check-config clean test check check-tag package
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
-LDFLAGS := -s -w -X main.version=$(VERSION)
+# Outside a git checkout (source tarball) or without tags there is nothing to
+# derive a version from: fall back to "dev" rather than an empty string.
+ifeq ($(VERSION),)
+VERSION := dev
+endif
+COMMIT  ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+PKG     := bbbench/internal/buildinfo
+LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
+# bbbench and check-config are .PHONY: they are always rebuilt (the Go build
+# cache makes that cheap), so make never leaves a stale binary after a source
+# change.
+#
 # Default target: static binaries. The code is pure Go, so CGO is disabled and
 # the result is statically linked without needing a musl toolchain.
 all: bbbench check-config
