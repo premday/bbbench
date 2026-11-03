@@ -1,6 +1,8 @@
 name: Release
 
-# Push a tag like v0.2.0 to publish static linux archives (binary,
+# Push a tag like v0.2.0 (vMAJOR.MINOR.FIX only, higher than every earlier tag, no
+# release for it yet; anything else fails in the first steps, before building or
+# publishing) to publish static linux archives (binary,
 # documentation, dist config and templates) with a SHA256SUMS file.
 on:
   push:
@@ -14,6 +16,20 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # all tags, to compare versions
+      - name: reject tags that are not vMAJOR.MINOR.FIX
+        run: scripts/check-tag.sh "$GITHUB_REF_NAME"
+      - name: reject tags that do not move the version forward
+        run: scripts/check-tag-order.sh "$GITHUB_REF_NAME"
+      - name: reject tags that already have a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "rejected tag '$GITHUB_REF_NAME': a release for it already exists (tags are immutable, use a new version)" >&2
+            exit 1
+          fi
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

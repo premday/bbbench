@@ -1,4 +1,4 @@
-.PHONY: all clean test check package
+.PHONY: all clean test check check-tag package
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
 LDFLAGS := -s -w -X main.version=$(VERSION)
@@ -23,8 +23,15 @@ test:
 # Same checks as the CI "test" job.
 check:
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt needed"; exit 1; }
+	scripts/check-tag_test.sh
+	scripts/check-tag-order_test.sh
 	go vet ./...
 	go test -race ./...
+
+# Before tagging: `make check-tag TAG=v1.2.3` (format, not existing, higher than all others).
+check-tag:
+	scripts/check-tag.sh $(TAG)
+	scripts/check-tag-order.sh --new $(TAG)
 
 # Release archives for every supported architecture, in ./build.
 package:
