@@ -46,3 +46,38 @@ bbbench:
 		t.Fatalf("unexpected process count")
 	}
 }
+
+func TestWorkloadDefPerJobIOOverrides(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+bbbench:
+  workloadsdb:
+    custom:
+      blocksize: 4k
+      ioengine: psync
+      iodepth: 1
+      direct: false
+      fsync: 1
+      process:
+        randwrite: 1
+    plain:
+      blocksize: 4k
+      process:
+        read: 1
+  workloads:
+    ssd: [custom, plain]
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	c := cfg.BBBench.WorkloadsDB["custom"]
+	if c.Ioengine != "psync" || c.Iodepth != 1 || c.Fsync != 1 {
+		t.Errorf("overrides not parsed: %+v", c)
+	}
+	if c.Direct == nil || *c.Direct {
+		t.Errorf("direct: false must parse to a non-nil false, got %v", c.Direct)
+	}
+	p := cfg.BBBench.WorkloadsDB["plain"]
+	if p.Ioengine != "" || p.Iodepth != 0 || p.Direct != nil || p.Fsync != 0 {
+		t.Errorf("unset overrides must stay zero-valued: %+v", p)
+	}
+}
