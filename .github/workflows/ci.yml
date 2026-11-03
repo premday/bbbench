@@ -34,6 +34,18 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - run: go test -race -count=1 ./...
+      - name: plain make builds stamped binaries
+        run: |
+          make
+          ./bbbench version
+          ./check-config --version
+          make clean
+      - name: plain make works without git or tags (source tarball)
+        run: |
+          d=$(mktemp -d)
+          git archive HEAD | tar -x -C "$d"
+          make -C "$d"
+          test "$("$d/bbbench" version | cut -d' ' -f2)" = dev
       - name: templates are valid
         run: go run ./cmd/bbbench validate-templates
 

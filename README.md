@@ -17,7 +17,11 @@ make clean && make
 Produces statically linked `./bbbench` and `./check-config` binaries. The code is
 pure Go, so no C toolchain is needed (`CGO_ENABLED=0`). `bbbench version` and
 `check-config --version` print the version, commit and build date (version from
-`git describe` via the Makefile; a plain `go build` reports `dev`).
+`git describe` via the Makefile, `dev` outside a git checkout).
+
+Developers do not need `make` or any version setup: `go build ./cmd/bbbench`,
+`go run ./cmd/bbbench ...` and `go test ./...` all work as usual and report
+`dev`. Use `make` only when you want a stamped static binary.
 
 ### Release archives
 
