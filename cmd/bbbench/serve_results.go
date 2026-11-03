@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"bbbench/internal/flushtrace"
 )
 
 // BenchmarkResult represents a complete benchmark run.
@@ -28,6 +30,9 @@ type PhaseResult struct {
 	Jobs        []JobResult                  `json:"jobs"`
 	FioFiles    map[string]string            `json:"fio_files"`            // device -> fio output file path
 	LogSeries   map[string]*DeviceTimeSeries `json:"log_series,omitempty"` // device -> time-series data
+	// FlushTrace holds the kernel-measured Flush latency per device, for
+	// phases that fsync and where tracing was available.
+	FlushTrace map[string]*flushtrace.Summary `json:"flush_trace,omitempty"`
 }
 
 // JobResult represents results for a single fio job.

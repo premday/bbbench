@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"bbbench/internal/flushtrace"
 )
 
 // FioJsonOutput represents the structure of fio's JSON output.
@@ -172,6 +174,9 @@ func displayResults(coordinator *ExecutionCoordinator) error {
 			if us, n := fsyncLatency(fioOutput); n > 0 {
 				parts = append(parts, fmt.Sprintf("fsync avg: %.1f us (%d fsyncs)", us, n))
 			}
+			if result.FlushTrace != nil {
+				parts = append(parts, formatFlushSummary(result.FlushTrace))
+			}
 
 			if len(parts) > 0 {
 				fmt.Printf("%s (%.1fs)\n", joinStrings(parts, ", "), duration.Seconds())
@@ -213,4 +218,17 @@ func joinStrings(parts []string, sep string) string {
 		result += sep + parts[i]
 	}
 	return result
+}
+
+// formatFlushSummary renders a kernel-measured Flush latency for the run
+// summary. Percentiles are shown only when the source paired events exactly.
+func formatFlushSummary(s *flushtrace.Summary) string {
+	if s.Count == 0 {
+		return fmt.Sprintf("Flush (%s): none seen", s.Source)
+	}
+	out := fmt.Sprintf("Flush (%s): avg %.1f us", s.Source, s.MeanNs/1000)
+	if s.Exact {
+		out += fmt.Sprintf(", p99 %.1f us, max %.1f us", float64(s.P99Ns)/1000, float64(s.MaxNs)/1000)
+	}
+	return fmt.Sprintf("%s (%d flushes)", out, s.Count)
 }

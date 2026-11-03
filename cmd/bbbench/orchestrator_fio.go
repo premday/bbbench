@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -205,4 +206,17 @@ func filterJobSection(job FioJob, jobsInPhase map[string]bool) string {
 	}
 
 	return strings.Join(filtered, "\n")
+}
+
+var fsyncOptRe = regexp.MustCompile(`(?m)^\s*fsync\s*=\s*[1-9]`)
+
+// phaseHasFsync reports whether any job of the phase issues fsyncs
+// (fio's fsync=N with N > 0), i.e. whether device Flushes are expected.
+func phaseHasFsync(phase []FioJob) bool {
+	for _, j := range phase {
+		if fsyncOptRe.MatchString(j.Section) {
+			return true
+		}
+	}
+	return false
 }

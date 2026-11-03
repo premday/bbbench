@@ -121,6 +121,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--resume` — resume a previously interrupted run (skips completed phases)
 - `--dry-run` — show what would run without executing fio
 - `--verbose` — show fio commands and debug output
+- `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--config` — path to config file
 - `--dist` — override dist path
 
@@ -222,7 +223,8 @@ write is followed by one device Flush.
 
 The orchestrator summary prints `fsync avg: … us` next to the IOPS of these
 phases; the full fio JSON in the output directory has the `sync` latency
-statistics. To compare setups (write cache enabled vs cleared, stock vs patched
+statistics. That is the latency of the whole `fsync()` call; the part spent in
+the drive is measured separately, see [Flush tracing](#flush-tracing). To compare setups (write cache enabled vs cleared, stock vs patched
 kernel), run the workloads once per setup and compare the results.
 
 Like the other write workloads they overwrite the device. The `io_uring` jobs
@@ -230,6 +232,55 @@ need an fio built with io_uring support and a kernel that has it. To run only
 these workloads, generate the job files from a config that lists just them under
 `bbbench.workloads.ssd` (`sudo ./bbbench generate --config my.yml`); the
 orchestrator has no workload-selection flag and runs whatever was generated.
+
+---
+
+## Flush tracing
+
+During phases that issue fsyncs (such as the flush-latency workloads above),
+the orchestrator also times the device's own Flush commands and prints, for
+example, `Flush (nvme): avg 194.8 us, p99 210.0 us, max 480.0 us (4012 flushes)`.
+The result is saved in the run's JSON summary under each phase's `flush_trace`.
+It needs root and a mounted tracefs; if tracing is unavailable the phase still
+runs and a warning is logged. Use `--no-flush-trace` to turn it off.
+
+**Why it exists.** fio reports how long `fsync()` took. That covers the
+filesystem, the block layer's flush handling, the driver and the drive, so it
+cannot say whether a slow fsync comes from the drive. This matters because some
+drives take a long time to complete a Flush even when their volatile write cache
+is disabled, where the spec says it should be a no-op (see the linux-nvme thread
+"nvme: honor the volatile write cache enable state": about 194 µs for the Flush
+inside a 236 µs fsync). fio cannot observe a single kernel call, so bbbench reads
+the kernel's trace events instead: the time between a Flush being issued to the
+device and completing is the device's Flush latency as seen by the driver, and
+comparing it with the fsync time shows how much of the cost is the drive.
+
+**Two sources.**
+- *NVMe namespaces* use the `nvme_setup_cmd` / `nvme_complete_rq` tracepoints.
+  Each command carries a queue and command id, so every Flush is paired with its
+  own completion exactly, even with many in flight (QD32). Reported: average,
+  p99 and max.
+- *Any other block device* (SATA, SAS, virtio, ...), and NVMe on kernels without
+  those tracepoints, use `block_rq_issue` / `block_rq_complete`. Those carry no
+  request id, so issues and completions are paired in order. The average is still
+  exact, because it only depends on the sum of times, but with several Flushes in
+  flight individual samples can be swapped, so percentiles and max are not
+  reported.
+
+**Cost and limits.**
+- Tracing uses a private ftrace instance (`instances/bbbench-flush-*`), so system
+  tracing settings are untouched and drives can be traced in parallel. It is only
+  active during phases that fsync, with kernel-side filters to keep event volume
+  low, but it still adds a little overhead to those phases.
+- Timestamps have microsecond resolution, which is coarse for fast Flushes.
+- Stacked devices (md arrays, device-mapper volumes) are bio-based or remap
+  requests to their member disks, so they may issue no Flush requests of their
+  own; the summary then shows `Flush (block): none seen`. Trace the underlying
+  disks (benchmark them directly) to get a number. This has not been verified
+  on a live kernel.
+- This has been tested against hand-written sample trace lines and a fake tracefs, not yet
+  on a live kernel; kernels differ in tracepoint fields, so check the first real
+  run.
 
 ---
 

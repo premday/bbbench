@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"bbbench/internal/flushtrace"
 )
 
 // ExecutionCoordinator manages benchmark execution across multiple drives.
@@ -35,6 +37,7 @@ type ExecutionCoordinator struct {
 	startTime   time.Time
 	liveResult  *BenchmarkResult // updated after each phase for live web view
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
+	flushTrace  bool             // trace device Flush latency during phases that fsync
 }
 
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
@@ -62,6 +65,9 @@ type FioResult struct {
 	Error      error
 	StartTime  time.Time
 	EndTime    time.Time
+	// FlushTrace is the device Flush latency measured from kernel trace
+	// events, for phases that issue fsyncs. Nil when not measured.
+	FlushTrace *flushtrace.Summary
 }
 
 // checkFioInstalled verifies that the fio binary is available in PATH.
@@ -393,6 +399,12 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 			if result.Phase == phaseIdx && result.Error == nil {
 				if result.OutputPath != "" {
 					phaseResult.FioFiles[deviceName] = result.OutputPath
+				}
+				if result.FlushTrace != nil {
+					if phaseResult.FlushTrace == nil {
+						phaseResult.FlushTrace = make(map[string]*flushtrace.Summary)
+					}
+					phaseResult.FlushTrace[deviceName] = result.FlushTrace
 				}
 				if len(result.JsonOutput) > 0 {
 					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)
@@ -857,6 +869,25 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		logAvgMsec = 1000
 	}
 
+	// For phases that fsync, time the device's Flush commands from kernel
+	// trace events while fio runs. Failure to trace never fails the phase.
+	stopTrace := func() {}
+	if ec.flushTrace && phaseHasFsync(phase) {
+		if sess, err := flushtrace.Start(drive.Device.Name, flushtrace.Options{}); err != nil {
+			logger.Warn("flush tracing unavailable",
+				"device", drive.Device.Name, "phase", phaseIdx, "err", err)
+		} else {
+			stopTrace = func() {
+				sum, err := sess.Stop()
+				if err != nil {
+					logger.Warn("flush tracing cleanup", "device", drive.Device.Name, "err", err)
+				}
+				result.FlushTrace = &sum
+				stopTrace = func() {}
+			}
+		}
+	}
+
 	// Execute fio with context for cancellation support
 	cmd := exec.CommandContext(ec.ctx, "fio",
 		"--output-format=json",
@@ -884,6 +915,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		"output", outputFile)
 
 	output, err := cmd.CombinedOutput()
+	stopTrace()
 	if err != nil {
 		// Check if it was cancelled
 		if ec.ctx.Err() != nil {

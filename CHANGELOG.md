@@ -10,6 +10,7 @@
 - GitHub Actions CI on every pull request: gofmt, `go vet`, `go test -race`, template validation, and a build of all release archives
 - Tag-triggered release workflow publishing static linux archives (`amd64`, `arm64`, `386`) with binaries, documentation, `dist/` config and templates, and `SHA256SUMS`
 - `make check` (CI checks) and `make package` (release archives)
+- Flush tracing: phases that fsync also report the device's own Flush latency, measured from kernel trace events (NVMe tracepoints with exact pairing, generic block tracepoints for any other device); saved as `flush_trace` per phase; `--no-flush-trace` disables it
 - Flush-latency workloads `ssd_fsync_psync_qd1`, `ssd_fsync_uring_qd1` and `ssd_fsync_uring_qd32` (4k randwrite with fsync after every write), added to the default `ssd` list
 - Run summary shows the mean fsync latency for phases that issue fsyncs
 - Workloads can override `ioengine`, `iodepth`, `direct` and `fsync` per job in `bbbench.workloadsdb`
