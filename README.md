@@ -29,11 +29,17 @@ bbbench_<version>_linux_<arch>.tar.gz
   bbbench, check-config      static binaries
   dist/                      default.yml and templates (found from ./dist)
   documentation/             web UI documentation and images
+  VERSION                    version, commit, build date, arch
+  RELEASE_NOTES.md           changes since the previous tag (generated)
   README.md LICENSE CHANGELOG.md
 ```
 
 Build them locally with `make package` (archives land in `./build`).
-To cut a release, update `CHANGELOG.md`, then `git tag vX.Y.Z && git push --tags`.
+To cut a release: `git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow
+builds the archives and publishes the GitHub release, whose notes are generated
+from the commit subjects since the previous tag (`scripts/changelog.sh`), so
+write commit subjects as you want them read. `CHANGELOG.md` stays the curated,
+human-written history.
 
 ### Continuous integration
 

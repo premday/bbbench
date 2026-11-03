@@ -9,7 +9,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 tar -C "$tmp" -xzf "$1"
 cd "$tmp"/*/
-for f in bbbench check-config README.md LICENSE CHANGELOG.md documentation/web-ui.md dist/default.yml dist/templates/disk.fio.gotmpl; do
+for f in bbbench check-config README.md LICENSE CHANGELOG.md documentation/web-ui.md VERSION RELEASE_NOTES.md dist/default.yml dist/templates/disk.fio.gotmpl; do
 	[ -e "$f" ] || { echo "missing from archive: $f" >&2; exit 1; }
 done
 if ldd ./bbbench >/dev/null 2>&1; then
@@ -24,5 +24,6 @@ case "$(./check-config --version)" in
 "check-config $2 (commit "*) ;;
 *) echo "unexpected check-config version: $(./check-config --version)" >&2; exit 1 ;;
 esac
+grep -q "^version: $2$" VERSION || { echo "VERSION file does not say $2" >&2; exit 1; }
 ./bbbench validate-templates
 echo "smoke test ok: $1"
