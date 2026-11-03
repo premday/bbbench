@@ -2,7 +2,8 @@ package main
 
 import "fmt"
 
-const version = "0.1.0"
+// version is overridden at build time: -ldflags "-X main.version=<v>".
+var version = "0.1.0"
 
 func printHelp() {
 	fmt.Printf(`bbbench %s - fio job generator
@@ -17,6 +18,7 @@ Commands:
   validate-templates   validate template syntax
   doctor               check host readiness
   completion           generate shell completions
+  version              print the version
   help                 show this help
 
 Environment:

@@ -14,7 +14,33 @@ Block-device benchmark tool. Discovers drives, generates [fio](https://github.co
 make clean && make
 ```
 
-Produces a statically linked `./bbbench` binary.
+Produces statically linked `./bbbench` and `./check-config` binaries. The code is
+pure Go, so no C toolchain is needed (`CGO_ENABLED=0`). `bbbench version` prints
+the version, set from `git describe` by the Makefile.
+
+### Release archives
+
+Every tagged release (`vX.Y.Z`) publishes static linux archives on the GitHub
+releases page, for `amd64`, `arm64` and `386`, with a `SHA256SUMS` file:
+
+```
+bbbench_<version>_linux_<arch>.tar.gz
+  bbbench, check-config      static binaries
+  dist/                      default.yml and templates (found from ./dist)
+  documentation/             web UI documentation and images
+  README.md LICENSE CHANGELOG.md
+```
+
+Build them locally with `make package` (archives land in `./build`).
+To cut a release, update `CHANGELOG.md`, then `git tag vX.Y.Z && git push --tags`.
+
+### Continuous integration
+
+Every pull request runs `.github/workflows/ci.yml`: gofmt, `go mod tidy` check,
+`go vet`, `go test -race ./...`, template validation, then builds and
+smoke-tests the release archives for all architectures. Run the same checks
+locally with `make check`. Both jobs (`test`, `package`) are meant to be
+required status checks on `main`.
 
 ---
 

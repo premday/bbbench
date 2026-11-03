@@ -1,0 +1,31 @@
+name: Release
+
+# Push a tag like v0.2.0 to publish static linux archives (binary,
+# documentation, dist config and templates) with a SHA256SUMS file.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: tests (a release never ships untested)
+        run: go vet ./... && go test -race -count=1 ./...
+      - name: build archives
+        run: scripts/package-all.sh "${GITHUB_REF_NAME#v}"
+      - name: smoke-test the amd64 archive
+        run: scripts/smoke-test.sh "build/bbbench_${GITHUB_REF_NAME#v}_linux_amd64.tar.gz" "${GITHUB_REF_NAME#v}"
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/*.tar.gz build/SHA256SUMS \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
