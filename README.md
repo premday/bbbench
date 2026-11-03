@@ -35,7 +35,10 @@ Build them locally with `make package` (archives land in `./build`).
 To cut a release, update `CHANGELOG.md`, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
 Tags must be exactly `v<major>.<minor>.<fix>` (e.g. `v1.2.3`; numbers without
 leading zeros, no `-rc1` style suffix). The release workflow fails on any other
-tag before building or publishing; `scripts/check-tag.sh <tag>` checks one locally.
+tag before building or publishing. It also rejects a tag that is not strictly
+higher than every earlier release tag (numeric comparison: `v0.10.0` > `v0.9.0`)
+and a tag that already has a GitHub release. Before tagging, run
+`make check-tag TAG=v1.2.3`, which also fails if the tag already exists.
 
 ### Continuous integration
 
