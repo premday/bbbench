@@ -44,6 +44,8 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # history, so the release notes generation is exercised
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

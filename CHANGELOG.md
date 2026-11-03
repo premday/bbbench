@@ -10,6 +10,8 @@
 - Tag-triggered release workflow publishing static linux archives (`amd64`, `arm64`, `386`) with binaries, documentation, `dist/` config and templates, and `SHA256SUMS`
 - `make check` (CI checks) and `make package` (release archives)
 
+- Release archives ship a `VERSION` file (version, commit, date, arch) and a generated `RELEASE_NOTES.md`; the GitHub release notes are generated from the commits since the previous tag (`scripts/changelog.sh`)
+
 ### Changed
 
 - CI workflows use Node 24 action versions (`checkout@v7`, `setup-go@v7`, `upload-artifact@v7`) and run on `ubuntu-26.04` instead of `ubuntu-latest`

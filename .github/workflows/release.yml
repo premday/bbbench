@@ -3,7 +3,8 @@ name: Release
 # Push a tag like v0.2.0 (vMAJOR.MINOR.FIX only, higher than every earlier tag, no
 # release for it yet; anything else fails in the first steps, before building or
 # publishing) to publish static linux archives (binary,
-# documentation, dist config and templates) with a SHA256SUMS file.
+# documentation, dist config and templates) with a SHA256SUMS file. Release
+# notes are generated from the commits since the previous tag.
 on:
   push:
     tags: ['v*']
@@ -17,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # all tags, to compare versions
+          fetch-depth: 0 # tags and history: version comparison and release notes
       - name: reject tags that are not vMAJOR.MINOR.FIX
         run: scripts/check-tag.sh "$GITHUB_REF_NAME"
       - name: reject tags that do not move the version forward
@@ -36,6 +37,8 @@ jobs:
       - name: tests (a release never ships untested)
         run: go vet ./... && go test -race -count=1 ./...
       - name: build archives
+        env:
+          REF: ${{ github.ref_name }}
         run: scripts/package-all.sh "${GITHUB_REF_NAME#v}"
       - name: smoke-test the amd64 archive
         run: scripts/smoke-test.sh "build/bbbench_${GITHUB_REF_NAME#v}_linux_amd64.tar.gz" "${GITHUB_REF_NAME#v}"
@@ -44,4 +47,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" build/*.tar.gz build/SHA256SUMS \
-            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+            --title "$GITHUB_REF_NAME" --notes-file build/RELEASE_NOTES.md --verify-tag
