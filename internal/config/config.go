@@ -27,12 +27,19 @@ type BBBenchConfig struct {
 }
 
 type WorkloadDef struct {
-	Blocksize          string         `yaml:"blocksize"`
-	Fulldisk           bool           `yaml:"fulldisk"`
-	Duration           int            `yaml:"duration"`
-	WriteLog           bool           `yaml:"write_log"`
-	RandomDistribution string         `yaml:"random_distribution"`
-	Process            map[string]any `yaml:"process"`
+	Blocksize          string `yaml:"blocksize"`
+	Fulldisk           bool   `yaml:"fulldisk"`
+	Duration           int    `yaml:"duration"`
+	WriteLog           bool   `yaml:"write_log"`
+	RandomDistribution string `yaml:"random_distribution"`
+	// Per-job overrides of the [global] ioengine/iodepth/direct. Unset
+	// (zero value, nil for Direct) means "use the template's global".
+	Ioengine string `yaml:"ioengine"`
+	Iodepth  int    `yaml:"iodepth"`
+	Direct   *bool  `yaml:"direct"`
+	// Fsync issues an fsync after every N writes (fio's fsync=N). 0 = off.
+	Fsync   int            `yaml:"fsync"`
+	Process map[string]any `yaml:"process"`
 }
 
 func Load(path string) (*Root, error) {
