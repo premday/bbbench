@@ -587,3 +587,88 @@ func TestDiscover_MixedFilteredAndValid(t *testing.T) {
 		t.Error("expected 'sda' in result")
 	}
 }
+
+// TestParseVPDPage80 tests the VPD page 80 serial number parsing
+func TestParseVPDPage80(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{
+			name: "valid real data with leading spaces",
+			data: []byte{0x00, 0x80, 0x00, 0x14,
+				0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+				'S', 'E', 'R', 'I', 'A', 'L', 'N', 'U', 'M', 'B', 'E', 'R'},
+			want: "SERIALNUMBER",
+		},
+		{
+			name: "too short",
+			data: []byte{0x00, 0x80, 0x00},
+			want: "",
+		},
+		{
+			name: "wrong page code",
+			data: []byte{0x00, 0x83, 0x00, 0x04, 'A', 'B', 'C', 'D'},
+			want: "",
+		},
+		{
+			name: "truncated payload",
+			data: []byte{0x00, 0x80, 0x00, 0x10, 'A', 'B'},
+			want: "",
+		},
+		{
+			name: "no padding",
+			data: []byte{0x00, 0x80, 0x00, 0x04, 'A', 'B', 'C', 'D'},
+			want: "ABCD",
+		},
+		{
+			name: "empty data",
+			data: []byte{},
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseVPDPage80(tt.data)
+			if got != tt.want {
+				t.Errorf("parseVPDPage80() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDiscover_FallsBackToVPDPage80 verifies that when device/serial is absent,
+// the code parses device/vpd_pg80 before falling back to wwid.
+func TestDiscover_FallsBackToVPDPage80(t *testing.T) {
+	fsys := &mockFS{
+		dirs: map[string][]fakeEntry{
+			"/sys/block": {{name: "sda"}},
+		},
+		files: map[string]string{
+			"/sys/block/sda/queue/rotational":         "0\n",
+			"/sys/block/sda/device/vendor":            "ATA",
+			"/sys/block/sda/device/model":             "MYLITTLEHDD",
+			"/sys/block/sda/size":                     "1000",
+			"/sys/block/sda/queue/logical_block_size": "512",
+			// device/serial absent; vpd_pg80 present with binary data
+			"/sys/block/sda/device/vpd_pg80": string([]byte{
+				0x00, 0x80, 0x00, 0x14,
+				0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+				'S', 'E', 'R', 'I', 'A', 'L', 'N', 'U', 'M', 'B', 'E', 'R',
+			}),
+		},
+		symlinks: map[string]string{},
+	}
+	devs, err := Discover(fsys, "/sys/block")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	dev, ok := devs["sda"]
+	if !ok {
+		t.Fatal("expected device 'sda' to be present")
+	}
+	if dev.Serial != "SERIALNUMBER" {
+		t.Errorf("expected serial from vpd_pg80, got %q", dev.Serial)
+	}
+}
