@@ -15,10 +15,10 @@ concurrency:
 jobs:
   # Required check: every PR must pass the full Go test suite before merge.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: gofmt
@@ -38,11 +38,11 @@ jobs:
   # Required check: every release architecture must build and package, and the
   # archive for the runner's own architecture is executed.
   package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: build archives
@@ -51,7 +51,7 @@ jobs:
         run: scripts/smoke-test.sh build/bbbench_0.0.0-ci_linux_amd64.tar.gz 0.0.0-ci
       - name: checksums match
         run: cd build && sha256sum -c SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bbbench-archives
           path: build/
