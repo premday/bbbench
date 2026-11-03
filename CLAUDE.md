@@ -104,6 +104,7 @@ Templates are stored in `dist/templates/` with subdirectory `includes/` for reus
 **internal/flushtrace**: Times device Flush commands from kernel trace events (tracefs), isolating the Flush from the rest of an fsync() that fio measures.
 - `ParseLine` parses ftrace text lines into `Event`s.
 - `NVMe` collector: `nvme_setup_cmd`/`nvme_complete_rq`, paired exactly by (controller, queue, cmdid); reports mean, min, max, p50, p99.
+- `Start`/`Session.Stop`: runs a collector against a private tracefs instance (`instances/bbbench-flush-*`), so global tracing is untouched and sessions can run in parallel. NVMe namespaces use the NVMe tracepoints when present, else the block ones. Needs root and tracefs; returns `ErrUnsupported` otherwise. Tests use a fake tracefs tree (`Options.TracefsRoot`, `SysBlock`).
 - `Block` collector (any block device): `block_rq_issue`/`block_rq_complete` for requests whose rwbs starts with `F` and cover 0 sectors, paired first-in first-out. The mean is exact; percentiles are not reported because pairing is not exact under concurrent Flushes.
 
 **internal/util**: Contains `SanitizeFilename()` for making hardware identifiers filesystem-safe.
