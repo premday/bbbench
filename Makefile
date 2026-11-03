@@ -23,6 +23,7 @@ test:
 # Same checks as the CI "test" job.
 check:
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt needed"; exit 1; }
+	scripts/check-tag_test.sh
 	go vet ./...
 	go test -race ./...
 

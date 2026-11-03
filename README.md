@@ -32,7 +32,10 @@ bbbench_<version>_linux_<arch>.tar.gz
 ```
 
 Build them locally with `make package` (archives land in `./build`).
-To cut a release, update `CHANGELOG.md`, then `git tag vX.Y.Z && git push --tags`.
+To cut a release, update `CHANGELOG.md`, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+Tags must be exactly `v<major>.<minor>.<fix>` (e.g. `v1.2.3`; numbers without
+leading zeros, no `-rc1` style suffix). The release workflow fails on any other
+tag before building or publishing; `scripts/check-tag.sh <tag>` checks one locally.
 
 ### Continuous integration
 

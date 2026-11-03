@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag like v0.2.0 to publish static linux archives (binary,
+# Push a tag like v0.2.0 (vMAJOR.MINOR.FIX only; anything else fails at the
+# first step, before building or publishing) to publish static linux archives (binary,
 # documentation, dist config and templates) with a SHA256SUMS file.
 on:
   push:
@@ -14,6 +15,8 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - name: reject tags that are not vMAJOR.MINOR.FIX
+        run: scripts/check-tag.sh "$GITHUB_REF_NAME"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

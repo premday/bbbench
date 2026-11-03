@@ -32,7 +32,7 @@ go test -v ./...
 - `make check` runs the CI checks (gofmt, vet, `go test -race`); `make package` builds all release archives into `./build`.
 - Builds are pure Go (`CGO_ENABLED=0`), static on every arch. The version is injected with `-ldflags "-X main.version=..."` (`var version` in `cmd/bbbench/help.go`).
 - `scripts/package.sh` builds one archive (binaries, README/LICENSE/CHANGELOG, `documentation/`, `dist/` without `assets.go`); `package-all.sh` loops over the architectures and writes `SHA256SUMS`; `smoke-test.sh` checks an archive's contents, static linking and version.
-- `.github/workflows/ci.yml` (PRs and main) must pass before merge: `test` and `package` jobs. `release.yml` publishes on `v*` tags. Runners are pinned to `ubuntu-26.04` (not `ubuntu-latest`, so the image only changes when we choose); move to a newer image deliberately. Adding a new architecture means adding it to `scripts/package-all.sh` and the README/CHANGELOG lists.
+- `.github/workflows/ci.yml` (PRs and main) must pass before merge: `test` and `package` jobs. `release.yml` publishes on `v*` tags, and rejects (first step, `scripts/check-tag.sh`) any that is not `vMAJOR.MINOR.FIX`; the rule is table-tested by `scripts/check-tag_test.sh`. Runners are pinned to `ubuntu-26.04` (not `ubuntu-latest`, so the image only changes when we choose); move to a newer image deliberately. Adding a new architecture means adding it to `scripts/package-all.sh` and the README/CHANGELOG lists.
 - Any new CI check should also be added to `make check` so it can be run locally.
 
 ### Running the Tool
