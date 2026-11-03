@@ -108,7 +108,7 @@ func TestBlock_MeanIndependentOfPairingOrder(t *testing.T) {
 func TestPercentile(t *testing.T) {
 	s := samples{}
 	for i := int64(1); i <= 100; i++ {
-		s.add(i)
+		s.add(i, i)
 	}
 	sum := s.summary("nvme", true, 0)
 	if sum.P50Ns != 50 || sum.P99Ns != 99 || sum.MinNs != 1 || sum.MaxNs != 100 {

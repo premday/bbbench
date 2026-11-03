@@ -57,6 +57,11 @@ func TestSession_NVMe(t *testing.T) {
 	if sum.Source != "nvme" || sum.Count != 1 || sum.MeanNs != 195_000 || !sum.Exact {
 		t.Errorf("summary = %+v", sum)
 	}
+	// Sample times are relative to the start marker (t=1.0s), not the raw clock.
+	got := s.Samples()
+	if len(got) != 1 || got[0].LatencyNs != 195_000 || got[0].TimeNs != 99_000_195_000 {
+		t.Errorf("samples = %+v", got)
+	}
 	if got := read(t, filepath.Join(inst, "tracing_on")); got != "0" {
 		t.Errorf("tracing_on = %q after Stop", got)
 	}

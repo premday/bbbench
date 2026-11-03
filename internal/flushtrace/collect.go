@@ -26,28 +26,51 @@ type Collector interface {
 	// Feed offers one event; events the collector does not care about are ignored.
 	Feed(Event)
 	Summary() Summary
+	// Samples returns every completed Flush, with raw trace-clock times.
+	Samples() []Sample
+}
+
+// Sample is one completed Flush: when it completed and how long it took.
+// TimeNs is the raw trace-clock timestamp while collecting; Session.Samples
+// and the stored log make it relative to the start of tracing.
+type Sample struct {
+	TimeNs    int64
+	LatencyNs int64
 }
 
 type samples struct {
-	deltas []int64
+	all []Sample
 }
 
-func (s *samples) add(d int64) { s.deltas = append(s.deltas, d) }
+func (s *samples) add(completedNs, latencyNs int64) {
+	s.all = append(s.all, Sample{TimeNs: completedNs, LatencyNs: latencyNs})
+}
 
 func (s *samples) summary(source string, exact bool, lost int) Summary {
-	out := Summary{Source: source, Count: len(s.deltas), Exact: exact, Lost: lost}
-	if len(s.deltas) == 0 {
+	return Summarize(source, exact, lost, s.all)
+}
+
+// Summarize computes the Summary of a set of samples. It is the single place
+// where statistics are derived, so results stored as sample logs can be
+// re-summarized later (and pick up improvements) without re-running a test.
+// lost is the number of Flushes issued but never seen completing.
+func Summarize(source string, exact bool, lost int, all []Sample) Summary {
+	out := Summary{Source: source, Count: len(all), Exact: exact, Lost: lost}
+	if len(all) == 0 {
 		return out
 	}
 	var sum int64
-	for _, d := range s.deltas {
-		sum += d
+	for _, x := range all {
+		sum += x.LatencyNs
 	}
-	out.MeanNs = float64(sum) / float64(len(s.deltas))
+	out.MeanNs = float64(sum) / float64(len(all))
 	if !exact {
 		return out
 	}
-	sorted := append([]int64(nil), s.deltas...)
+	sorted := make([]int64, len(all))
+	for i, x := range all {
+		sorted[i] = x.LatencyNs
+	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	out.MinNs, out.MaxNs = sorted[0], sorted[len(sorted)-1]
 	out.P50Ns = percentile(sorted, 50)
@@ -101,12 +124,13 @@ func (c *NVMe) Feed(ev Event) {
 		key := fmt.Sprintf("%s/%s/%s", m[1], m[2], m[3])
 		if t0, ok := c.pending[key]; ok {
 			delete(c.pending, key)
-			c.s.add(ev.TimeNs - t0)
+			c.s.add(ev.TimeNs, ev.TimeNs-t0)
 		}
 	}
 }
 
-func (c *NVMe) Summary() Summary { return c.s.summary("nvme", true, len(c.pending)) }
+func (c *NVMe) Summary() Summary  { return c.s.summary("nvme", true, len(c.pending)) }
+func (c *NVMe) Samples() []Sample { return c.s.all }
 
 // ---- generic block device --------------------------------------------------
 
@@ -149,9 +173,10 @@ func (c *Block) Feed(ev Event) {
 		if c.isFlush(blockDoneRe, ev.Payload) && len(c.pending) > 0 {
 			t0 := c.pending[0]
 			c.pending = c.pending[1:]
-			c.s.add(ev.TimeNs - t0)
+			c.s.add(ev.TimeNs, ev.TimeNs-t0)
 		}
 	}
 }
 
-func (c *Block) Summary() Summary { return c.s.summary("block", false, len(c.pending)) }
+func (c *Block) Summary() Summary  { return c.s.summary("block", false, len(c.pending)) }
+func (c *Block) Samples() []Sample { return c.s.all }

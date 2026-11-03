@@ -25,6 +25,10 @@ type Options struct {
 	InstanceName string // default bbbench-flush-<pid>-<n>
 }
 
+// startMarker is written to trace_marker when tracing starts; its timestamp
+// is time zero of the recorded samples.
+const startMarker = "bbbench-start"
+
 var instanceSeq atomic.Int64
 
 // Session is one running trace of one device's Flushes. It uses a private
@@ -37,6 +41,7 @@ type Session struct {
 	collector Collector
 	mu        sync.Mutex
 	done      chan struct{}
+	startNs   int64 // trace-clock time of the start marker (0 = not seen)
 }
 
 func findTracefs(opts Options) (string, error) {
@@ -128,7 +133,7 @@ func Start(name string, opts Options) (*Session, error) {
 	}
 	// Guarantees trace_pipe has data, so that it reports EOF (instead of
 	// blocking forever) once tracing is switched off in Stop.
-	_ = s.write("trace_marker", "bbbench-start")
+	_ = s.write("trace_marker", startMarker)
 	return s, nil
 }
 
@@ -143,6 +148,9 @@ func (s *Session) read() {
 		line, err := r.ReadString('\n')
 		if ev, ok := ParseLine(line); ok {
 			s.mu.Lock()
+			if ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, startMarker) && s.startNs == 0 {
+				s.startNs = ev.TimeNs
+			}
 			s.collector.Feed(ev)
 			s.mu.Unlock()
 		}
@@ -176,6 +184,24 @@ func (s *Session) Stop() (Summary, error) {
 		return sum, errors.New(strings.Join(errs, "; "))
 	}
 	return sum, nil
+}
+
+// Samples returns every completed Flush with its completion time relative to
+// the start of tracing (so comparable with fio's own time-series logs). Call
+// it after Stop.
+func (s *Session) Samples() []Sample {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw := s.collector.Samples()
+	out := make([]Sample, len(raw))
+	t0 := s.startNs
+	if t0 == 0 && len(raw) > 0 { // marker not seen: start at the first Flush
+		t0 = raw[0].TimeNs - raw[0].LatencyNs
+	}
+	for i, x := range raw {
+		out[i] = Sample{TimeNs: x.TimeNs - t0, LatencyNs: x.LatencyNs}
+	}
+	return out
 }
 
 func (s *Session) cleanup() error {
