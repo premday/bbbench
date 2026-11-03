@@ -1,6 +1,9 @@
 package main
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 func main() {
 	initLoggerFromEnv()
@@ -23,6 +26,8 @@ func main() {
 		exitWithError(runServe(os.Args[2:]))
 	case "completion":
 		exitWithError(runCompletion(os.Args[2:]))
+	case "version", "-v", "--version":
+		fmt.Println("bbbench", version)
 	case "help", "-h", "--help":
 		printHelp()
 	default:
