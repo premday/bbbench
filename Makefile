@@ -1,7 +1,10 @@
 .PHONY: all clean test check package
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
-LDFLAGS := -s -w -X main.version=$(VERSION)
+COMMIT  ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+PKG     := bbbench/internal/buildinfo
+LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
 # Default target: static binaries. The code is pure Go, so CGO is disabled and
 # the result is statically linked without needing a musl toolchain.
