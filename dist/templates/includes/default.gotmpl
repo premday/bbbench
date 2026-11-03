@@ -1,8 +1,23 @@
-
+{{- $iodepth := 128 -}}
+{{- if gt .WorkloadDef.Iodepth 0 }}{{ $iodepth = .WorkloadDef.Iodepth }}{{ end -}}
+{{- $mode := "direct" -}}
+{{- if ne .WorkloadDef.Direct nil }}{{ if not (deref .WorkloadDef.Direct) }}{{ $mode = "buffered" }}{{ end }}{{ end }}
 filename={{ index .Disk "path" }}
 numjobs={{ index .WorkloadDef.Process .ProcessType }}
 bs={{ .WorkloadDef.Blocksize }}
 rw={{ .ProcessType }}
+{{- if .WorkloadDef.Ioengine }}
+ioengine={{ .WorkloadDef.Ioengine }}
+{{- end }}
+{{- if gt .WorkloadDef.Iodepth 0 }}
+iodepth={{ .WorkloadDef.Iodepth }}
+{{- end }}
+{{- if ne .WorkloadDef.Direct nil }}
+direct={{ ternary 1 0 (deref .WorkloadDef.Direct) }}
+{{- end }}
+{{- if gt .WorkloadDef.Fsync 0 }}
+fsync={{ .WorkloadDef.Fsync }}
+{{- end }}
 {{- if .WorkloadDef.Fulldisk }}
 size=100%
 {{- end }}
@@ -16,6 +31,6 @@ random_distribution={{ .WorkloadDef.RandomDistribution }}
 {{- end }}
 {{- if .WorkloadDef.WriteLog }}
 # write directives
-write_bw_log={{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth128_direct_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_bw.{{ .Host }}
-write_iops_log={{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth128_direct_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_iops.{{ .Host }}
+write_bw_log={{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth{{ $iodepth }}_{{ $mode }}_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_bw.{{ .Host }}
+write_iops_log={{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth{{ $iodepth }}_{{ $mode }}_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_iops.{{ .Host }}
 {{- end }}

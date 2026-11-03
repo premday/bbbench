@@ -121,6 +121,18 @@ Templates are stored in `dist/templates/` with subdirectory `includes/` for reus
 2. Map device type to workload in `bbbench.workloads` section
 3. Create corresponding include template in `dist/templates/includes/` if needed
 
+A workload can optionally override the template's `[global]` fio settings
+(libaio, iodepth 128, direct I/O, no fsync) for its own job:
+
+- `ioengine`: fio engine, e.g. `psync`, `io_uring`
+- `iodepth`: queue depth
+- `direct`: `true`/`false` (`false` = buffered I/O)
+- `fsync`: issue an fsync after every N writes (`1` = after each write)
+
+Unset fields emit nothing, so existing workloads render exactly as before.
+Generated log file names and the fioplot `iodepth` use the effective values
+(`iodepth<N>_direct` or `iodepth<N>_buffered`).
+
 ### Template Context Variables
 
 Templates receive a context map with:
