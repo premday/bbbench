@@ -17,8 +17,11 @@
 - Workloads can override `ioengine`, `iodepth`, `direct` and `fsync` per job in `bbbench.workloadsdb`
 
 - Release archives ship a `VERSION` file (version, commit, date, arch) and a generated `RELEASE_NOTES.md`; the GitHub release notes are generated from the commits since the previous tag (`scripts/changelog.sh`)
+- Web UI: "Flush latency" graph type (graphs and compare pages) drawn from the stored ftrace samples; every graph type shows a `fio` / `ftrace` source tag
 
 ### Changed
+
+- Flush-latency workloads run 5 minutes instead of 30 s, for enough points in the per-second Flush series
 
 - CI workflows use Node 24 action versions (`checkout@v7`, `setup-go@v7`, `upload-artifact@v7`) and run on `ubuntu-26.04` instead of `ubuntu-latest`
 - `make` builds with `CGO_ENABLED=0` instead of musl-gcc: the code is pure Go, so binaries stay static without a C toolchain

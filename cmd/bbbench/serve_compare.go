@@ -93,6 +93,12 @@ func handleComparePage(w http.ResponseWriter, r *http.Request) {
             padding: 16px; display: flex; flex-direction: column; min-height: 0;
         }
         .cmp-canvas-wrap { position: relative; flex: 1; min-height: 0; }
+        .src {
+            font-size: 9px; font-weight: 600; letter-spacing: 0.03em; vertical-align: middle;
+            padding: 0 5px; border-radius: 8px; border: 1px solid #cbd5e1;
+            color: #64748b; background: #f8fafc; cursor: help;
+        }
+        .src-ftrace { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
         .cmp-note {
             font-size: 11px; color: #92400e; background: #fef3c7;
             border: 1px solid #fcd34d; border-radius: 3px;
@@ -164,12 +170,16 @@ __NAVBAR_HTML__
     let cmpChart = null;
 
     const METRICS = [
-        { key: 'iops', label: 'IOPS',            unit: 'IOPS', tsKey: 'ts_iops',
+        { key: 'iops', label: 'IOPS',            unit: 'IOPS', tsKey: 'ts_iops', source: 'fio',
           sumR: d => d.read_iops    || 0, sumW: d => d.write_iops    || 0 },
-        { key: 'bw',   label: 'Bandwidth (MB/s)', unit: 'MB/s', tsKey: 'ts_bw',
+        { key: 'bw',   label: 'Bandwidth (MB/s)', unit: 'MB/s', tsKey: 'ts_bw', source: 'fio',
           sumR: d => d.read_bw_mbps || 0, sumW: d => d.write_bw_mbps || 0 },
-        { key: 'lat',  label: 'Latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_lat',
+        { key: 'lat',  label: 'Latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
           sumR: d => d.read_lat_us  || 0, sumW: d => d.write_lat_us  || 0 },
+        // Device Flush latency, timed from kernel trace events (not fio).
+        { key: 'flush', label: 'Flush latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
+          has:  d => !!(d.flush && d.flush.count > 0) || !!(d.ts_flush && d.ts_flush.length),
+          sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns || 0) / 1000 : 0 },
     ];
 
     // [solid border, area fill, bar background]
@@ -185,6 +195,18 @@ __NAVBAR_HTML__
         ['#c2410c', 'rgba(194,65,12,0.08)',   'rgba(194,65,12,0.75)'],
         ['#4338ca', 'rgba(67,56,202,0.08)',   'rgba(67,56,202,0.75)'],
     ];
+
+    const SRC_TITLE = {
+        fio:    'Measured by fio',
+        ftrace: 'Measured from kernel ftrace events (device Flush commands), not by fio',
+    };
+    function srcBadge(metric) {
+        const b = document.createElement('span');
+        b.className = 'src src-' + metric.source;
+        b.textContent = metric.source;
+        b.title = SRC_TITLE[metric.source];
+        return b;
+    }
 
     let selMetricKey = 'iops';
     const selDisks   = new Set();
@@ -219,7 +241,8 @@ __NAVBAR_HTML__
             rb.style.accentColor = '#2563eb';
             rb.addEventListener('change', () => { selMetricKey = m.key; updateCount(); });
             lbl.appendChild(rb);
-            lbl.appendChild(document.createTextNode('\u00a0' + m.label));
+            lbl.appendChild(document.createTextNode('\u00a0' + m.label + ' '));
+            lbl.appendChild(srcBadge(m));
             li.appendChild(lbl);
             ul.appendChild(li);
         });
@@ -318,17 +341,22 @@ __NAVBAR_HTML__
         const main = document.getElementById('main');
         main.innerHTML = '';
 
-        const entries = getEntries();
+        const metric  = METRICS.find(m => m.key === selMetricKey);
+        const all     = getEntries();
+        const entries = metric.has ? all.filter(metric.has) : all;
         if (entries.length === 0) {
-            main.innerHTML = '<div class="cmp-placeholder">No entries match. Select at least one disk and one phase.</div>';
+            main.innerHTML = '<div class="cmp-placeholder">' + (all.length === 0
+                ? 'No entries match. Select at least one disk and one phase.'
+                : 'No ' + metric.source + ' data for the selected disks and phases.') + '</div>';
             return;
         }
 
-        const metric  = METRICS.find(m => m.key === selMetricKey);
-        const doRead  = document.getElementById('dir-read').checked;
-        const doWrite = document.getElementById('dir-write').checked;
+        // Flush latency has no read/write split: it is always drawn.
+        const isFlush = metric.key === 'flush';
+        const doRead  = isFlush ? false : document.getElementById('dir-read').checked;
+        const doWrite = isFlush ? true  : document.getElementById('dir-write').checked;
 
-        if (!doRead && !doWrite) {
+        if (!isFlush && !doRead && !doWrite) {
             main.innerHTML = '<div class="cmp-placeholder">Select at least one direction (Read / Write).</div>';
             return;
         }
@@ -336,6 +364,14 @@ __NAVBAR_HTML__
         const nDisks  = new Set(entries.map(e => e.disk)).size;
         const nPhases = new Set(entries.map(e => e.phase_name)).size;
         const hasTS   = entries.some(d => { const ts = d[metric.tsKey]; return ts && ts.length > 0; });
+
+        // Source hint
+        const srcNote = document.createElement('div');
+        srcNote.className = 'cmp-note';
+        srcNote.appendChild(document.createTextNode('Source: '));
+        srcNote.appendChild(srcBadge(metric));
+        srcNote.appendChild(document.createTextNode(' ' + SRC_TITLE[metric.source].toLowerCase()));
+        main.appendChild(srcNote);
 
         // Container
         const wrap = document.createElement('div');
@@ -432,7 +468,7 @@ __NAVBAR_HTML__
             // ── Summary grouped bar chart ──
             const dirLabels = [];
             if (doRead)  dirLabels.push('Read');
-            if (doWrite) dirLabels.push('Write');
+            if (doWrite) dirLabels.push(isFlush ? 'Flush' : 'Write');
 
             const datasets = entries.map((d, i) => {
                 const [solid, , barBg] = PALETTE[i % PALETTE.length];

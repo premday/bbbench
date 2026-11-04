@@ -211,7 +211,7 @@ Generates shell completion scripts.
 
 ## Flush-latency workloads
 
-The default `ssd` workload list ends with three short (30 s) jobs that measure
+The default `ssd` workload list ends with three 5-minute jobs that measure
 what a Flush costs: 4k random writes with an `fsync` after every write, so each
 write is followed by one device Flush.
 
@@ -276,10 +276,12 @@ written to `<output>/<device>_phase<N>_<ts>_log_flush.log`, next to fio's own
 changing how statistics or graphs are computed applies to tests that already
 ran, without running them again; the `flush_trace` saved in the run's JSON is
 only a fallback for runs without a log. Runs from before this have no log and
-keep their saved summary. Size: about 20 bytes per Flush, so a 30 s QD32 phase
-at 100k Flushes/s is roughly 60 MB; fsync-after-every-write phases at queue
-depth 1 are far smaller. The web UI does not draw a Flush graph yet; the data
-is in the API output for it.
+keep their saved summary. Size: about 20 bytes per Flush, so a 5-minute QD32 phase
+at 100k Flushes/s is roughly 600 MB; fsync-after-every-write phases at queue
+depth 1 are far smaller. In the web UI the Flush latency is its own graph type
+(`/graphs`, and a metric on `/compare`), separate from IOPS, bandwidth and
+latency, and every graph type carries a small `fio` or `ftrace` tag saying where
+the numbers come from.
 
 **Cost and limits.**
 - Tracing uses a private ftrace instance (`instances/bbbench-flush-*`), so system
