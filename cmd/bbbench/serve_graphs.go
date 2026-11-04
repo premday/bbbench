@@ -684,8 +684,9 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
-                            title: items => items[0].raw.x + ' s',
-                            label: ctx => 'Flush: ' + ctx.raw.y.toFixed(1) + ' ' + metric.unit } }
+                            title: items => 'at ' + items[0].raw.x + ' s',
+                            label: ctx => 'Flush latency: ' + ctx.raw.y.toFixed(1) + ' ' + metric.unit +
+                                ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
                     },
                     scales: {
                         x: { type: 'linear',

@@ -459,9 +459,9 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'right',
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { mode: 'index', intersect: false, callbacks: {
-                            title: items => items[0].raw.x + ' s',
+                            title: items => 'at ' + items[0].raw.x + ' s',
                             label: ctx => ctx.dataset.label + ': ' +
-                                         fmtTick(ctx.raw.y) + ' ' + metric.unit,
+                                         (metric.key === 'flush' ? ctx.raw.y.toFixed(1) : fmtTick(ctx.raw.y)) + ' ' + metric.unit,
                         }}
                     },
                     scales: {
