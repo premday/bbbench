@@ -914,6 +914,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 				if err != nil {
 					logger.Warn("flush tracing cleanup", "device", drive.Device.Name, "err", err)
 				}
+				sum.AvgMsec = logAvgMsec // series follow fio's polling interval
 				result.FlushTrace = &sum
 				// Keep the samples with the fio logs, so the run can be
 				// re-summarized and graphed later.

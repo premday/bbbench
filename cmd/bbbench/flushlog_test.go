@@ -109,3 +109,36 @@ func TestLoadBenchmarkSummary_RebuildsFlushFromStoredSamples(t *testing.T) {
 		t.Fatalf("graph data lacks flush: %+v", dp)
 	}
 }
+
+// The Flush series uses the fio polling interval (--log-avg-msec) the run was
+// made with, stored in the log, so it lines up with fio's own series.
+func TestFlushLog_SeriesFollowsFioPollingInterval(t *testing.T) {
+	all := []flushtrace.Sample{
+		{TimeNs: 1_000e6, LatencyNs: 100_000},
+		{TimeNs: 29_000e6, LatencyNs: 300_000},
+		{TimeNs: 31_000e6, LatencyNs: 500_000},
+	}
+	write := func(avg int) string {
+		prefix := filepath.Join(t.TempDir(), "d_phase1_1_log")
+		sum := flushtrace.Summarize("nvme", true, 0, all)
+		sum.AvgMsec = avg
+		if err := writeFlushLog(prefix, sum, all); err != nil {
+			t.Fatal(err)
+		}
+		return prefix
+	}
+
+	// log_avg_msec=30000: two points, 0 s and 30 s.
+	got, series, _ := loadFlushLog(write(30000))
+	if got.AvgMsec != 30000 || len(series) != 2 || series[0].W != 200 || series[1].T != 30 || series[1].W != 500 {
+		t.Errorf("30 s: summary %+v series %+v", got, series)
+	}
+	// log_avg_msec=1000: one point per second that has Flushes.
+	if _, series, _ := loadFlushLog(write(1000)); len(series) != 3 {
+		t.Errorf("1 s: series %+v", series)
+	}
+	// Logs from before the interval was stored fall back to 1 s windows.
+	if _, series, _ := loadFlushLog(write(0)); len(series) != 3 {
+		t.Errorf("unknown interval: series %+v", series)
+	}
+}

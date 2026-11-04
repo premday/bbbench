@@ -30,6 +30,9 @@ func WriteLog(w io.Writer, sum Summary, all []Sample) error {
 	if sum.WriteCache != "" {
 		fmt.Fprintf(bw, " write_cache=%s", strings.ReplaceAll(sum.WriteCache, " ", "_"))
 	}
+	if sum.AvgMsec > 0 {
+		fmt.Fprintf(bw, " avg_msec=%d", sum.AvgMsec)
+	}
 	fmt.Fprint(bw, "\n# time_ms, latency_ns\n")
 	for _, x := range all {
 		fmt.Fprintf(bw, "%.3f, %d\n", float64(x.TimeNs)/1e6, x.LatencyNs)
@@ -47,6 +50,7 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 		exact  bool
 		lost   int
 		wcache string
+		avg    int
 		all    []Sample
 		first  = true
 	)
@@ -69,6 +73,8 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 					exact = v == "true"
 				case "lost":
 					lost, _ = strconv.Atoi(v)
+				case "avg_msec":
+					avg, _ = strconv.Atoi(v)
 				case "write_cache":
 					wcache = strings.ReplaceAll(v, "_", " ")
 				}
@@ -97,6 +103,7 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 	}
 	sum := Summarize(source, exact, lost, all)
 	sum.WriteCache = wcache
+	sum.AvgMsec = avg
 	return sum, all, nil
 }
 

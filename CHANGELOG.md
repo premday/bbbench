@@ -20,6 +20,7 @@
 - Web UI: "Flush latency" graph type (graphs and compare pages) drawn from the stored ftrace samples; every graph type shows a `fio` / `ftrace` source tag
 - Flush tracing records the device's `write_cache` state and says so when no Flush was seen on a write-through device; the UI shows "ftrace saw 0 Flush commands" instead of "no data"
 - Phases that fsync are skipped on write-through devices, where the kernel sends no Flush and the test would measure nothing; the reason is printed, saved with the run (`skipped`) and shown in the web UI; `--allow-write-through` runs them anyway
+- The Flush latency series uses fio's polling interval (`--log-avg-msec`, stored in the flush log header) as its averaging window, so it lines up with the fio series
 
 ### Changed
 

@@ -23,6 +23,10 @@ type Summary struct {
 	// ("write back" or "write through"; empty = unknown). A write-through
 	// device is sent no Flush commands at all, so zero Flushes is expected.
 	WriteCache string `json:"write_cache,omitempty"`
+	// AvgMsec is the fio log polling interval (--log-avg-msec) the run used;
+	// the Flush time series is averaged over the same windows, so it lines up
+	// with fio's IOPS/bandwidth/latency points. 0 = unknown.
+	AvgMsec int `json:"avg_msec,omitempty"`
 }
 
 // Collector turns trace events into a Summary for one device.

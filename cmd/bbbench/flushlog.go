@@ -7,8 +7,9 @@ import (
 	"bbbench/internal/flushtrace"
 )
 
-// flushSeriesWindowNs is the averaging window of the Flush latency time series.
-const flushSeriesWindowNs = 1_000_000_000
+// defaultFlushWindowMs is the averaging window of the Flush latency series for
+// logs that do not record fio's polling interval (the --log-avg-msec default).
+const defaultFlushWindowMs = 1000
 
 // writeFlushLog stores the Flush samples of a traced phase next to fio's own
 // logs, so statistics and graphs can be rebuilt for a finished run.
@@ -42,7 +43,12 @@ func loadFlushLog(logPrefix string) (sum *flushtrace.Summary, series []TimePoint
 		}
 		return nil, nil, false
 	}
-	for _, b := range flushtrace.Bins(samples, flushSeriesWindowNs) {
+	// Same windows as fio's own series: its --log-avg-msec, stored in the log.
+	windowMs := s.AvgMsec
+	if windowMs <= 0 {
+		windowMs = defaultFlushWindowMs
+	}
+	for _, b := range flushtrace.Bins(samples, int64(windowMs)*1_000_000) {
 		series = append(series, TimePoint{T: b.TSec, W: b.MeanNs / 1000})
 	}
 	return &s, series, true

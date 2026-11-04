@@ -273,7 +273,8 @@ written to `<output>/<device>_phase<N>_<ts>_log_flush.log`, next to fio's own
 `_iops/_bw/_lat` logs, as text: a header (`source`, `exact`, `lost`) then one
 `time_ms, latency_ns` line per Flush. The summary and the per-second series
 (`flush_series` in the run, `ts_flush` and `flush` in the graph data of
-`bbbench serve`) are rebuilt from this file whenever a run is loaded, so
+`bbbench serve`; averaged over fio's polling interval, `--log-avg-msec`, which
+the log header records, so the points line up with fio's IOPS/bandwidth/latency) are rebuilt from this file whenever a run is loaded, so
 changing how statistics or graphs are computed applies to tests that already
 ran, without running them again; the `flush_trace` saved in the run's JSON is
 only a fallback for runs without a log. Runs from before this have no log and
