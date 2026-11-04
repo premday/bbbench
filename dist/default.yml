@@ -88,11 +88,12 @@ bbbench:
 
     # Flush-latency workloads: 4k random writes with an fsync after every
     # write, so each write costs one device Flush. They compare how the drive
-    # (and kernel) handle Flush; short runs, no per-interval logs.
+    # (and kernel) handle Flush; 5 minutes each so the per-second Flush
+    # series has enough points, no per-interval fio logs.
     ssd_fsync_psync_qd1:
       blocksize: *default_blocksize
       fulldisk: *default_fulldisk
-      duration: &fsync_duration 30
+      duration: &fsync_duration 300
       write_log: False
       ioengine: psync
       iodepth: 1
