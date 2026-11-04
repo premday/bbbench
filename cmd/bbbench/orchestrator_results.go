@@ -133,6 +133,11 @@ func displayResults(coordinator *ExecutionCoordinator) error {
 				continue
 			}
 
+			if result.Skipped != "" {
+				fmt.Printf("  Phase %d: SKIPPED - %s\n", result.Phase, result.Skipped)
+				continue
+			}
+
 			successCount++
 
 			// Parse and display key metrics

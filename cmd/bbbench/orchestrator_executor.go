@@ -38,6 +38,9 @@ type ExecutionCoordinator struct {
 	liveResult  *BenchmarkResult // updated after each phase for live web view
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
 	flushTrace  bool             // trace device Flush latency during phases that fsync
+
+	allowWriteThrough bool   // run fsync phases even on write-through devices
+	sysBlock          string // sysfs block dir override for tests ("" = /sys/block)
 }
 
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
@@ -68,6 +71,8 @@ type FioResult struct {
 	// FlushTrace is the device Flush latency measured from kernel trace
 	// events, for phases that issue fsyncs. Nil when not measured.
 	FlushTrace *flushtrace.Summary
+	// Skipped is why the phase was not run on this device (not an error).
+	Skipped string
 }
 
 // checkFioInstalled verifies that the fio binary is available in PATH.
@@ -397,6 +402,12 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 
 		for _, result := range ec.results[deviceName] {
 			if result.Phase == phaseIdx && result.Error == nil {
+				if result.Skipped != "" {
+					if phaseResult.Skipped == nil {
+						phaseResult.Skipped = make(map[string]string)
+					}
+					phaseResult.Skipped[deviceName] = result.Skipped
+				}
 				if result.OutputPath != "" {
 					phaseResult.FioFiles[deviceName] = result.OutputPath
 				}
@@ -614,6 +625,11 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			for _, err := range phaseErrors {
 				fmt.Printf("  - %v\n", err)
 			}
+		} else if skipped := ec.skippedInPhase(phaseIdx); len(skipped) > 0 {
+			fmt.Printf("SKIPPED on %d drive(s):\n", len(skipped))
+			for _, s := range skipped {
+				fmt.Printf("  - %s\n", s)
+			}
 		} else {
 			fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 		}
@@ -760,6 +776,8 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			elapsed := time.Since(phaseStart)
 			if result.Error != nil {
 				fmt.Printf("FAILED (%.1fs) - %v\n", elapsed.Seconds(), result.Error)
+			} else if result.Skipped != "" {
+				fmt.Printf("SKIPPED - %s\n", result.Skipped)
 			} else {
 				fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 			}
@@ -829,6 +847,16 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 			setupDone <- struct{}{}
 			<-startGate
 		}
+	}
+
+	// Refuse a test that cannot measure anything on this device.
+	if reason := ec.flushSkipReason(drive.Device.Name, phase); reason != "" {
+		logger.Warn("skipping phase", "device", drive.Device.Name, "phase", phaseIdx, "reason", reason)
+		result.Skipped = reason
+		signalReady()
+		result.StartTime = time.Now()
+		result.EndTime = result.StartTime
+		return result
 	}
 
 	// Build temporary fio file for this phase

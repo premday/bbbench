@@ -343,8 +343,15 @@ __NAVBAR_HTML__
         main.innerHTML = '';
 
         const metric  = METRICS.find(m => m.key === selMetricKey);
-        const all     = getEntries();
+        const all0    = getEntries();
+        const skippedE = all0.filter(d => d.skipped);   // phases that were not run
+        const all     = all0.filter(d => !d.skipped);
         const entries = metric.has ? all.filter(metric.has) : all;
+        if (entries.length === 0 && skippedE.length > 0 && all.length === 0) {
+            main.innerHTML = '<div class="cmp-placeholder">Skipped, not run: ' +
+                skippedE[0].skipped.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</div>';
+            return;
+        }
         if (entries.length === 0) {
             const zero = metric.none ? all.filter(metric.none) : [];
             const wt = zero.some(d => d.flush.write_cache === 'write through');
@@ -373,6 +380,13 @@ __NAVBAR_HTML__
         const hasTS   = entries.some(d => { const ts = d[metric.tsKey]; return ts && ts.length > 0; });
 
         // Source hint
+        if (skippedE.length > 0) {
+            const sk = document.createElement('div');
+            sk.className = 'cmp-note';
+            sk.textContent = '\u26a0 ' + skippedE.length + ' entr' + (skippedE.length !== 1 ? 'ies were' : 'y was') +
+                ' skipped (not run): ' + skippedE[0].skipped;
+            main.appendChild(sk);
+        }
         const srcNote = document.createElement('div');
         srcNote.className = 'cmp-note';
         srcNote.appendChild(document.createTextNode('Source: '));

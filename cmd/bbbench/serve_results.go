@@ -33,6 +33,8 @@ type PhaseResult struct {
 	// FlushTrace holds the kernel-measured Flush latency per device, for
 	// phases that fsync and where tracing was available.
 	FlushTrace map[string]*flushtrace.Summary `json:"flush_trace,omitempty"`
+	// Skipped says why the phase was not run, per device (not an error).
+	Skipped map[string]string `json:"skipped,omitempty"`
 	// FlushSeries is the Flush latency over time (mean µs per second, W
 	// column) per device, rebuilt from the stored <prefix>_flush.log.
 	FlushSeries map[string][]TimePoint `json:"flush_series,omitempty"`

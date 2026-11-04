@@ -37,6 +37,8 @@ type DiskPhaseData struct {
 	// unavailable.
 	TSflush []TimePoint         `json:"ts_flush,omitempty"`
 	Flush   *flushtrace.Summary `json:"flush,omitempty"`
+	// Skipped is why this phase was not run on the disk ("" = it ran).
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // DiskGraphData holds per-disk metrics across all phases (used by export).
@@ -127,6 +129,20 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 					dp.WriteLatUS = job.WriteStats.AvgLatNS / 1000
 				}
 				dp.HasWrite = true
+			}
+		}
+		// Phases skipped on a disk have no jobs; still emit an entry that
+		// carries the reason, so the UI can show it.
+		for dev, reason := range phase.Skipped {
+			di, ok := info[dev]
+			if !ok || byDisk[dev] != nil {
+				continue
+			}
+			byDisk[dev] = &DiskPhaseData{
+				Disk: dev, Path: di.path, Vendor: di.vendor, Model: di.model,
+				Serial: di.serial, Technology: di.technology,
+				PhaseNum: phase.PhaseNumber, PhaseName: phase.PhaseName,
+				Skipped: reason,
 			}
 		}
 		// Emit in disk order, attaching time-series if available.
@@ -403,6 +419,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             padding: 0 5px; border-radius: 8px; border: 1px solid #cbd5e1;
             color: #64748b; background: #f8fafc; cursor: help;
         }
+        .none-note.skipped { color: #1e3a5f; background: #e0ecff; }
         .none-note { display: flex; align-items: center; font-size: 11px; color: #92400e;
                      background: #fef3c7; border-radius: 4px; padding: 6px 8px; height: auto; min-height: 60px; }
         .src-ftrace { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
@@ -488,7 +505,7 @@ __NAVBAR_HTML__
           sumR: d => d.read_lat_us||0,  sumW: d => d.write_lat_us||0  },
         // Device Flush latency, timed from kernel trace events (not fio).
         { key: 'flush', label: 'Flush latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
-          has:  d => !!d.flush || !!(d.ts_flush && d.ts_flush.length),
+          has:  d => !!d.flush || !!d.skipped || !!(d.ts_flush && d.ts_flush.length),
           sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns||0)/1000 : 0 },
     ];
     const SRC_TITLE = {
@@ -829,12 +846,12 @@ __NAVBAR_HTML__
 
         const warnEl = document.createElement('div');
         card.appendChild(warnEl);
-        const why = flushNone(d, metric);
+        const why = d.skipped ? 'Skipped: ' + d.skipped : flushNone(d, metric);
         if (why) {
             // Traced, but no Flush command reached the device: say why
             // instead of drawing an empty chart.
             wrap.removeChild(canvas);
-            wrap.className = 'chart-wrap none-note';
+            wrap.className = 'chart-wrap none-note' + (d.skipped ? ' skipped' : '');
             wrap.textContent = why;
             return card;
         }

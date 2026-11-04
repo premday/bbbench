@@ -121,6 +121,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--resume` — resume a previously interrupted run (skips completed phases)
 - `--dry-run` — show what would run without executing fio
 - `--verbose` — show fio commands and debug output
+- `--allow-write-through` — run fsync (Flush-latency) phases even on write-through devices, which are otherwise skipped
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--config` — path to config file
 - `--dist` — override dist path
@@ -292,6 +293,15 @@ cache state is stored in the flush log header. To measure Flushes on an NVMe
 drive that has a volatile cache (`nvme id-ctrl /dev/nvme0 | grep vwc`), enable
 it first: `nvme set-feature /dev/nvme0 -f 6 -v 1`, then check that `write_cache`
 reads `write back`.
+
+**Refused on write-through devices.** Before a phase that fsyncs (the flush
+workloads), the orchestrator reads the device's cache mode and, for `write
+through`, does not run it: the phase is reported as `SKIPPED` with the reason
+in the run output, saved with the run (`skipped` per phase and device), and
+shown in the web UI (graphs and compare pages, run details) instead of empty
+graphs. It is not counted as completed, so `--resume` runs it once the cache is
+enabled. `--allow-write-through` runs such phases anyway (fio's fsync time is
+still measured; there is no Flush to trace).
 
 **Cost and limits.**
 - Tracing uses a private ftrace instance (`instances/bbbench-flush-*`), so system

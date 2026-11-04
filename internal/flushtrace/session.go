@@ -115,12 +115,7 @@ func Start(name string, opts Options) (*Session, error) {
 	if err := os.MkdirAll(inst, 0o755); err != nil {
 		return nil, fmt.Errorf("create trace instance: %w", err)
 	}
-	sysBlock := opts.SysBlock
-	if sysBlock == "" {
-		sysBlock = "/sys/block"
-	}
-	wc, _ := os.ReadFile(filepath.Join(sysBlock, name, "queue", "write_cache"))
-	s := &Session{writeCache: strings.TrimSpace(string(wc)), inst: inst, collector: col, done: make(chan struct{}), stopSeen: make(chan struct{})}
+	s := &Session{writeCache: WriteCache(opts.SysBlock, name), inst: inst, collector: col, done: make(chan struct{}), stopSeen: make(chan struct{})}
 	fail := func(err error) (*Session, error) { s.cleanup(); return nil, err }
 
 	// A generous buffer so a busy device does not overwrite events.
@@ -147,6 +142,21 @@ func Start(name string, opts Options) (*Session, error) {
 	// Time zero of the recorded samples.
 	_ = s.write("trace_marker", startMarker)
 	return s, nil
+}
+
+// WriteCache returns the kernel's cache mode of a block device, "write back"
+// or "write through" (from <sysBlock>/<name>/queue/write_cache), or "" when
+// unknown. Only a write-back device is sent Flush commands. sysBlock defaults
+// to /sys/block.
+func WriteCache(sysBlock, name string) string {
+	if sysBlock == "" {
+		sysBlock = "/sys/block"
+	}
+	b, err := os.ReadFile(filepath.Join(sysBlock, name, "queue", "write_cache"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func (s *Session) write(rel, val string) error {

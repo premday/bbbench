@@ -1,12 +1,15 @@
 package main
 
 import (
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	distassets "bbbench/dist"
+	"bbbench/internal/blockdev"
 	"bbbench/internal/config"
 	"bbbench/internal/flushtrace"
 	"bbbench/internal/templating"
@@ -97,5 +100,76 @@ func TestFormatFlushSummary_WriteThroughExplainsNoFlushes(t *testing.T) {
 	got := formatFlushSummary(&flushtrace.Summary{Source: "nvme", WriteCache: "write through"})
 	if !strings.Contains(got, "none seen") || !strings.Contains(got, "write-through") {
 		t.Errorf("got %q", got)
+	}
+}
+
+// A phase that fsyncs is refused on a write-through device (the kernel sends
+// it no Flush, so there would be nothing to measure) and runs otherwise.
+func TestFlushSkipReason(t *testing.T) {
+	sys := t.TempDir()
+	set := func(dev, mode string) {
+		t.Helper()
+		d := filepath.Join(sys, dev, "queue")
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "write_cache"), []byte(mode+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set("nvme0n1", "write through")
+	set("nvme1n1", "write back")
+	fsync := []FioJob{{Name: "j", Section: "[j]\nrw=randwrite\nfsync=1\n"}}
+	plain := []FioJob{{Name: "j", Section: "[j]\nrw=randwrite\n"}}
+	ec := &ExecutionCoordinator{sysBlock: sys}
+
+	if r := ec.flushSkipReason("nvme0n1", fsync); !strings.Contains(r, "write through") {
+		t.Errorf("write-through fsync phase not refused: %q", r)
+	}
+	if r := ec.flushSkipReason("nvme0n1", plain); r != "" {
+		t.Errorf("non-fsync phase must run on write-through: %q", r)
+	}
+	if r := ec.flushSkipReason("nvme1n1", fsync); r != "" {
+		t.Errorf("write-back device must run: %q", r)
+	}
+	if r := ec.flushSkipReason("sdz", fsync); r != "" {
+		t.Errorf("unknown cache mode must run: %q", r)
+	}
+	ec.allowWriteThrough = true
+	if r := ec.flushSkipReason("nvme0n1", fsync); r != "" {
+		t.Errorf("--allow-write-through must run: %q", r)
+	}
+}
+
+// A skipped phase is reported (not an error, not completed, fio not started)
+// and reaches the graph data with its reason.
+func TestSkippedPhase_ResultAndGraphData(t *testing.T) {
+	sys := t.TempDir()
+	os.MkdirAll(filepath.Join(sys, "nvme0n1", "queue"), 0o755)
+	os.WriteFile(filepath.Join(sys, "nvme0n1", "queue", "write_cache"), []byte("write through\n"), 0o644)
+	logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	drive := DriveInfo{Device: blockdev.Device{Name: "nvme0n1", Path: "/dev/nvme0n1"}}
+	phase := []FioJob{{Name: "ssd_fsync", Section: "[ssd_fsync]\nfsync=1\n"}}
+	ec := &ExecutionCoordinator{
+		drives:     []DriveInfo{drive},
+		sysBlock:   sys,
+		workloads:  map[string]*FioWorkload{"nvme0n1": {Phases: [][]FioJob{phase}}},
+		results:    map[string][]*FioResult{},
+		liveResult: &BenchmarkResult{ID: "x", Drives: []DriveInfo{drive}},
+	}
+	res := ec.executePhase(drive, phase, 0, nil, nil)
+	if res.Error != nil || res.Skipped == "" || res.OutputPath != "" {
+		t.Fatalf("result = %+v", res)
+	}
+	ec.results["nvme0n1"] = []*FioResult{res}
+	ec.updateLivePhase(0)
+
+	data := generateDiskPhaseData(ec.liveResult)
+	if len(data) != 1 || data[0].Skipped == "" || data[0].Disk != "nvme0n1" || data[0].PhaseName != "ssd_fsync" {
+		t.Fatalf("graph data = %+v", data)
+	}
+	if got := ec.skippedInPhase(0); len(got) != 1 {
+		t.Errorf("skippedInPhase = %v", got)
 	}
 }
