@@ -115,3 +115,24 @@ func TestPercentile(t *testing.T) {
 		t.Errorf("%+v", sum)
 	}
 }
+
+// Lines captured from a real kernel (7.3, nvme0n1): the task name contains a
+// colon, the disk field precedes qid, and Flush commands print an all-zero
+// cdw10.
+func TestNVMe_RealKernelLines(t *testing.T) {
+	c := NewNVMe("nvme0n1")
+	for _, l := range []string{
+		"   kworker/38:1H-884     [038] .....  6624.537783: nvme_setup_cmd: nvme0: disk=nvme0n1, qid=6, cmdid=832, nsid=1, flags=0x0, meta=0x0, cmd=(nvme_cmd_flush cdw10=00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00)",
+		"          <idle>-0       [038] d.h1.  6624.537900: nvme_complete_rq: nvme0: disk=nvme0n1, qid=6, cmdid=832, res=0x0, retries=0, flags=0x0, status=0x0",
+	} {
+		ev, ok := ParseLine(l)
+		if !ok {
+			t.Fatalf("ParseLine rejected %q", l)
+		}
+		c.Feed(ev)
+	}
+	s := c.Summary()
+	if s.Count != 1 || s.MeanNs != 117_000 {
+		t.Errorf("summary = %+v, want 1 flush of 117µs", s)
+	}
+}
