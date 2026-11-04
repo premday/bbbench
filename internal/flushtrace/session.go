@@ -29,6 +29,12 @@ type Options struct {
 // is time zero of the recorded samples.
 const startMarker = "bbbench-start"
 
+// stopMarker is written (while tracing is still on) once the Flush events are
+// disabled. A blocked trace_pipe read is only woken by new data, never by
+// tracing being switched off, so seeing this marker is how the reader knows
+// every earlier event has been delivered.
+const stopMarker = "bbbench-stop"
+
 var instanceSeq atomic.Int64
 
 // Session is one running trace of one device's Flushes. It uses a private
@@ -41,7 +47,8 @@ type Session struct {
 	collector Collector
 	mu        sync.Mutex
 	done      chan struct{}
-	startNs   int64 // trace-clock time of the start marker (0 = not seen)
+	stopSeen  chan struct{} // closed when the stop marker was read
+	startNs   int64         // trace-clock time of the start marker (0 = not seen)
 }
 
 func findTracefs(opts Options) (string, error) {
@@ -107,7 +114,7 @@ func Start(name string, opts Options) (*Session, error) {
 	if err := os.MkdirAll(inst, 0o755); err != nil {
 		return nil, fmt.Errorf("create trace instance: %w", err)
 	}
-	s := &Session{inst: inst, collector: col, done: make(chan struct{})}
+	s := &Session{inst: inst, collector: col, done: make(chan struct{}), stopSeen: make(chan struct{})}
 	fail := func(err error) (*Session, error) { s.cleanup(); return nil, err }
 
 	// A generous buffer so a busy device does not overwrite events.
@@ -131,8 +138,7 @@ func Start(name string, opts Options) (*Session, error) {
 	if err := s.write("tracing_on", "1"); err != nil {
 		return fail(fmt.Errorf("start tracing: %w", err))
 	}
-	// Guarantees trace_pipe has data, so that it reports EOF (instead of
-	// blocking forever) once tracing is switched off in Stop.
+	// Time zero of the recorded samples.
 	_ = s.write("trace_marker", startMarker)
 	return s, nil
 }
@@ -151,6 +157,13 @@ func (s *Session) read() {
 			if ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, startMarker) && s.startNs == 0 {
 				s.startNs = ev.TimeNs
 			}
+			if ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, stopMarker) {
+				select {
+				case <-s.stopSeen:
+				default:
+					close(s.stopSeen)
+				}
+			}
 			s.collector.Feed(ev)
 			s.mu.Unlock()
 		}
@@ -167,13 +180,18 @@ func (s *Session) Stop() (Summary, error) {
 	for _, e := range s.events {
 		_ = s.write(e+"/enable", "0")
 	}
-	_ = s.write("tracing_on", "0")
+	// Wake the reader with a marker while tracing is still on, and wait until
+	// it has read everything up to it. (On a real kernel trace_pipe does not
+	// report EOF by itself: a read blocks until new data arrives.)
+	_ = s.write("trace_marker", stopMarker)
 	var errs []string
 	select {
-	case <-s.done:
+	case <-s.stopSeen:
+	case <-s.done: // pipe ended by itself (e.g. a plain file)
 	case <-time.After(3 * time.Second):
 		errs = append(errs, "trace reader did not finish")
 	}
+	_ = s.write("tracing_on", "0")
 	s.mu.Lock()
 	sum := s.collector.Summary()
 	s.mu.Unlock()

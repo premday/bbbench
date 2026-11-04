@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // fakeTracefs builds a minimal tracefs tree with a pre-created instance
@@ -112,5 +114,65 @@ func TestStart_Unsupported(t *testing.T) {
 	root, _ := fakeTracefs(t, nil, "")
 	if _, err := Start("sda", Options{TracefsRoot: root}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("no tracepoints: err = %v", err)
+	}
+}
+
+// A real trace_pipe never reports EOF when tracing stops: a read blocks until
+// new data arrives. Stop must therefore end the reader with the stop marker,
+// not by waiting for EOF (it used to time out with "trace reader did not
+// finish" on a real kernel).
+func TestSession_StopDoesNotNeedEOF(t *testing.T) {
+	root, inst := fakeTracefs(t, []string{"nvme/nvme_setup_cmd", "nvme/nvme_complete_rq"}, "")
+	pipePath := filepath.Join(inst, "trace_pipe")
+	if err := os.Remove(pipePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(pipePath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Read-write open: the fifo never reports EOF, like the kernel's pipe.
+	kernel, err := os.OpenFile(pipePath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer kernel.Close()
+	write := func(line string) { kernel.WriteString(line + "\n") }
+	write("bbbench-1 [000] ..... 1.000000: tracing_mark_write: bbbench-start")
+	write("fio-1 [001] ..... 100.000000: nvme_setup_cmd: nvme0: disk=nvme0n1, qid=1, cmdid=5, nsid=1, flags=0x0, meta=0x0, cmd=(nvme_cmd_flush cdw10=00000000)")
+	write("<idle>-0 [001] d.h1. 100.000195: nvme_complete_rq: nvme0: disk=nvme0n1, qid=1, cmdid=5, res=0x0, retries=0, flags=0x0, status=0x0")
+
+	// Stand-in for the kernel: a write to trace_marker shows up in the pipe.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		for {
+			select {
+			case <-stopWatch:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+			if b, err := os.ReadFile(filepath.Join(inst, "trace_marker")); err == nil &&
+				strings.Contains(string(b), stopMarker) {
+				write("bbbench-1 [000] ..... 400.000000: tracing_mark_write: " + stopMarker)
+				return
+			}
+		}
+	}()
+
+	s, err := Start("nvme0n1", Options{TracefsRoot: root, InstanceName: "test"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond) // let the reader consume the events
+	began := time.Now()
+	sum, err := s.Stop()
+	if err != nil && strings.Contains(err.Error(), "reader did not finish") {
+		t.Fatalf("Stop timed out waiting for EOF: %v", err)
+	}
+	if d := time.Since(began); d > time.Second {
+		t.Errorf("Stop took %v", d)
+	}
+	if sum.Count != 1 || sum.MeanNs != 195_000 {
+		t.Errorf("summary = %+v", sum)
 	}
 }
