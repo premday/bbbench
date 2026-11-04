@@ -92,3 +92,10 @@ func TestPhaseHasFsync_DefaultWorkloads(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatFlushSummary_WriteThroughExplainsNoFlushes(t *testing.T) {
+	got := formatFlushSummary(&flushtrace.Summary{Source: "nvme", WriteCache: "write through"})
+	if !strings.Contains(got, "none seen") || !strings.Contains(got, "write-through") {
+		t.Errorf("got %q", got)
+	}
+}

@@ -41,14 +41,15 @@ var instanceSeq atomic.Int64
 // ftrace instance, so the system-wide trace buffer and settings are left
 // alone, and parallel sessions do not interfere.
 type Session struct {
-	inst      string
-	pipe      *os.File
-	events    []string // enable files switched on, to switch off again
-	collector Collector
-	mu        sync.Mutex
-	done      chan struct{}
-	stopSeen  chan struct{} // closed when the stop marker was read
-	startNs   int64         // trace-clock time of the start marker (0 = not seen)
+	inst       string
+	pipe       *os.File
+	events     []string // enable files switched on, to switch off again
+	collector  Collector
+	mu         sync.Mutex
+	done       chan struct{}
+	stopSeen   chan struct{} // closed when the stop marker was read
+	writeCache string        // queue/write_cache of the device at Start
+	startNs    int64         // trace-clock time of the start marker (0 = not seen)
 }
 
 func findTracefs(opts Options) (string, error) {
@@ -114,7 +115,12 @@ func Start(name string, opts Options) (*Session, error) {
 	if err := os.MkdirAll(inst, 0o755); err != nil {
 		return nil, fmt.Errorf("create trace instance: %w", err)
 	}
-	s := &Session{inst: inst, collector: col, done: make(chan struct{}), stopSeen: make(chan struct{})}
+	sysBlock := opts.SysBlock
+	if sysBlock == "" {
+		sysBlock = "/sys/block"
+	}
+	wc, _ := os.ReadFile(filepath.Join(sysBlock, name, "queue", "write_cache"))
+	s := &Session{writeCache: strings.TrimSpace(string(wc)), inst: inst, collector: col, done: make(chan struct{}), stopSeen: make(chan struct{})}
 	fail := func(err error) (*Session, error) { s.cleanup(); return nil, err }
 
 	// A generous buffer so a busy device does not overwrite events.
@@ -194,6 +200,7 @@ func (s *Session) Stop() (Summary, error) {
 	_ = s.write("tracing_on", "0")
 	s.mu.Lock()
 	sum := s.collector.Summary()
+	sum.WriteCache = s.writeCache
 	s.mu.Unlock()
 	if err := s.cleanup(); err != nil {
 		errs = append(errs, err.Error())

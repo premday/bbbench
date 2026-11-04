@@ -403,6 +403,8 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             padding: 0 5px; border-radius: 8px; border: 1px solid #cbd5e1;
             color: #64748b; background: #f8fafc; cursor: help;
         }
+        .none-note { display: flex; align-items: center; font-size: 11px; color: #92400e;
+                     background: #fef3c7; border-radius: 4px; padding: 6px 8px; height: auto; min-height: 60px; }
         .src-ftrace { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
         .card-subtitle {
             font-size: 10px; color: #64748b; margin-top: 2px;
@@ -486,13 +488,20 @@ __NAVBAR_HTML__
           sumR: d => d.read_lat_us||0,  sumW: d => d.write_lat_us||0  },
         // Device Flush latency, timed from kernel trace events (not fio).
         { key: 'flush', label: 'Flush latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
-          has:  d => !!(d.flush && d.flush.count > 0) || !!(d.ts_flush && d.ts_flush.length),
+          has:  d => !!d.flush || !!(d.ts_flush && d.ts_flush.length),
           sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns||0)/1000 : 0 },
     ];
     const SRC_TITLE = {
         fio:    'Measured by fio',
         ftrace: 'Measured from kernel ftrace events (device Flush commands), not by fio',
     };
+    // flushNone explains a Flush phase that was traced but saw no Flush.
+    function flushNone(d, metric) {
+        if (metric.key !== 'flush' || !d.flush || d.flush.count > 0) return '';
+        return 'ftrace saw 0 Flush commands' + (d.flush.write_cache === 'write through'
+            ? ': the kernel sends no Flush to this drive (write cache: write through, i.e. its volatile write cache is disabled or absent).'
+            : '.');
+    }
     function srcBadge(metric) {
         const b = document.createElement('span');
         b.className = 'src src-' + metric.source;
@@ -818,9 +827,17 @@ __NAVBAR_HTML__
         wrap.appendChild(canvas);
         card.appendChild(wrap);
 
-        const ts = d[metric.tsKey];
         const warnEl = document.createElement('div');
         card.appendChild(warnEl);
+        const why = flushNone(d, metric);
+        if (why) {
+            // Traced, but no Flush command reached the device: say why
+            // instead of drawing an empty chart.
+            wrap.removeChild(canvas);
+            wrap.className = 'chart-wrap none-note';
+            wrap.textContent = why;
+            return card;
+        }
         charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl);
 
         card.addEventListener('click', () => openModal(d, metric, yLow, yHigh));

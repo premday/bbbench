@@ -19,6 +19,10 @@ type Summary struct {
 	P99Ns  int64   `json:"p99_ns,omitempty"` // only when Exact
 	Exact  bool    `json:"exact"`            // per-Flush pairing is exact
 	Lost   int     `json:"lost,omitempty"`   // issued but never seen completing
+	// WriteCache is the kernel's view of the device cache while tracing
+	// ("write back" or "write through"; empty = unknown). A write-through
+	// device is sent no Flush commands at all, so zero Flushes is expected.
+	WriteCache string `json:"write_cache,omitempty"`
 }
 
 // Collector turns trace events into a Summary for one device.

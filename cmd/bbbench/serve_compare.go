@@ -179,6 +179,7 @@ __NAVBAR_HTML__
         // Device Flush latency, timed from kernel trace events (not fio).
         { key: 'flush', label: 'Flush latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
           has:  d => !!(d.flush && d.flush.count > 0) || !!(d.ts_flush && d.ts_flush.length),
+          none: d => !!d.flush && !(d.flush.count > 0),
           sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns || 0) / 1000 : 0 },
     ];
 
@@ -345,9 +346,15 @@ __NAVBAR_HTML__
         const all     = getEntries();
         const entries = metric.has ? all.filter(metric.has) : all;
         if (entries.length === 0) {
+            const zero = metric.none ? all.filter(metric.none) : [];
+            const wt = zero.some(d => d.flush.write_cache === 'write through');
             main.innerHTML = '<div class="cmp-placeholder">' + (all.length === 0
                 ? 'No entries match. Select at least one disk and one phase.'
-                : 'No ' + metric.source + ' data for the selected disks and phases.') + '</div>';
+                : zero.length
+                    ? 'ftrace saw 0 Flush commands for the selected disks and phases' + (wt
+                        ? ': the kernel sends no Flush to a write-through drive (volatile write cache disabled or absent).'
+                        : '.')
+                    : 'No ' + metric.source + ' data for the selected disks and phases.') + '</div>';
             return;
         }
 

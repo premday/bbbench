@@ -26,8 +26,11 @@ const logMagic = "# bbbench-flush-log v1"
 // what Summarize needs besides the samples.
 func WriteLog(w io.Writer, sum Summary, all []Sample) error {
 	bw := bufio.NewWriter(w)
-	fmt.Fprintf(bw, "%s source=%s exact=%t lost=%d\n# time_ms, latency_ns\n",
-		logMagic, sum.Source, sum.Exact, sum.Lost)
+	fmt.Fprintf(bw, "%s source=%s exact=%t lost=%d", logMagic, sum.Source, sum.Exact, sum.Lost)
+	if sum.WriteCache != "" {
+		fmt.Fprintf(bw, " write_cache=%s", strings.ReplaceAll(sum.WriteCache, " ", "_"))
+	}
+	fmt.Fprint(bw, "\n# time_ms, latency_ns\n")
 	for _, x := range all {
 		fmt.Fprintf(bw, "%.3f, %d\n", float64(x.TimeNs)/1e6, x.LatencyNs)
 	}
@@ -43,6 +46,7 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 		source string
 		exact  bool
 		lost   int
+		wcache string
 		all    []Sample
 		first  = true
 	)
@@ -65,6 +69,8 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 					exact = v == "true"
 				case "lost":
 					lost, _ = strconv.Atoi(v)
+				case "write_cache":
+					wcache = strings.ReplaceAll(v, "_", " ")
 				}
 			}
 			continue
@@ -89,7 +95,9 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 	if first {
 		return Summary{}, nil, fmt.Errorf("empty flush log")
 	}
-	return Summarize(source, exact, lost, all), all, nil
+	sum := Summarize(source, exact, lost, all)
+	sum.WriteCache = wcache
+	return sum, all, nil
 }
 
 // Bin is the Flush latency over one time window.

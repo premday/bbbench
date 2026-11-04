@@ -18,14 +18,18 @@
 
 - Release archives ship a `VERSION` file (version, commit, date, arch) and a generated `RELEASE_NOTES.md`; the GitHub release notes are generated from the commits since the previous tag (`scripts/changelog.sh`)
 - Web UI: "Flush latency" graph type (graphs and compare pages) drawn from the stored ftrace samples; every graph type shows a `fio` / `ftrace` source tag
+- Flush tracing records the device's `write_cache` state and says so when no Flush was seen on a write-through device; the UI shows "ftrace saw 0 Flush commands" instead of "no data"
 
 ### Changed
 
 - Flush-latency workloads run 5 minutes instead of 30 s, for enough points in the per-second Flush series
-
 - CI workflows use Node 24 action versions (`checkout@v7`, `setup-go@v7`, `upload-artifact@v7`) and run on `ubuntu-26.04` instead of `ubuntu-latest`
 - `make` builds with `CGO_ENABLED=0` instead of musl-gcc: the code is pure Go, so binaries stay static without a C toolchain
 - Generated fio log names and the fioplot `iodepth` reflect a workload's effective iodepth and `direct`/`buffered` mode (unchanged for existing workloads)
+
+### Fixed
+
+- Flush tracing stop no longer waits for an EOF that a live `trace_pipe` never sends (it timed out with "trace reader did not finish"); a stop marker ends the reader
 
 ## [0.1.0] - 2026-03-31
 

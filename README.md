@@ -283,6 +283,16 @@ depth 1 are far smaller. In the web UI the Flush latency is its own graph type
 latency, and every graph type carries a small `fio` or `ftrace` tag saying where
 the numbers come from.
 
+**Needs the drive's write cache on.** The kernel only sends Flush commands to a
+device whose volatile write cache is enabled; for a `write through` device
+(`/sys/block/<dev>/queue/write_cache`) fsync never reaches the drive, so zero
+Flushes are seen and the summary says so (`none seen (the kernel sends no Flush
+to a write-through device ...)`, and the UI explains the empty graph). The
+cache state is stored in the flush log header. To measure Flushes on an NVMe
+drive that has a volatile cache (`nvme id-ctrl /dev/nvme0 | grep vwc`), enable
+it first: `nvme set-feature /dev/nvme0 -f 6 -v 1`, then check that `write_cache`
+reads `write back`.
+
 **Cost and limits.**
 - Tracing uses a private ftrace instance (`instances/bbbench-flush-*`), so system
   tracing settings are untouched and drives can be traced in parallel. It is only

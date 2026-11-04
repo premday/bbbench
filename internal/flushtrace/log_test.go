@@ -73,3 +73,19 @@ func TestBins(t *testing.T) {
 		t.Errorf("%+v", b)
 	}
 }
+
+func TestLog_WriteCacheRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	sum := Summarize("nvme", true, 0, nil)
+	sum.WriteCache = "write through"
+	if err := WriteLog(&buf, sum, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, samples, err := ReadLog(&buf)
+	if err != nil || len(samples) != 0 {
+		t.Fatalf("ReadLog: %v, %d samples", err, len(samples))
+	}
+	if got.WriteCache != "write through" || got.Count != 0 {
+		t.Errorf("summary = %+v", got)
+	}
+}

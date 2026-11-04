@@ -224,6 +224,9 @@ func joinStrings(parts []string, sep string) string {
 // summary. Percentiles are shown only when the source paired events exactly.
 func formatFlushSummary(s *flushtrace.Summary) string {
 	if s.Count == 0 {
+		if s.WriteCache == "write through" {
+			return fmt.Sprintf("Flush (%s): none seen (the kernel sends no Flush to a write-through device: its volatile write cache is disabled or absent)", s.Source)
+		}
 		return fmt.Sprintf("Flush (%s): none seen", s.Source)
 	}
 	out := fmt.Sprintf("Flush (%s): avg %.1f us", s.Source, s.MeanNs/1000)
