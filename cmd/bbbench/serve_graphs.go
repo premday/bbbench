@@ -37,6 +37,9 @@ type DiskPhaseData struct {
 	// unavailable.
 	TSflush []TimePoint         `json:"ts_flush,omitempty"`
 	Flush   *flushtrace.Summary `json:"flush,omitempty"`
+	// RampSec is the length of fio's ramp-up at the start of the phase; fio's
+	// series (t) start after it, the Flush series (t) include it.
+	RampSec int `json:"ramp_sec,omitempty"`
 	// Skipped is why this phase was not run on the disk ("" = it ran).
 	Skipped string `json:"skipped,omitempty"`
 }
@@ -156,6 +159,7 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 					}
 				}
 				dp.TSflush = phase.FlushSeries[name]
+				dp.RampSec = phase.RampSec
 				dp.Flush = phase.FlushTrace[name]
 				out = append(out, *dp)
 			}
@@ -668,19 +672,55 @@ __NAVBAR_HTML__
 
     // Flush latency: one positive series (mean per second) from the stored
     // ftrace samples, or the phase mean as a single bar when no series exists.
+    // ── Shared time axis ──
+    // Every time-series chart counts seconds from the start of the phase and
+    // spans 0..X_MAX, so graphs line up. fio's own logs start when its
+    // ramp-up ends, so their points are shifted by the ramp; the Flush series
+    // already counts from the start of tracing. The ramp-up is shaded.
+    let X_MAX = 0;
+    function rampOf(d) {
+        return d.ramp_sec || (d.flush && d.flush.offset_ms ? d.flush.offset_ms / 1000 : 0);
+    }
+    const rampPlugin = {
+        id: 'rampZone',
+        beforeDatasetsDraw(chart, args, opts) {
+            if (!opts || !opts.sec) return;
+            const x = chart.scales.x, a = chart.chartArea;
+            const x0 = Math.max(a.left, x.getPixelForValue(0));
+            const x1 = Math.min(a.right, x.getPixelForValue(opts.sec));
+            if (x1 <= x0) return;
+            const c = chart.ctx;
+            c.save();
+            c.fillStyle = 'rgba(148,163,184,0.22)';
+            c.fillRect(x0, a.top, x1 - x0, a.bottom - a.top);
+            c.fillStyle = '#64748b';
+            c.font = '9px sans-serif';
+            c.textBaseline = 'top';
+            c.fillText('ramp-up', x0 + 3, a.top + 3);
+            c.restore();
+        }
+    };
+    function seriesMaxT(d, metric) {
+        const ts = d[metric.tsKey];
+        if (!ts || ts.length === 0) return 0;
+        const shift = metric.key === 'flush' ? 0 : rampOf(d);
+        return Math.max(...ts.map(p => p.t)) + shift;
+    }
+
     function makeFlushChart(canvas, d, metric, yHigh) {
         const ts = d[metric.tsKey];
         const color = 'rgba(124,58,237,0.9)';
         if (ts && ts.length > 0) {
             const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w}));
             return new Chart(canvas, {
-                type: 'line',
+                type: 'line', plugins: [rampPlugin],
                 data: { datasets: [{ label: 'Flush (ftrace)', data: pts,
                     borderColor: color, backgroundColor: 'rgba(124,58,237,0.07)',
                     fill: 'origin', tension: 0.2, pointRadius: 1.5, borderWidth: 1.5 }] },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
+                        rampZone: { sec: rampOf(d) },
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
@@ -689,7 +729,7 @@ __NAVBAR_HTML__
                                 ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
                     },
                     scales: {
-                        x: { type: 'linear',
+                        x: { type: 'linear', min: 0, max: X_MAX || undefined,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                              ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
                         y: { min: 0, max: yHigh,
@@ -728,8 +768,9 @@ __NAVBAR_HTML__
                     warnEl.textContent = '';
                 }
             }
-            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t), y:  p.r}));
-            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: -p.w}));
+            const ramp = rampOf(d);
+            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + ramp), y:  p.r}));
+            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + ramp), y: -p.w}));
             const datasets = [];
             if (readPts.length > 0) datasets.push({
                 label: 'Read',  data: readPts,
@@ -742,10 +783,11 @@ __NAVBAR_HTML__
                 fill: 'origin', tension: 0.2, pointRadius: 2, borderWidth: 1.5,
             });
             return new Chart(canvas, {
-                type: 'line', data: { datasets },
+                type: 'line', data: { datasets }, plugins: [rampPlugin],
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
+                        rampZone: { sec: ramp },
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
@@ -755,7 +797,7 @@ __NAVBAR_HTML__
                         }}
                     },
                     scales: {
-                        x: { type: 'linear',
+                        x: { type: 'linear', min: 0, max: X_MAX || undefined,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                              ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
                         y: { min: yLow, max: yHigh,
@@ -878,6 +920,10 @@ __NAVBAR_HTML__
             main.innerHTML = '<div class="placeholder">No data matches the current filters.</div>';
             return;
         }
+
+        // One time axis for every chart shown.
+        X_MAX = 0;
+        data.forEach(d => selMetrics.forEach(m => { X_MAX = Math.max(X_MAX, seriesMaxT(d, m)); }));
 
         selMetrics.forEach(metric => {
             // ── Metric-level foldable section ──

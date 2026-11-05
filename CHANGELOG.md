@@ -23,7 +23,7 @@
 - Flush tracing records the device's `write_cache` state and says so when no Flush was seen on a write-through device; the UI shows "ftrace saw 0 Flush commands" instead of "no data"
 - Phases that fsync on a write-through device (the kernel sends no Flush) still run, with a warning on the console, the status page and the run details (`warnings` in the run JSON); `--skip-write-through` skips them instead, with the reason shown in the web UI
 - With `--skip-write-through`, a drive that sits out a phase while others run it is shown as "Skipped this phase" with the reason on the status page, and the console names it as soon as the phase starts; a parallel phase that ran elsewhere ends "COMPLETE, skipped on N drive(s)"
-- The Flush series shares fio's time axis: it starts when fio's `ramp_time` ends (Flushes during the ramp are left out of the summary too, like fio's statistics) and each point is stamped at the end of its window, as fio does (`offset_ms` in the flush log header)
+- All time-series graphs share one x axis starting at 0 (the start of the phase) and spanning the longest series shown; fio's ramp-up (`ramp_time`, saved as `ramp_sec`) is shaded and fio's points start after it. The Flush series counts from the same start, stamps points at the end of their window like fio, and leaves ramp-up Flushes out of its summary like fio's statistics (`offset_ms` in the flush log header)
 - The Flush latency series uses fio's polling interval (`--log-avg-msec`, stored in the flush log header) as its averaging window, so it lines up with the fio series
 
 ### Changed

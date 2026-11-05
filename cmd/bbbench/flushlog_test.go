@@ -145,9 +145,9 @@ func TestFlushLog_SeriesFollowsFioPollingInterval(t *testing.T) {
 	}
 }
 
-// fio's logs and statistics start when its ramp_time ends: Flushes completed
-// during the ramp are left out of the summary and the series, and times are
-// counted from the end of the ramp.
+// fio's statistics start when its ramp_time ends: Flushes completed during the
+// ramp are left out of the summary. The series keeps them (graphs draw the
+// ramp-up zone) and counts from the start of tracing, like the ramp itself.
 func TestFlushLog_StartsAfterFioRamp(t *testing.T) {
 	all := []flushtrace.Sample{
 		{TimeNs: 2_000e6, LatencyNs: 900_000},  // during the 10 s ramp
@@ -164,7 +164,7 @@ func TestFlushLog_StartsAfterFioRamp(t *testing.T) {
 	if !ok || got.OffsetMs != 10_000 || got.Count != 2 || got.MaxNs != 300_000 {
 		t.Fatalf("summary %+v ok=%v, want 2 flushes after the ramp", got, ok)
 	}
-	if len(series) != 2 || series[0].T != 1 || series[0].W != 100 || series[1].T != 2 || series[1].W != 300 {
+	if len(series) != 3 || series[0].T != 3 || series[0].W != 900 || series[1].T != 11 || series[1].W != 100 || series[2].T != 12 || series[2].W != 300 {
 		t.Errorf("series = %+v", series)
 	}
 }

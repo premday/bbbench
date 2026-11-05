@@ -402,6 +402,9 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 			continue
 		}
 
+		if sec := phaseRampMs(workload, phase) / 1000; sec > phaseResult.RampSec {
+			phaseResult.RampSec = sec
+		}
 		for _, result := range ec.results[deviceName] {
 			if result.Phase == phaseIdx && result.Error == nil {
 				if result.Warning != "" {
