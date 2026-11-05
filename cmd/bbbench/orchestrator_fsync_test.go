@@ -105,7 +105,7 @@ func TestFormatFlushSummary_WriteThroughExplainsNoFlushes(t *testing.T) {
 
 // A phase that fsyncs runs on a write-through device with a warning (the
 // kernel sends it no Flush); with --skip-write-through it is refused.
-func TestFlushSkipReason(t *testing.T) {
+func TestFlushGate(t *testing.T) {
 	sys := t.TempDir()
 	set := func(dev, mode string) {
 		t.Helper()
@@ -124,36 +124,35 @@ func TestFlushSkipReason(t *testing.T) {
 	ec := &ExecutionCoordinator{sysBlock: sys}
 
 	// By default a write-through device runs the phase, with a warning.
-	if r := ec.flushSkipReason("nvme0n1", fsync); r != "" {
-		t.Errorf("write-through phase must run by default: %q", r)
+	warn, skip := ec.flushGate("nvme0n1", fsync)
+	if skip != "" || !strings.Contains(warn, "write through") {
+		t.Errorf("default gate: warn=%q skip=%q, want a warning only", warn, skip)
 	}
-	if w := ec.flushWarning("nvme0n1", fsync); !strings.Contains(w, "write through") {
-		t.Errorf("no warning for write-through fsync phase: %q", w)
-	}
-	w := ec.flushWarning("nvme0n1", fsync)
 	for _, want := range []string{"write_cache", "nvme set-feature /dev/nvme0 -f 6 -V 1", "get-feature /dev/nvme0", "vwc", "_flush.log", "never changes the drive"} {
-		if !strings.Contains(w, want) {
-			t.Errorf("warning lacks %q:\n%s", want, w)
+		if !strings.Contains(warn, want) {
+			t.Errorf("warning lacks %q:\n%s", want, warn)
 		}
 	}
 	if h := writeCacheHint("sdb"); !strings.Contains(h, "hdparm -W 1 /dev/sdb") || strings.Contains(h, "nvme") {
 		t.Errorf("sata hint = %q", h)
 	}
-	if w := ec.flushWarning("nvme1n1", fsync); w != "" {
-		t.Errorf("write-back device warned: %q", w)
+	if w, k := ec.flushGate("nvme1n1", fsync); w != "" || k != "" {
+		t.Errorf("write-back device: warn=%q skip=%q", w, k)
 	}
+	if w, k := ec.flushGate("nvme0n1", plain); w != "" || k != "" {
+		t.Errorf("non-fsync phase on write-through: warn=%q skip=%q", w, k)
+	}
+	if w, k := ec.flushGate("sdz", fsync); w != "" || k != "" {
+		t.Errorf("unknown cache mode: warn=%q skip=%q", w, k)
+	}
+	// --skip-write-through turns the warning into a skip (and only that).
 	ec.skipWriteThrough = true
-	if r := ec.flushSkipReason("nvme0n1", fsync); !strings.Contains(r, "--skip-write-through") {
-		t.Errorf("write-through fsync phase not skipped with the flag: %q", r)
+	warn, skip = ec.flushGate("nvme0n1", fsync)
+	if warn != "" || !strings.Contains(skip, "--skip-write-through") {
+		t.Errorf("with the flag: warn=%q skip=%q", warn, skip)
 	}
-	if r := ec.flushSkipReason("nvme0n1", plain); r != "" {
-		t.Errorf("non-fsync phase must run on write-through: %q", r)
-	}
-	if r := ec.flushSkipReason("nvme1n1", fsync); r != "" {
-		t.Errorf("write-back device must run: %q", r)
-	}
-	if r := ec.flushSkipReason("sdz", fsync); r != "" {
-		t.Errorf("unknown cache mode must run: %q", r)
+	if w, k := ec.flushGate("nvme1n1", fsync); w != "" || k != "" {
+		t.Errorf("write-back device with the flag: warn=%q skip=%q", w, k)
 	}
 }
 

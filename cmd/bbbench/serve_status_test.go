@@ -300,14 +300,14 @@ func findSubstring(s, substr string) bool {
 	return false
 }
 
-func TestMarkDriveSkipped(t *testing.T) {
+func TestMarkDrive(t *testing.T) {
 	ResetStatus()
 	defer ResetStatus()
 	UpdateStatus(func(s *BenchmarkStatus) {
 		s.Drives = []DriveStatus{{Name: "nvme0n1", Status: "running"}, {Name: "nvme1n1", Status: "running"}}
 	})
 
-	markDriveSkipped("nvme1n1", "write through")
+	markDrive("nvme1n1", func(d *DriveStatus) { d.Status, d.Skipped = "skipped", "write through" })
 
 	got := GetStatus().Drives
 	if got[0].Status != "running" || got[0].Skipped != "" {

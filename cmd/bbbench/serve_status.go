@@ -61,6 +61,9 @@ type DriveStatus struct {
 	LastCompleted string `json:"last_completed,omitempty"`
 }
 
+// clearNotes drops the per-phase skip reason and warning (a new phase starts).
+func (d *DriveStatus) clearNotes() { d.Skipped, d.Warning = "", "" }
+
 // globalStatus is the singleton status tracker
 var (
 	globalStatus   = &BenchmarkStatus{LastUpdate: time.Now()}

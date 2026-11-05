@@ -17,16 +17,37 @@ func (ec *ExecutionCoordinator) writeThrough(device string, phase []FioJob) bool
 	return phaseHasFsync(phase) && flushtrace.WriteCache(ec.sysBlock, device) == "write through"
 }
 
-// flushWarning is the caveat shown for a Flush-latency phase on a write-through
-// device, or "" when there is none. The phase still runs. It is several lines:
-// what is wrong, how to check, how to fix, where the result shows up.
-func (ec *ExecutionCoordinator) flushWarning(device string, phase []FioJob) string {
+// flushGate decides what a phase that fsyncs does on a device: with a skip
+// text it is not run (--skip-write-through), with a warn text it runs and the
+// text is shown as a caveat; both empty means nothing to say. A skip wins.
+func (ec *ExecutionCoordinator) flushGate(device string, phase []FioJob) (warn, skip string) {
 	if !ec.writeThrough(device, phase) {
-		return ""
+		return "", ""
+	}
+	if ec.skipWriteThrough {
+		return "", fmt.Sprintf("%s is write through (volatile write cache off or absent): "+
+			"the kernel sends it no Flush, so this Flush-latency test would measure "+
+			"nothing; skipped because of --skip-write-through. Enable the drive's "+
+			"write cache and run again", device)
 	}
 	return fmt.Sprintf("%s is write through (volatile write cache off or absent): "+
 		"the kernel sends it no Flush, so there is no device Flush latency to trace "+
-		"(fio's fsync latency is still measured).\n%s", device, writeCacheHint(device))
+		"(fio's fsync latency is still measured).\n%s", device, writeCacheHint(device)), ""
+}
+
+// noteFlushGate marks the drive on the status page and prints a short marker
+// on the open "Phase N/M (...): " line when the gate has something to say.
+// The full warning is printed once the phase ends (printPhaseWarnings).
+func (ec *ExecutionCoordinator) noteFlushGate(device string, phase []FioJob) {
+	warn, skip := ec.flushGate(device, phase)
+	switch {
+	case skip != "":
+		fmt.Printf("[%s skipped: write through] ", device)
+		markDrive(device, func(d *DriveStatus) { d.Status, d.Skipped = "skipped", skip })
+	case warn != "":
+		fmt.Printf("[%s: write through, see warning below] ", device)
+		markDrive(device, func(d *DriveStatus) { d.Warning = warn })
+	}
 }
 
 var nvmeNamespaceRe = regexp.MustCompile(`^(nvme\d+)n\d+`)
@@ -51,44 +72,36 @@ func writeCacheHint(device string) string {
 	return sb.String()
 }
 
-// flushSkipReason returns why the phase is not run on the device with
-// --skip-write-through, or "" when it runs (the default).
-func (ec *ExecutionCoordinator) flushSkipReason(device string, phase []FioJob) string {
-	if !ec.skipWriteThrough || !ec.writeThrough(device, phase) {
-		return ""
+// eachPhaseResult calls fn for the result of every drive in the phase.
+func (ec *ExecutionCoordinator) eachPhaseResult(phaseIdx int, fn func(*FioResult)) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	for _, drive := range ec.drives {
+		for _, r := range ec.results[drive.Device.Name] {
+			if r.Phase == phaseIdx {
+				fn(r)
+			}
+		}
 	}
-	return fmt.Sprintf("%s is write through (volatile write cache off or absent): "+
-		"the kernel sends it no Flush, so this Flush-latency test would measure "+
-		"nothing; skipped because of --skip-write-through. Enable the drive's "+
-		"write cache and run again", device)
 }
 
 // skippedInPhase lists the skip reasons of the drives that did not run the phase.
 func (ec *ExecutionCoordinator) skippedInPhase(phaseIdx int) []string {
-	ec.mu.Lock()
-	defer ec.mu.Unlock()
 	var out []string
-	for _, drive := range ec.drives {
-		for _, r := range ec.results[drive.Device.Name] {
-			if r.Phase == phaseIdx && r.Skipped != "" {
-				out = append(out, r.Skipped)
-			}
+	ec.eachPhaseResult(phaseIdx, func(r *FioResult) {
+		if r.Skipped != "" {
+			out = append(out, r.Skipped)
 		}
-	}
+	})
 	return out
 }
 
 // printPhaseWarnings prints the warnings of the drives that ran the phase,
 // each with its fix hints, once the phase has ended.
 func (ec *ExecutionCoordinator) printPhaseWarnings(phaseIdx int, indent string) {
-	ec.mu.Lock()
-	defer ec.mu.Unlock()
-	for _, drive := range ec.drives {
-		for _, r := range ec.results[drive.Device.Name] {
-			if r.Phase != phaseIdx || r.Warning == "" {
-				continue
-			}
+	ec.eachPhaseResult(phaseIdx, func(r *FioResult) {
+		if r.Warning != "" {
 			fmt.Printf("%sWARNING: %s\n", indent, strings.ReplaceAll(r.Warning, "\n", "\n"+indent+"  "))
 		}
-	}
+	})
 }
