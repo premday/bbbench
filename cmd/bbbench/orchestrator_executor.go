@@ -851,7 +851,9 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 
 	// Refuse a test that cannot measure anything on this device.
 	if reason := ec.flushSkipReason(drive.Device.Name, phase); reason != "" {
-		logger.Warn("skipping phase", "device", drive.Device.Name, "phase", phaseIdx, "reason", reason)
+		// Debug only: the reason is printed as SKIPPED once the phase ends, and a
+		// warning here would land in the middle of the "Phase N/M (...): " line.
+		logger.Debug("skipping phase", "device", drive.Device.Name, "phase", phaseIdx, "reason", reason)
 		result.Skipped = reason
 		signalReady()
 		result.StartTime = time.Now()
