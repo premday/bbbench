@@ -243,7 +243,9 @@ the orchestrator also times the device's own Flush commands and prints, for
 example, `Flush (nvme): avg 194.8 us, p99 210.0 us, max 480.0 us (4012 flushes)`.
 The result is saved in the run's JSON summary under each phase's `flush_trace`.
 It needs root and a mounted tracefs; if tracing is unavailable the phase still
-runs and a warning is logged. Use `--no-flush-trace` to turn it off.
+runs and a warning is logged. Use `--no-flush-trace` to turn it off. For a
+diagram of the Linux stack and exactly what is timed, see
+[documentation/flush-latency.md](documentation/flush-latency.md).
 
 **Why it exists.** fio reports how long `fsync()` took. That covers the
 filesystem, the block layer's flush handling, the driver and the drive, so it
