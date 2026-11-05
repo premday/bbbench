@@ -35,6 +35,8 @@ type PhaseResult struct {
 	FlushTrace map[string]*flushtrace.Summary `json:"flush_trace,omitempty"`
 	// Skipped says why the phase was not run, per device (not an error).
 	Skipped map[string]string `json:"skipped,omitempty"`
+	// Warnings are caveats about a phase that did run, per device.
+	Warnings map[string]string `json:"warnings,omitempty"`
 	// FlushSeries is the Flush latency over time (mean µs per second, W
 	// column) per device, rebuilt from the stored <prefix>_flush.log.
 	FlushSeries map[string][]TimePoint `json:"flush_series,omitempty"`

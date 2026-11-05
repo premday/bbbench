@@ -39,8 +39,8 @@ type ExecutionCoordinator struct {
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
 	flushTrace  bool             // trace device Flush latency during phases that fsync
 
-	allowWriteThrough bool   // run fsync phases even on write-through devices
-	sysBlock          string // sysfs block dir override for tests ("" = /sys/block)
+	skipWriteThrough bool   // do not run fsync phases on write-through devices (default: warn)
+	sysBlock         string // sysfs block dir override for tests ("" = /sys/block)
 }
 
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
@@ -73,6 +73,8 @@ type FioResult struct {
 	FlushTrace *flushtrace.Summary
 	// Skipped is why the phase was not run on this device (not an error).
 	Skipped string
+	// Warning is a caveat about a phase that did run (e.g. no Flush to trace).
+	Warning string
 }
 
 // checkFioInstalled verifies that the fio binary is available in PATH.
@@ -402,6 +404,12 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 
 		for _, result := range ec.results[deviceName] {
 			if result.Phase == phaseIdx && result.Error == nil {
+				if result.Warning != "" {
+					if phaseResult.Warnings == nil {
+						phaseResult.Warnings = make(map[string]string)
+					}
+					phaseResult.Warnings[deviceName] = result.Warning
+				}
 				if result.Skipped != "" {
 					if phaseResult.Skipped == nil {
 						phaseResult.Skipped = make(map[string]string)
@@ -549,6 +557,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			for i := range s.Drives {
 				s.Drives[i].Status = "running"
 				s.Drives[i].Skipped = ""
+				s.Drives[i].Warning = ""
 				s.Drives[i].CurrentPhase = phaseIdx + 1
 				s.Drives[i].PhaseName = phaseName
 				s.Drives[i].PhaseStart = time.Now()
@@ -588,6 +597,9 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			if reason := ec.flushSkipReason(drive.Device.Name, workload.Phases[phaseIdx]); reason != "" {
 				fmt.Printf("[%s skipped: write through] ", drive.Device.Name)
 				markDriveSkipped(drive.Device.Name, reason)
+			} else if warn := ec.flushWarning(drive.Device.Name, workload.Phases[phaseIdx]); warn != "" {
+				fmt.Printf("[%s: write through, no Flush to trace] ", drive.Device.Name)
+				markDriveWarning(drive.Device.Name, warn)
 			}
 
 			wg.Add(1)
@@ -773,11 +785,16 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 						s.Drives[j].PhaseStart = time.Now()
 						s.Drives[j].Status = "running"
 						s.Drives[j].Skipped = ""
+						s.Drives[j].Warning = ""
 						break
 					}
 				}
 			})
 
+			if warn := ec.flushWarning(drive.Device.Name, phase); warn != "" && ec.flushSkipReason(drive.Device.Name, phase) == "" {
+				fmt.Printf("[write through, no Flush to trace] ")
+				markDriveWarning(drive.Device.Name, warn)
+			}
 			result := ec.executePhase(drive, phase, phaseIdx, nil, nil)
 
 			ec.mu.Lock()
@@ -861,11 +878,12 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		}
 	}
 
-	// Refuse a test that cannot measure anything on this device.
+	// With --skip-write-through, refuse a test that cannot measure a Flush.
+	// Otherwise it runs and carries a warning (printed by the caller, not
+	// logged here: a log line would land inside the "Phase N/M (...): " line).
+	result.Warning = ec.flushWarning(drive.Device.Name, phase)
 	if reason := ec.flushSkipReason(drive.Device.Name, phase); reason != "" {
-		// Debug only: the reason is printed as SKIPPED once the phase ends, and a
-		// warning here would land in the middle of the "Phase N/M (...): " line.
-		logger.Debug("skipping phase", "device", drive.Device.Name, "phase", phaseIdx, "reason", reason)
+		result.Warning = ""
 		result.Skipped = reason
 		signalReady()
 		result.StartTime = time.Now()
@@ -1016,6 +1034,19 @@ func markDriveSkipped(device, reason string) {
 			if s.Drives[i].Name == device {
 				s.Drives[i].Status = "skipped"
 				s.Drives[i].Skipped = reason
+				return
+			}
+		}
+	})
+}
+
+// markDriveWarning shows a caveat on the status page for a drive that does run
+// the current phase.
+func markDriveWarning(device, warning string) {
+	UpdateStatus(func(s *BenchmarkStatus) {
+		for i := range s.Drives {
+			if s.Drives[i].Name == device {
+				s.Drives[i].Warning = warning
 				return
 			}
 		}

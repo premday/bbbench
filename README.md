@@ -121,7 +121,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--resume` — resume a previously interrupted run (skips completed phases)
 - `--dry-run` — show what would run without executing fio
 - `--verbose` — show fio commands and debug output
-- `--allow-write-through` — run fsync (Flush-latency) phases even on write-through devices, which are otherwise skipped
+- `--skip-write-through` — do not run fsync (Flush-latency) phases on write-through devices (by default they run, with a warning)
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--config` — path to config file
 - `--dist` — override dist path
@@ -295,14 +295,16 @@ drive that has a volatile cache (`nvme id-ctrl /dev/nvme0 | grep vwc`), enable
 it first: `nvme set-feature /dev/nvme0 -f 6 -v 1`, then check that `write_cache`
 reads `write back`.
 
-**Refused on write-through devices.** Before a phase that fsyncs (the flush
-workloads), the orchestrator reads the device's cache mode and, for `write
-through`, does not run it: the phase is reported as `SKIPPED` with the reason
-in the run output, saved with the run (`skipped` per phase and device), and
-shown in the web UI (graphs and compare pages, run details) instead of empty
-graphs. It is not counted as completed, so `--resume` runs it once the cache is
-enabled. `--allow-write-through` runs such phases anyway (fio's fsync time is
-still measured; there is no Flush to trace).
+**Write-through devices.** Before a phase that fsyncs (the flush workloads),
+the orchestrator reads the device's cache mode. For `write through` the kernel
+sends no Flush, so there is no device Flush latency to trace (fio's own fsync
+latency is still measured). The phase still runs, with a warning: printed
+when the phase starts, shown on the status page, saved with the run
+(`warnings` per phase and device) and shown in the run details; the Flush graph
+says "ftrace saw 0 Flush commands" and why. `--skip-write-through` refuses such
+phases instead: they are reported as `SKIPPED` with the reason (output, saved
+run, web UI) and not counted as completed, so `--resume` runs them once the
+cache is enabled.
 
 **Cost and limits.**
 - Tracing uses a private ftrace instance (`instances/bbbench-flush-*`), so system

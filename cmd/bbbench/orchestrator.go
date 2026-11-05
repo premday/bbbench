@@ -71,7 +71,7 @@ func runOrchestrator(args []string) error {
 	filterModel := fs.String("filter-model", "", "filter drives by model (case-insensitive substring match)")
 	filterMinCap := fs.Uint64("filter-min-capacity", 0, "filter drives by minimum capacity in GB")
 	filterMaxCap := fs.Uint64("filter-max-capacity", 0, "filter drives by maximum capacity in GB (0 = no limit)")
-	allowWriteThrough := fs.Bool("allow-write-through", false, "run fsync (Flush-latency) phases even on write-through devices, where the kernel sends no Flush")
+	skipWriteThrough := fs.Bool("skip-write-through", false, "do not run fsync (Flush-latency) phases on write-through devices, where the kernel sends no Flush (default: run them and warn)")
 	noFlushTrace := fs.Bool("no-flush-trace", false, "do not trace device Flush latency (kernel trace events) during fsync phases")
 	logAvgMsec := fs.Int("log-avg-msec", 1000, "fio log averaging interval in milliseconds (--log_avg_msec)")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
@@ -267,7 +267,7 @@ func runOrchestrator(args []string) error {
 	coordinator.verbose = *verbose
 	coordinator.logAvgMsec = *logAvgMsec
 	coordinator.flushTrace = !*noFlushTrace
-	coordinator.allowWriteThrough = *allowWriteThrough
+	coordinator.skipWriteThrough = *skipWriteThrough
 
 	if *dryRun {
 		// In dry-run mode, just show what would be executed

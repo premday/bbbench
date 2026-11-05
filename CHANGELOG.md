@@ -19,8 +19,8 @@
 - Release archives ship a `VERSION` file (version, commit, date, arch) and a generated `RELEASE_NOTES.md`; the GitHub release notes are generated from the commits since the previous tag (`scripts/changelog.sh`)
 - Web UI: "Flush latency" graph type (graphs and compare pages) drawn from the stored ftrace samples; every graph type shows a `fio` / `ftrace` source tag
 - Flush tracing records the device's `write_cache` state and says so when no Flush was seen on a write-through device; the UI shows "ftrace saw 0 Flush commands" instead of "no data"
-- Phases that fsync are skipped on write-through devices, where the kernel sends no Flush and the test would measure nothing; the reason is printed, saved with the run (`skipped`) and shown in the web UI; `--allow-write-through` runs them anyway
-- A drive that sits out a phase while others run it is shown as "Skipped this phase" with the reason on the status page, and the console names it as soon as the phase starts; a parallel phase that ran elsewhere ends "COMPLETE, skipped on N drive(s)" instead of "SKIPPED"
+- Phases that fsync on a write-through device (the kernel sends no Flush) still run, with a warning on the console, the status page and the run details (`warnings` in the run JSON); `--skip-write-through` skips them instead, with the reason shown in the web UI
+- With `--skip-write-through`, a drive that sits out a phase while others run it is shown as "Skipped this phase" with the reason on the status page, and the console names it as soon as the phase starts; a parallel phase that ran elsewhere ends "COMPLETE, skipped on N drive(s)"
 - The Flush latency series uses fio's polling interval (`--log-avg-msec`, stored in the flush log header) as its averaging window, so it lines up with the fio series
 
 ### Changed

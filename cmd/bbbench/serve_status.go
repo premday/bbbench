@@ -55,7 +55,9 @@ type DriveStatus struct {
 	Status       string    `json:"status"` // "running", "complete", "error", "pending"
 	ErrorMessage string    `json:"error,omitempty"`
 	// Skipped is why the drive sits out the current phase (Status "skipped").
-	Skipped       string `json:"skipped,omitempty"`
+	Skipped string `json:"skipped,omitempty"`
+	// Warning is a caveat about the phase the drive is running.
+	Warning       string `json:"warning,omitempty"`
 	LastCompleted string `json:"last_completed,omitempty"`
 }
 
@@ -485,6 +487,9 @@ __NAVBAR_HTML__
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
                         html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';
+                    }
+                    if (drive.warning) {
+                        html += '<div class="drive-detail" style="color: #b26a00;">&#9888; ' + esc(drive.warning) + '</div>';
                     }
                     if (drive.skipped) {
                         html += '<div class="drive-detail" style="color: #b26a00;">' + esc(drive.skipped) + '</div>';

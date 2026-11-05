@@ -103,8 +103,8 @@ func TestFormatFlushSummary_WriteThroughExplainsNoFlushes(t *testing.T) {
 	}
 }
 
-// A phase that fsyncs is refused on a write-through device (the kernel sends
-// it no Flush, so there would be nothing to measure) and runs otherwise.
+// A phase that fsyncs runs on a write-through device with a warning (the
+// kernel sends it no Flush); with --skip-write-through it is refused.
 func TestFlushSkipReason(t *testing.T) {
 	sys := t.TempDir()
 	set := func(dev, mode string) {
@@ -123,8 +123,19 @@ func TestFlushSkipReason(t *testing.T) {
 	plain := []FioJob{{Name: "j", Section: "[j]\nrw=randwrite\n"}}
 	ec := &ExecutionCoordinator{sysBlock: sys}
 
-	if r := ec.flushSkipReason("nvme0n1", fsync); !strings.Contains(r, "write through") {
-		t.Errorf("write-through fsync phase not refused: %q", r)
+	// By default a write-through device runs the phase, with a warning.
+	if r := ec.flushSkipReason("nvme0n1", fsync); r != "" {
+		t.Errorf("write-through phase must run by default: %q", r)
+	}
+	if w := ec.flushWarning("nvme0n1", fsync); !strings.Contains(w, "write through") {
+		t.Errorf("no warning for write-through fsync phase: %q", w)
+	}
+	if w := ec.flushWarning("nvme1n1", fsync); w != "" {
+		t.Errorf("write-back device warned: %q", w)
+	}
+	ec.skipWriteThrough = true
+	if r := ec.flushSkipReason("nvme0n1", fsync); !strings.Contains(r, "--skip-write-through") {
+		t.Errorf("write-through fsync phase not skipped with the flag: %q", r)
 	}
 	if r := ec.flushSkipReason("nvme0n1", plain); r != "" {
 		t.Errorf("non-fsync phase must run on write-through: %q", r)
@@ -135,13 +146,9 @@ func TestFlushSkipReason(t *testing.T) {
 	if r := ec.flushSkipReason("sdz", fsync); r != "" {
 		t.Errorf("unknown cache mode must run: %q", r)
 	}
-	ec.allowWriteThrough = true
-	if r := ec.flushSkipReason("nvme0n1", fsync); r != "" {
-		t.Errorf("--allow-write-through must run: %q", r)
-	}
 }
 
-// A skipped phase is reported (not an error, not completed, fio not started)
+// With --skip-write-through a skipped phase is reported (not an error, not completed, fio not started)
 // and reaches the graph data with its reason.
 func TestSkippedPhase_ResultAndGraphData(t *testing.T) {
 	sys := t.TempDir()
@@ -152,11 +159,12 @@ func TestSkippedPhase_ResultAndGraphData(t *testing.T) {
 	drive := DriveInfo{Device: blockdev.Device{Name: "nvme0n1", Path: "/dev/nvme0n1"}}
 	phase := []FioJob{{Name: "ssd_fsync", Section: "[ssd_fsync]\nfsync=1\n"}}
 	ec := &ExecutionCoordinator{
-		drives:     []DriveInfo{drive},
-		sysBlock:   sys,
-		workloads:  map[string]*FioWorkload{"nvme0n1": {Phases: [][]FioJob{phase}}},
-		results:    map[string][]*FioResult{},
-		liveResult: &BenchmarkResult{ID: "x", Drives: []DriveInfo{drive}},
+		drives:           []DriveInfo{drive},
+		sysBlock:         sys,
+		skipWriteThrough: true,
+		workloads:        map[string]*FioWorkload{"nvme0n1": {Phases: [][]FioJob{phase}}},
+		results:          map[string][]*FioResult{},
+		liveResult:       &BenchmarkResult{ID: "x", Drives: []DriveInfo{drive}},
 	}
 	res := ec.executePhase(drive, phase, 0, nil, nil)
 	if res.Error != nil || res.Skipped == "" || res.OutputPath != "" {
