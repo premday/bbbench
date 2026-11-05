@@ -345,6 +345,13 @@ __NAVBAR_HTML__
     function rampOf(d) {
         return d.ramp_sec || (d.flush && d.flush.offset_ms ? d.flush.offset_ms / 1000 : 0);
     }
+    // fio stamps a log point at the END of its averaging window; moving it back
+    // one window (to the window start) puts the first point right where the
+    // ramp-up ends instead of one polling interval later. Flush points are
+    // already window starts.
+    function fioShift(d) {
+        return rampOf(d) - (d.log_avg_msec || 0) / 1000;
+    }
     const rampPlugin = {
         id: 'rampZone',
         beforeDatasetsDraw(chart, args, opts) {
@@ -367,7 +374,7 @@ __NAVBAR_HTML__
     function seriesMaxT(d, metric) {
         const ts = d[metric.tsKey];
         if (!ts || ts.length === 0) return 0;
-        const shift = metric.key === 'flush' ? 0 : rampOf(d);
+        const shift = metric.key === 'flush' ? 0 : fioShift(d);
         return Math.max(...ts.map(p => p.t)) + shift;
     }
 
@@ -447,7 +454,7 @@ __NAVBAR_HTML__
                 const ts = d[metric.tsKey];
                 const [solid, fill] = PALETTE[i % PALETTE.length];
                 const lbl = seriesLabel(d, nDisks, nPhases);
-                const shift = metric.key === 'flush' ? 0 : rampOf(d);
+                const shift = metric.key === 'flush' ? 0 : fioShift(d);
                 rampMax = Math.max(rampMax, rampOf(d));
                 if (ts && ts.length > 0) {
                     if (doRead) {

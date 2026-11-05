@@ -73,9 +73,10 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
   p99, max) and the graph series are rebuilt from these samples when a run is
   loaded. The series is averaged over fio's polling interval
   (`--log-avg-msec`, stored in the log header) and lines up with the fio
-  graphs: time 0 is when the phase starts, a point is stamped at the *end* of
-  its window as fio does (with `--log-avg-msec 30000` the first point is at
-  30 s), and the **ramp-up** (fio's `ramp_time`, stored as `offset_ms`) is shaded
+  graphs: time 0 is when the phase starts, a point is stamped at the *start* of
+  its window (fio stamps the end; the graphs move its points back one window so
+  the first point sits where the ramp-up ends, not one polling interval later),
+  and the **ramp-up** (fio's `ramp_time`, stored as `offset_ms`) is shaded
   on the graph. Flushes during the ramp are drawn but left out of the summary,
   as fio leaves the ramp out of its statistics.
 - **Other devices:** non-NVMe devices use `block_rq_issue` / `block_rq_complete`

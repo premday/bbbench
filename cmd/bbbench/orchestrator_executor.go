@@ -389,6 +389,10 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 	phaseResult := PhaseResult{
 		PhaseNumber: phaseIdx + 1,
 		FioFiles:    make(map[string]string),
+		LogAvgMsec:  ec.logAvgMsec,
+	}
+	if phaseResult.LogAvgMsec <= 0 {
+		phaseResult.LogAvgMsec = 1000
 	}
 
 	for _, drive := range ec.drives {

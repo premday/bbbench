@@ -50,10 +50,11 @@ func loadFlushLog(logPrefix string) (sum *flushtrace.Summary, series []TimePoint
 	}
 	// The series counts from the start of tracing (about when fio is
 	// launched, so the ramp-up is included and drawn as such); a point is
-	// stamped at the END of its window, as fio stamps its own. The summary
+	// stamped at the START of its window, like the fio points (the graph page
+	// moves fio's end-of-window stamps back by one window). The summary
 	// leaves the ramp out (ReadLog), like fio's statistics.
 	for _, b := range flushtrace.Bins(samples, int64(windowMs)*1_000_000) {
-		series = append(series, TimePoint{T: b.TSec + float64(windowMs)/1000, W: b.MeanNs / 1000})
+		series = append(series, TimePoint{T: b.TSec, W: b.MeanNs / 1000})
 	}
 	return &s, series, true
 }

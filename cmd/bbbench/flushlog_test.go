@@ -35,9 +35,9 @@ func TestFlushLog_RoundTrip(t *testing.T) {
 	if !ok || *got != sum {
 		t.Fatalf("loaded %+v ok=%v, want %+v", got, ok, sum)
 	}
-	// 1s windows, stamped at their end like fio's logs: [0,1s) mean 200us at
-	// t=1, [1s,2s) mean 1000us at t=2 (values in µs).
-	if len(series) != 2 || series[0].T != 1 || series[0].W != 200 || series[1].T != 2 || series[1].W != 1000 {
+	// 1s windows, stamped at their start: [0,1s) mean 200us at t=0, [1s,2s)
+	// mean 1000us at t=1 (values in µs).
+	if len(series) != 2 || series[0].T != 0 || series[0].W != 200 || series[1].T != 1 || series[1].W != 1000 {
 		t.Errorf("series = %+v", series)
 	}
 }
@@ -129,10 +129,9 @@ func TestFlushLog_SeriesFollowsFioPollingInterval(t *testing.T) {
 		return prefix
 	}
 
-	// log_avg_msec=30000: two points, stamped at the end of their windows
-	// (30 s and 60 s), as fio stamps its own.
+	// log_avg_msec=30000: two points, at the start of their windows (0 s, 30 s).
 	got, series, _ := loadFlushLog(write(30000))
-	if got.AvgMsec != 30000 || len(series) != 2 || series[0].T != 30 || series[0].W != 200 || series[1].T != 60 || series[1].W != 500 {
+	if got.AvgMsec != 30000 || len(series) != 2 || series[0].T != 0 || series[0].W != 200 || series[1].T != 30 || series[1].W != 500 {
 		t.Errorf("30 s: summary %+v series %+v", got, series)
 	}
 	// log_avg_msec=1000: one point per second that has Flushes.
@@ -164,7 +163,7 @@ func TestFlushLog_StartsAfterFioRamp(t *testing.T) {
 	if !ok || got.OffsetMs != 10_000 || got.Count != 2 || got.MaxNs != 300_000 {
 		t.Fatalf("summary %+v ok=%v, want 2 flushes after the ramp", got, ok)
 	}
-	if len(series) != 3 || series[0].T != 3 || series[0].W != 900 || series[1].T != 11 || series[1].W != 100 || series[2].T != 12 || series[2].W != 300 {
+	if len(series) != 3 || series[0].T != 2 || series[0].W != 900 || series[1].T != 10 || series[1].W != 100 || series[2].T != 11 || series[2].W != 300 {
 		t.Errorf("series = %+v", series)
 	}
 }

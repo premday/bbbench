@@ -37,6 +37,8 @@ type PhaseResult struct {
 	Skipped map[string]string `json:"skipped,omitempty"`
 	// RampSec is the fio ramp_time of the phase: fio logs start when it ends.
 	RampSec int `json:"ramp_sec,omitempty"`
+	// LogAvgMsec is the fio polling interval (--log-avg-msec) of the phase.
+	LogAvgMsec int `json:"log_avg_msec,omitempty"`
 	// Warnings are caveats about a phase that did run, per device.
 	Warnings map[string]string `json:"warnings,omitempty"`
 	// FlushSeries is the Flush latency over time (mean µs per second, W

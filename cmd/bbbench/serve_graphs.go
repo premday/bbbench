@@ -40,6 +40,8 @@ type DiskPhaseData struct {
 	// RampSec is the length of fio's ramp-up at the start of the phase; fio's
 	// series (t) start after it, the Flush series (t) include it.
 	RampSec int `json:"ramp_sec,omitempty"`
+	// LogAvgMsec is the width of one fio log point (its polling interval).
+	LogAvgMsec int `json:"log_avg_msec,omitempty"`
 	// Skipped is why this phase was not run on the disk ("" = it ran).
 	Skipped string `json:"skipped,omitempty"`
 }
@@ -160,6 +162,7 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 				}
 				dp.TSflush = phase.FlushSeries[name]
 				dp.RampSec = phase.RampSec
+				dp.LogAvgMsec = phase.LogAvgMsec
 				dp.Flush = phase.FlushTrace[name]
 				out = append(out, *dp)
 			}
@@ -681,6 +684,13 @@ __NAVBAR_HTML__
     function rampOf(d) {
         return d.ramp_sec || (d.flush && d.flush.offset_ms ? d.flush.offset_ms / 1000 : 0);
     }
+    // fio stamps a log point at the END of its averaging window; moving it back
+    // one window (to the window start) puts the first point right where the
+    // ramp-up ends instead of one polling interval later. Flush points are
+    // already window starts.
+    function fioShift(d) {
+        return rampOf(d) - (d.log_avg_msec || 0) / 1000;
+    }
     const rampPlugin = {
         id: 'rampZone',
         beforeDatasetsDraw(chart, args, opts) {
@@ -703,7 +713,7 @@ __NAVBAR_HTML__
     function seriesMaxT(d, metric) {
         const ts = d[metric.tsKey];
         if (!ts || ts.length === 0) return 0;
-        const shift = metric.key === 'flush' ? 0 : rampOf(d);
+        const shift = metric.key === 'flush' ? 0 : fioShift(d);
         return Math.max(...ts.map(p => p.t)) + shift;
     }
 
@@ -724,7 +734,7 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
-                            title: items => 'at ' + items[0].raw.x + ' s',
+                            title: items => 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
                             label: ctx => 'Flush latency: ' + ctx.raw.y.toFixed(1) + ' ' + metric.unit +
                                 ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
                     },
@@ -768,9 +778,9 @@ __NAVBAR_HTML__
                     warnEl.textContent = '';
                 }
             }
-            const ramp = rampOf(d);
-            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + ramp), y:  p.r}));
-            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + ramp), y: -p.w}));
+            const ramp = rampOf(d), shift = fioShift(d);
+            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));
+            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));
             const datasets = [];
             if (readPts.length > 0) datasets.push({
                 label: 'Read',  data: readPts,
@@ -791,7 +801,7 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
-                            title: items => items[0].raw.x + ' s',
+                            title: items => d.log_avg_msec ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + d.log_avg_msec / 1000) + ' s' : items[0].raw.x + ' s',
                             label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
                                           fmtTick(Math.abs(ctx.raw.y)) + ' ' + metric.unit
                         }}
