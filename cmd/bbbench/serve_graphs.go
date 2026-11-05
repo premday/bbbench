@@ -688,8 +688,18 @@ __NAVBAR_HTML__
     // one window (to the window start) puts the first point right where the
     // ramp-up ends instead of one polling interval later. Flush points are
     // already window starts.
+    function windowOf(d) {
+        if (d.log_avg_msec) return d.log_avg_msec / 1000;
+        // Runs saved without the interval: fio's first point closes the first
+        // window, so its time is the window width.
+        let m = Infinity;
+        ['ts_iops', 'ts_bw', 'ts_lat'].forEach(k => {
+            if (d[k] && d[k].length) m = Math.min(m, d[k][0].t);
+        });
+        return isFinite(m) ? m : 0;
+    }
     function fioShift(d) {
-        return rampOf(d) - (d.log_avg_msec || 0) / 1000;
+        return rampOf(d) - windowOf(d);
     }
     const rampPlugin = {
         id: 'rampZone',
@@ -801,7 +811,7 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
-                            title: items => d.log_avg_msec ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + d.log_avg_msec / 1000) + ' s' : items[0].raw.x + ' s',
+                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
                                           fmtTick(Math.abs(ctx.raw.y)) + ' ' + metric.unit
                         }}
