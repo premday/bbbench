@@ -33,22 +33,28 @@ type BenchmarkStatus struct {
 
 	// LastUpdate is the last time the status was updated
 	LastUpdate time.Time `json:"last_update"`
+
+	// phaseConfigs describes each drive's phases (keyed by device name); it is
+	// served by /api/status/phases, not with every status poll.
+	phaseConfigs map[string][]PhaseConfig
 }
 
 // DriveStatus represents the status of a single drive.
 type DriveStatus struct {
-	Name          string `json:"name"`
-	Device        string `json:"device"`
-	Vendor        string `json:"vendor"`
-	Model         string `json:"model"`
-	Serial        string `json:"serial"`
-	Capacity      uint64 `json:"capacity_gb"`
-	Type          string `json:"type"` // "SSD" or "HDD"
-	CurrentPhase  int    `json:"current_phase"`
-	PhaseName     string `json:"phase_name,omitempty"`
-	Status        string `json:"status"` // "running", "complete", "error", "pending"
-	ErrorMessage  string `json:"error,omitempty"`
-	LastCompleted string `json:"last_completed,omitempty"`
+	Name         string `json:"name"`
+	Device       string `json:"device"`
+	Vendor       string `json:"vendor"`
+	Model        string `json:"model"`
+	Serial       string `json:"serial"`
+	Capacity     uint64 `json:"capacity_gb"`
+	Type         string `json:"type"` // "SSD" or "HDD"
+	CurrentPhase int    `json:"current_phase"`
+	PhaseName    string `json:"phase_name,omitempty"`
+	// PhaseStart is when the running phase started (zero when none runs).
+	PhaseStart    time.Time `json:"phase_start,omitzero"`
+	Status        string    `json:"status"` // "running", "complete", "error", "pending"
+	ErrorMessage  string    `json:"error,omitempty"`
+	LastCompleted string    `json:"last_completed,omitempty"`
 }
 
 // globalStatus is the singleton status tracker
@@ -77,6 +83,8 @@ type BenchmarkStatusSnapshot struct {
 	TotalPhases     int           `json:"total_phases"`
 	CompletedPhases int           `json:"completed_phases"`
 	LastUpdate      time.Time     `json:"last_update"`
+	// ServerTime lets the page measure elapsed time without trusting its own clock.
+	ServerTime time.Time `json:"server_time"`
 }
 
 // GetStatus returns a point-in-time snapshot of the current status.
@@ -92,6 +100,7 @@ func GetStatus() BenchmarkStatusSnapshot {
 		TotalPhases:     globalStatus.TotalPhases,
 		CompletedPhases: globalStatus.CompletedPhases,
 		LastUpdate:      globalStatus.LastUpdate,
+		ServerTime:      time.Now(),
 	}
 	if globalStatus.Drives != nil {
 		snap.Drives = make([]DriveStatus, len(globalStatus.Drives))
@@ -110,6 +119,7 @@ func ResetStatus() {
 		s.CurrentPhase = 0
 		s.TotalPhases = 0
 		s.CompletedPhases = 0
+		s.phaseConfigs = nil
 	})
 }
 
@@ -218,6 +228,23 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
             color: #666;
             margin-top: 5px;
         }
+        .phases { text-align: left; margin-top: 10px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
+        .phases > summary { cursor: pointer; font-size: 13px; color: #555; font-weight: 600; }
+        .phase { margin: 6px 0 0 4px; font-size: 13px; }
+        .phase > summary { cursor: pointer; color: #333; }
+        .phase.done .pname { text-decoration: line-through; color: #999; }
+        .plen { color: #888; font-size: 12px; margin-left: 6px; }
+        .plen.unk { color: #b26a00; }
+        .phase.current > summary { color: #2e7d32; font-weight: 600; }
+        .phase-sum { color: #888; font-family: monospace; font-size: 12px; display: block; margin-left: 14px; }
+        .phase pre { background: #263238; color: #eceff1; padding: 8px 10px; border-radius: 4px;
+            font-size: 12px; overflow-x: auto; margin: 6px 0 4px 14px; }
+        .phase pre .sec { color: #82aaff; font-weight: 600; }
+        .phase pre .key { color: #c3e88d; }
+        .phase pre .eq { color: #78909c; }
+        .phase pre .num { color: #f78c6c; }
+        .phase pre .val { color: #ffcb6b; }
+        .phase pre .flag { color: #c792ea; }
         .last-update {
             text-align: right;
             color: #999;
@@ -259,6 +286,121 @@ __NAVBAR_HTML__
     <div class="last-update" id="last-update">Last updated: Never</div>
 
     <script>
+        function esc(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        // Phase descriptions are static for a run: fetched when the drives
+        // change, not on every poll. openKeys remembers which <details> the
+        // user expanded, since the lists are re-rendered every 2 seconds.
+        let phasesByDrive = {};
+        let phasesFor = '';
+        const openKeys = new Set();
+
+        document.addEventListener('toggle', e => {
+            const key = e.target && e.target.dataset && e.target.dataset.key;
+            if (!key) return;
+            if (e.target.open) { openKeys.add(key); } else { openKeys.delete(key); }
+        }, true);
+
+        function loadPhases(drives) {
+            const sig = drives.map(d => d.name).join(',');
+            if (sig === phasesFor) return;
+            phasesFor = sig;
+            fetch('/api/status/phases')
+                .then(r => r.json())
+                .then(data => { phasesByDrive = data || {}; updateStatus(); })
+                .catch(() => { phasesFor = ''; });
+        }
+
+        // Colors an fio job file: [section], key=value, bare flags.
+        function highlight(config) {
+            return config.split('\n').map(line => {
+                const t = line.trim();
+                if (t.charAt(0) === '[') return '<span class="sec">' + esc(line) + '</span>';
+                const i = line.indexOf('=');
+                if (i < 0) return t ? '<span class="flag">' + esc(line) + '</span>' : '';
+                const val = line.slice(i + 1);
+                const cls = /^[0-9][0-9a-zA-Z.%]*$/.test(val.trim()) ? 'num' : 'val';
+                return '<span class="key">' + esc(line.slice(0, i)) + '</span><span class="eq">=</span>' +
+                    '<span class="' + cls + '">' + esc(val) + '</span>';
+            }).join('\n');
+        }
+
+        let clockSkew = 0; // server clock minus browser clock, in ms
+
+        function fmtDur(sec) {
+            sec = Math.max(0, Math.round(sec));
+            if (sec < 60) return sec + 's';
+            const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+            if (h === 0) return m + 'm' + (sec % 60 ? ' ' + (sec % 60) + 's' : '');
+            return h + 'h ' + m + 'm';
+        }
+
+        // A drive's phase i (0-based) is done when the drive is complete, or
+        // when the drive has moved on to a later phase (current_phase is 1-based).
+        function phaseDone(drive, i) {
+            if (drive.status === 'complete') return true;
+            if (drive.status === 'running' || drive.status === 'error') return i < drive.current_phase - 1;
+            return false;
+        }
+
+        function phaseRunning(drive, i) {
+            return drive.status === 'running' && i === drive.current_phase - 1;
+        }
+
+        // Remaining time of the phases still to run: known lengths are summed
+        // (the running phase minus its elapsed time); phases without a known
+        // length are counted apart.
+        function etaOf(drive, phases) {
+            let sec = 0, unknown = 0, left = 0;
+            phases.forEach(p => {
+                if (phaseDone(drive, p.index)) return;
+                left++;
+                if (!p.deterministic) { unknown++; return; }
+                let d = p.duration_sec;
+                if (phaseRunning(drive, p.index) && drive.phase_start) {
+                    d -= (Date.now() + clockSkew - Date.parse(drive.phase_start)) / 1000;
+                }
+                sec += Math.max(0, d);
+            });
+            return { sec: sec, unknown: unknown, left: left };
+        }
+
+        function etaText(e) {
+            if (e.left === 0) return 'all done';
+            let t = e.sec > 0 ? 'ETA ~' + fmtDur(e.sec) + ' (about ' +
+                new Date(Date.now() + e.sec * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) + ')' : '';
+            if (e.unknown > 0) {
+                t += (t ? ' + ' : 'ETA unknown: ') + e.unknown + ' phase' + (e.unknown > 1 ? 's' : '') + ' of unknown length';
+            }
+            return t;
+        }
+
+        function phasesHTML(drive) {
+            const phases = phasesByDrive[drive.name];
+            if (!phases || phases.length === 0) return '';
+            const k = 'p:' + drive.name;
+            const done = phases.filter(p => phaseDone(drive, p.index)).length;
+            let h = '<details class="phases" data-key="' + esc(k) + '"' + (openKeys.has(k) ? ' open' : '') + '>' +
+                '<summary>Phases (' + phases.length + ') &middot; ' + done + ' done &middot; ' +
+                esc(etaText(etaOf(drive, phases))) + '</summary>';
+            phases.forEach(p => {
+                const key = 'c:' + drive.name + ':' + p.index;
+                const isDone = phaseDone(drive, p.index);
+                const cur = phaseRunning(drive, p.index);
+                const len = p.deterministic ? '~' + fmtDur(p.duration_sec) : 'length unknown';
+                h += '<details class="phase' + (cur ? ' current' : '') + (isDone ? ' done' : '') +
+                    '" data-key="' + esc(key) + '"' + (openKeys.has(key) ? ' open' : '') + '>' +
+                    '<summary><span class="pname">' + (p.index + 1) + '. ' + esc(p.name) + '</span>' +
+                    (cur ? ' (running)' : '') + ' <span class="plen' + (p.deterministic ? '' : ' unk') + '">' + len + '</span></summary>' +
+                    '<span class="phase-sum">' + esc(p.summary) + '</span>' +
+                    (p.open ? '<span class="phase-sum">' + esc(p.open) + '</span>' : '') +
+                    '<pre>' + highlight(p.config) + '</pre></details>';
+            });
+            return h + '</details>';
+        }
+
         function updateStatus() {
             fetch('/api/status')
                 .then(response => response.json())
@@ -271,6 +413,7 @@ __NAVBAR_HTML__
         }
 
         function updateStatusDisplay(status) {
+            if (status.server_time) clockSkew = Date.parse(status.server_time) - Date.now();
             const statusInfo = document.getElementById('status-info');
             const progressContainer = document.getElementById('progress-container');
             const progressFill = document.getElementById('progress-fill');
@@ -341,10 +484,12 @@ __NAVBAR_HTML__
                     if (drive.error) {
                         html += '<div class="drive-detail" style="color: #f44336;">Error: ' + drive.error + '</div>';
                     }
+                    html += phasesHTML(drive);
                     html += '</div>';
                 });
                 html += '</div>';
                 drivesList.innerHTML = html;
+                loadPhases(sortedDrives);
             } else {
                 drivesList.innerHTML = '<div class="no-data">No active benchmarks</div>';
             }

@@ -445,6 +445,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		s.TotalPhases = maxPhases
 		s.CompletedPhases = 0
 		s.CurrentPhase = 0
+		s.phaseConfigs = ec.statusPhaseConfigs()
 		// Build drive status list
 		s.Drives = make([]DriveStatus, len(ec.drives))
 		for i, drive := range ec.drives {
@@ -522,6 +523,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 				s.Drives[i].Status = "running"
 				s.Drives[i].CurrentPhase = phaseIdx + 1
 				s.Drives[i].PhaseName = phaseName
+				s.Drives[i].PhaseStart = time.Now()
 			}
 		})
 
@@ -643,6 +645,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		s.TotalPhases = totalPhases
 		s.CompletedPhases = 0
 		s.CurrentPhase = 0
+		s.phaseConfigs = ec.statusPhaseConfigs()
 		// Build drive status list
 		s.Drives = make([]DriveStatus, len(ec.drives))
 		for i, drive := range ec.drives {
@@ -725,6 +728,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 					if s.Drives[j].Name == drive.Device.Name {
 						s.Drives[j].CurrentPhase = phaseIdx + 1
 						s.Drives[j].PhaseName = phaseName
+						s.Drives[j].PhaseStart = time.Now()
 						s.Drives[j].Status = "running"
 						break
 					}
@@ -909,4 +913,13 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	result.JsonOutput = jsonData
 	result.EndTime = time.Now()
 	return result
+}
+
+// statusPhaseConfigs describes every drive's phases for the status page.
+func (ec *ExecutionCoordinator) statusPhaseConfigs() map[string][]PhaseConfig {
+	out := make(map[string][]PhaseConfig, len(ec.drives))
+	for _, drive := range ec.drives {
+		out[drive.Device.Name] = phaseConfigs(ec.workloads[drive.Device.Name])
+	}
+	return out
 }

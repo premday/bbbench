@@ -4,6 +4,7 @@
 
 ### Added
 
+- Status page: each drive lists its phases with a summary of the key fio options (`rw`, `bs`, `iodepth`, `runtime`, ...) and the fio config the phase runs; served by the new `/api/status/phases` endpoint so the 2-second status poll stays small; finished phases are struck through, each phase shows its expected length, and a per-drive ETA sums the known lengths (`time_based` jobs: `runtime` + `ramp_time`) and counts phases of unknown length, such as full-disk writes and trims, separately
 - Release workflow rejects tags that are not `vMAJOR.MINOR.FIX` and tags that are not higher than all earlier tags or already have a release (`scripts/check-tag.sh`, `scripts/check-tag-order.sh`, tested in CI; `make check-tag TAG=vX.Y.Z` before tagging)
 - `bbbench version` and `check-config --version` print the version, commit and build date, embedded at build time (new `internal/buildinfo` package)
 - GitHub Actions CI on every pull request: gofmt, `go vet`, `go test -race`, template validation, and a build of all release archives
