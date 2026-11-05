@@ -33,6 +33,10 @@ type BenchmarkStatus struct {
 
 	// LastUpdate is the last time the status was updated
 	LastUpdate time.Time `json:"last_update"`
+
+	// phaseConfigs describes each drive's phases (keyed by device name); it is
+	// served by /api/status/phases, not with every status poll.
+	phaseConfigs map[string][]PhaseConfig
 }
 
 // DriveStatus represents the status of a single drive.
@@ -110,6 +114,7 @@ func ResetStatus() {
 		s.CurrentPhase = 0
 		s.TotalPhases = 0
 		s.CompletedPhases = 0
+		s.phaseConfigs = nil
 	})
 }
 
@@ -218,6 +223,14 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
             color: #666;
             margin-top: 5px;
         }
+        .phases { margin-top: 10px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
+        .phases > summary { cursor: pointer; font-size: 13px; color: #555; font-weight: 600; }
+        .phase { margin: 6px 0 0 4px; font-size: 13px; }
+        .phase > summary { cursor: pointer; color: #333; }
+        .phase.current > summary { color: #2e7d32; font-weight: 600; }
+        .phase-sum { color: #888; font-family: monospace; font-size: 12px; display: block; margin-left: 14px; }
+        .phase pre { background: #263238; color: #eceff1; padding: 8px 10px; border-radius: 4px;
+            font-size: 12px; overflow-x: auto; margin: 6px 0 4px 14px; }
         .last-update {
             text-align: right;
             color: #999;
@@ -259,6 +272,51 @@ __NAVBAR_HTML__
     <div class="last-update" id="last-update">Last updated: Never</div>
 
     <script>
+        function esc(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        // Phase descriptions are static for a run: fetched when the drives
+        // change, not on every poll. openKeys remembers which <details> the
+        // user expanded, since the lists are re-rendered every 2 seconds.
+        let phasesByDrive = {};
+        let phasesFor = '';
+        const openKeys = new Set();
+
+        document.addEventListener('toggle', e => {
+            const key = e.target && e.target.dataset && e.target.dataset.key;
+            if (!key) return;
+            if (e.target.open) { openKeys.add(key); } else { openKeys.delete(key); }
+        }, true);
+
+        function loadPhases(drives) {
+            const sig = drives.map(d => d.name).join(',');
+            if (sig === phasesFor) return;
+            phasesFor = sig;
+            fetch('/api/status/phases')
+                .then(r => r.json())
+                .then(data => { phasesByDrive = data || {}; updateStatus(); })
+                .catch(() => { phasesFor = ''; });
+        }
+
+        function phasesHTML(drive) {
+            const phases = phasesByDrive[drive.name];
+            if (!phases || phases.length === 0) return '';
+            const k = 'p:' + drive.name;
+            let h = '<details class="phases" data-key="' + esc(k) + '"' + (openKeys.has(k) ? ' open' : '') + '>' +
+                '<summary>Phases (' + phases.length + ')</summary>';
+            phases.forEach(p => {
+                const key = 'c:' + drive.name + ':' + p.index;
+                const cur = drive.status === 'running' && drive.phase_name === p.name;
+                h += '<details class="phase' + (cur ? ' current' : '') + '" data-key="' + esc(key) + '"' +
+                    (openKeys.has(key) ? ' open' : '') + '>' +
+                    '<summary>' + (p.index + 1) + '. ' + esc(p.name) + (cur ? ' (running)' : '') + '</summary>' +
+                    '<span class="phase-sum">' + esc(p.summary) + '</span>' +
+                    '<pre>' + esc(p.config) + '</pre></details>';
+            });
+            return h + '</details>';
+        }
+
         function updateStatus() {
             fetch('/api/status')
                 .then(response => response.json())
@@ -341,10 +399,12 @@ __NAVBAR_HTML__
                     if (drive.error) {
                         html += '<div class="drive-detail" style="color: #f44336;">Error: ' + drive.error + '</div>';
                     }
+                    html += phasesHTML(drive);
                     html += '</div>';
                 });
                 html += '</div>';
                 drivesList.innerHTML = html;
+                loadPhases(sortedDrives);
             } else {
                 drivesList.innerHTML = '<div class="no-data">No active benchmarks</div>';
             }

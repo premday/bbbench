@@ -160,7 +160,7 @@ Flags:
 
 Pages available:
 - `/` — home
-- `/status` — live benchmark status (when orchestrator is running)
+- `/status` — live benchmark status (when orchestrator is running); each drive lists its phases, with a one-line summary of the fio options and the fio job file the phase runs (click a phase to expand)
 - `/results` — browse and search past runs
 - `/summary?id=<id>` — statistics table (min/avg/max/σ) per phase, broken down by disk
 - `/graphs?id=<id>` — time-series charts (IOPS, bandwidth, latency) per phase

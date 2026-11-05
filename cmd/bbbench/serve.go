@@ -81,6 +81,7 @@ func newWebServer(addr string) *http.Server {
 
 	// API endpoints
 	mux.HandleFunc("/api/status", handleStatus)
+	mux.HandleFunc("/api/status/phases", handleStatusPhases)
 	mux.HandleFunc("/api/results", handleResultsList)
 	mux.HandleFunc("/api/results/detail", handleResultDetail)
 	mux.HandleFunc("/api/results/graphs", handleResultGraphs)
