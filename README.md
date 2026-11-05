@@ -227,6 +227,9 @@ phases; the full fio JSON in the output directory has the `sync` latency
 statistics. That is the latency of the whole `fsync()` call; the part spent in
 the drive is measured separately, see [Flush tracing](#flush-tracing). To compare setups (write cache enabled vs cleared, stock vs patched
 kernel), run the workloads once per setup and compare the results.
+**bbbench does not configure the device**: it only reads the write cache mode
+and never changes it, so set the drive up yourself before the run and note the
+setup with the results.
 
 Like the other write workloads they overwrite the device. The `io_uring` jobs
 need an fio built with io_uring support and a kernel that has it. To run only

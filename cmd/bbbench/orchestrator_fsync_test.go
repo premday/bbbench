@@ -131,7 +131,7 @@ func TestFlushSkipReason(t *testing.T) {
 		t.Errorf("no warning for write-through fsync phase: %q", w)
 	}
 	w := ec.flushWarning("nvme0n1", fsync)
-	for _, want := range []string{"write_cache", "nvme set-feature /dev/nvme0 -f 6 -V 1", "get-feature /dev/nvme0", "vwc", "_flush.log"} {
+	for _, want := range []string{"write_cache", "nvme set-feature /dev/nvme0 -f 6 -V 1", "get-feature /dev/nvme0", "vwc", "_flush.log", "never changes the drive"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warning lacks %q:\n%s", want, w)
 		}

@@ -146,7 +146,8 @@ func Start(name string, opts Options) (*Session, error) {
 
 // WriteCache returns the kernel's cache mode of a block device, "write back"
 // or "write through" (from <sysBlock>/<name>/queue/write_cache), or "" when
-// unknown. Only a write-back device is sent Flush commands. sysBlock defaults
+// unknown. Only a write-back device is sent Flush commands. This only reads: bbbench
+// never changes the device configuration. sysBlock defaults
 // to /sys/block.
 func WriteCache(sysBlock, name string) string {
 	if sysBlock == "" {

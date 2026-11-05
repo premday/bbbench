@@ -109,6 +109,19 @@ cache state, a drive whose volatile write cache is disabled is `write through`.
 cache at all, and `nvme set-feature /dev/nvme0 -f 6 -V 1` enables it (capital
 `-V`: `-v` is verbose).
 
+## bbbench does not configure the device
+
+bbbench only **reads** the drive's state (`queue/write_cache`, tracefs) and never
+changes it: it does not enable or disable the write cache, set NVMe features,
+or touch queue settings or the I/O scheduler. The Flush numbers describe the
+drive as you left it. The only kernel state it creates is its private ftrace
+instance, removed when the phase ends.
+
+So before a run, put the device in the state you want to measure, and note it
+next to the results: write cache enabled or disabled, kernel (stock or patched),
+firmware. To compare setups, change them yourself and run once per setup. The
+warning for write-through devices lists the commands, but runs nothing for you.
+
 ## Limits
 
 - **Resolution:** the trace text prints timestamps in seconds with six decimals,
