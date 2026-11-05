@@ -107,12 +107,19 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 	if first {
 		return Summary{}, nil, fmt.Errorf("empty flush log")
 	}
-	// Like fio's statistics, the summary leaves out the ramp period.
-	sum := Summarize(source, exact, lost, AfterMs(all, offset))
-	sum.WriteCache = wcache
-	sum.AvgMsec = avg
-	sum.OffsetMs = offset
+	sum := Finish(Summary{Source: source, Exact: exact, Lost: lost,
+		WriteCache: wcache, AvgMsec: avg, OffsetMs: offset}, all)
 	return sum, all, nil
+}
+
+// Finish is the one place a traced phase's Summary is built, live and when a
+// stored log is loaded: Summarize over the samples that completed after the
+// ramp (like fio's statistics), plus the metadata of meta (Source, Exact, Lost,
+// WriteCache, AvgMsec, OffsetMs).
+func Finish(meta Summary, all []Sample) Summary {
+	sum := Summarize(meta.Source, meta.Exact, meta.Lost, AfterMs(all, meta.OffsetMs))
+	sum.WriteCache, sum.AvgMsec, sum.OffsetMs = meta.WriteCache, meta.AvgMsec, meta.OffsetMs
+	return sum
 }
 
 // AfterMs returns the samples that completed at or after ms milliseconds.

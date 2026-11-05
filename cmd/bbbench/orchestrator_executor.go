@@ -43,14 +43,23 @@ type ExecutionCoordinator struct {
 	sysBlock         string // sysfs block dir override for tests ("" = /sys/block)
 }
 
+// defaultLogAvgMsec is fio's log averaging interval when none is set (the
+// --log-avg-msec default); also the Flush series window for logs that do not
+// record one.
+const defaultLogAvgMsec = 1000
+
+// avgMsec is the fio log averaging interval of the run.
+func (ec *ExecutionCoordinator) avgMsec() int {
+	if ec.logAvgMsec <= 0 {
+		return defaultLogAvgMsec
+	}
+	return ec.logAvgMsec
+}
+
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
 // It is logAvgMsec/10, with a minimum of 1000ms (1 second).
 func (ec *ExecutionCoordinator) coalesceMsec() int64 {
-	msec := ec.logAvgMsec
-	if msec <= 0 {
-		msec = 1000
-	}
-	threshold := int64(msec) / 10
+	threshold := int64(ec.avgMsec()) / 10
 	if threshold < 1000 {
 		threshold = 1000
 	}
@@ -389,10 +398,7 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 	phaseResult := PhaseResult{
 		PhaseNumber: phaseIdx + 1,
 		FioFiles:    make(map[string]string),
-		LogAvgMsec:  ec.logAvgMsec,
-	}
-	if phaseResult.LogAvgMsec <= 0 {
-		phaseResult.LogAvgMsec = 1000
+		LogAvgMsec:  ec.avgMsec(),
 	}
 
 	for _, drive := range ec.drives {
@@ -937,10 +943,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	signalReady()
 	result.StartTime = time.Now()
 
-	logAvgMsec := ec.logAvgMsec
-	if logAvgMsec <= 0 {
-		logAvgMsec = 1000
-	}
+	logAvgMsec := ec.avgMsec()
 
 	// For phases that fsync, time the device's Flush commands from kernel
 	// trace events while fio runs. Failure to trace never fails the phase.
@@ -958,14 +961,14 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 				}
 				sum.AvgMsec = logAvgMsec // series follow fio's polling interval
 				sum.OffsetMs = rampMs    // and fio's clock, which starts after its ramp
-				result.FlushTrace = &sum
+				samples := sess.Samples()
+				// Same statistics as a later load of the log: without the ramp.
+				final := flushtrace.Finish(sum, samples)
+				result.FlushTrace = &final
 				// Keep the samples with the fio logs, so the run can be
 				// re-summarized and graphed later.
-				if err := writeFlushLog(logPrefix, sum, sess.Samples()); err != nil {
+				if err := writeFlushLog(logPrefix, sum, samples); err != nil {
 					logger.Warn("storing flush samples", "device", drive.Device.Name, "err", err)
-				} else if reread, _, ok := loadFlushLog(logPrefix); ok {
-					// Same statistics as a later load: without the ramp.
-					result.FlushTrace = reread
 				}
 				stopTrace = func() {}
 			}

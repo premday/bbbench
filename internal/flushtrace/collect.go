@@ -3,7 +3,7 @@ package flushtrace
 import (
 	"fmt"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -83,7 +83,7 @@ func Summarize(source string, exact bool, lost int, all []Sample) Summary {
 	for i, x := range all {
 		sorted[i] = x.LatencyNs
 	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	slices.Sort(sorted)
 	out.MinNs, out.MaxNs = sorted[0], sorted[len(sorted)-1]
 	out.P50Ns = percentile(sorted, 50)
 	out.P99Ns = percentile(sorted, 99)

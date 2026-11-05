@@ -7,10 +7,6 @@ import (
 	"bbbench/internal/flushtrace"
 )
 
-// defaultFlushWindowMs is the averaging window of the Flush latency series for
-// logs that do not record fio's polling interval (the --log-avg-msec default).
-const defaultFlushWindowMs = 1000
-
 // writeFlushLog stores the Flush samples of a traced phase next to fio's own
 // logs, so statistics and graphs can be rebuilt for a finished run.
 func writeFlushLog(logPrefix string, sum flushtrace.Summary, samples []flushtrace.Sample) error {
@@ -46,7 +42,7 @@ func loadFlushLog(logPrefix string) (sum *flushtrace.Summary, series []TimePoint
 	// Same windows as fio's own series: its --log-avg-msec, stored in the log.
 	windowMs := s.AvgMsec
 	if windowMs <= 0 {
-		windowMs = defaultFlushWindowMs
+		windowMs = defaultLogAvgMsec
 	}
 	// The series counts from the start of tracing (about when fio is
 	// launched, so the ramp-up is included and drawn as such); a point is
