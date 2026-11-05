@@ -48,8 +48,16 @@ func loadFlushLog(logPrefix string) (sum *flushtrace.Summary, series []TimePoint
 	if windowMs <= 0 {
 		windowMs = defaultFlushWindowMs
 	}
-	for _, b := range flushtrace.Bins(samples, int64(windowMs)*1_000_000) {
-		series = append(series, TimePoint{T: b.TSec, W: b.MeanNs / 1000})
+	// Same clock as fio's logs: t = 0 when fio's ramp ends, and a point is
+	// stamped at the END of its window (fio logs a window when it closes), so
+	// the first point of a 30 s interval is at 30 s, not 0.
+	kept := flushtrace.AfterMs(samples, s.OffsetMs)
+	shifted := make([]flushtrace.Sample, len(kept))
+	for i, x := range kept {
+		shifted[i] = flushtrace.Sample{TimeNs: x.TimeNs - int64(s.OffsetMs)*1_000_000, LatencyNs: x.LatencyNs}
+	}
+	for _, b := range flushtrace.Bins(shifted, int64(windowMs)*1_000_000) {
+		series = append(series, TimePoint{T: b.TSec + float64(windowMs)/1000, W: b.MeanNs / 1000})
 	}
 	return &s, series, true
 }

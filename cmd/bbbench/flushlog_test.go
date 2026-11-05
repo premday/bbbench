@@ -35,8 +35,9 @@ func TestFlushLog_RoundTrip(t *testing.T) {
 	if !ok || *got != sum {
 		t.Fatalf("loaded %+v ok=%v, want %+v", got, ok, sum)
 	}
-	// 1s windows: [0,1s) mean 200us, [1s,2s) mean 1000us (values in µs).
-	if len(series) != 2 || series[0].W != 200 || series[1].T != 1 || series[1].W != 1000 {
+	// 1s windows, stamped at their end like fio's logs: [0,1s) mean 200us at
+	// t=1, [1s,2s) mean 1000us at t=2 (values in µs).
+	if len(series) != 2 || series[0].T != 1 || series[0].W != 200 || series[1].T != 2 || series[1].W != 1000 {
 		t.Errorf("series = %+v", series)
 	}
 }
@@ -128,9 +129,10 @@ func TestFlushLog_SeriesFollowsFioPollingInterval(t *testing.T) {
 		return prefix
 	}
 
-	// log_avg_msec=30000: two points, 0 s and 30 s.
+	// log_avg_msec=30000: two points, stamped at the end of their windows
+	// (30 s and 60 s), as fio stamps its own.
 	got, series, _ := loadFlushLog(write(30000))
-	if got.AvgMsec != 30000 || len(series) != 2 || series[0].W != 200 || series[1].T != 30 || series[1].W != 500 {
+	if got.AvgMsec != 30000 || len(series) != 2 || series[0].T != 30 || series[0].W != 200 || series[1].T != 60 || series[1].W != 500 {
 		t.Errorf("30 s: summary %+v series %+v", got, series)
 	}
 	// log_avg_msec=1000: one point per second that has Flushes.
@@ -140,5 +142,42 @@ func TestFlushLog_SeriesFollowsFioPollingInterval(t *testing.T) {
 	// Logs from before the interval was stored fall back to 1 s windows.
 	if _, series, _ := loadFlushLog(write(0)); len(series) != 3 {
 		t.Errorf("unknown interval: series %+v", series)
+	}
+}
+
+// fio's logs and statistics start when its ramp_time ends: Flushes completed
+// during the ramp are left out of the summary and the series, and times are
+// counted from the end of the ramp.
+func TestFlushLog_StartsAfterFioRamp(t *testing.T) {
+	all := []flushtrace.Sample{
+		{TimeNs: 2_000e6, LatencyNs: 900_000},  // during the 10 s ramp
+		{TimeNs: 10_500e6, LatencyNs: 100_000}, // 0.5 s after the ramp
+		{TimeNs: 11_500e6, LatencyNs: 300_000}, // 1.5 s after the ramp
+	}
+	prefix := filepath.Join(t.TempDir(), "d_phase1_1_log")
+	sum := flushtrace.Summarize("nvme", true, 0, all)
+	sum.OffsetMs = 10_000
+	if err := writeFlushLog(prefix, sum, all); err != nil {
+		t.Fatal(err)
+	}
+	got, series, ok := loadFlushLog(prefix)
+	if !ok || got.OffsetMs != 10_000 || got.Count != 2 || got.MaxNs != 300_000 {
+		t.Fatalf("summary %+v ok=%v, want 2 flushes after the ramp", got, ok)
+	}
+	if len(series) != 2 || series[0].T != 1 || series[0].W != 100 || series[1].T != 2 || series[1].W != 300 {
+		t.Errorf("series = %+v", series)
+	}
+}
+
+func TestPhaseRampMs(t *testing.T) {
+	w := &FioWorkload{GlobalSection: "[global]\nramp_time=10\n"}
+	if got := phaseRampMs(w, []FioJob{{Section: "[a]\nrw=write\n"}}); got != 10_000 {
+		t.Errorf("global ramp = %d", got)
+	}
+	if got := phaseRampMs(w, []FioJob{{Section: "[a]\nramp_time=0\n"}}); got != 0 {
+		t.Errorf("job override = %d", got)
+	}
+	if got := phaseRampMs(&FioWorkload{}, []FioJob{{Section: "[a]\n"}}); got != 0 {
+		t.Errorf("no ramp = %d", got)
 	}
 }

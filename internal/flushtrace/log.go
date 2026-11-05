@@ -33,6 +33,9 @@ func WriteLog(w io.Writer, sum Summary, all []Sample) error {
 	if sum.AvgMsec > 0 {
 		fmt.Fprintf(bw, " avg_msec=%d", sum.AvgMsec)
 	}
+	if sum.OffsetMs > 0 {
+		fmt.Fprintf(bw, " offset_ms=%d", sum.OffsetMs)
+	}
 	fmt.Fprint(bw, "\n# time_ms, latency_ns\n")
 	for _, x := range all {
 		fmt.Fprintf(bw, "%.3f, %d\n", float64(x.TimeNs)/1e6, x.LatencyNs)
@@ -51,6 +54,7 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 		lost   int
 		wcache string
 		avg    int
+		offset int
 		all    []Sample
 		first  = true
 	)
@@ -75,6 +79,8 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 					lost, _ = strconv.Atoi(v)
 				case "avg_msec":
 					avg, _ = strconv.Atoi(v)
+				case "offset_ms":
+					offset, _ = strconv.Atoi(v)
 				case "write_cache":
 					wcache = strings.ReplaceAll(v, "_", " ")
 				}
@@ -101,10 +107,26 @@ func ReadLog(r io.Reader) (Summary, []Sample, error) {
 	if first {
 		return Summary{}, nil, fmt.Errorf("empty flush log")
 	}
-	sum := Summarize(source, exact, lost, all)
+	// Like fio's statistics, the summary leaves out the ramp period.
+	sum := Summarize(source, exact, lost, AfterMs(all, offset))
 	sum.WriteCache = wcache
 	sum.AvgMsec = avg
+	sum.OffsetMs = offset
 	return sum, all, nil
+}
+
+// AfterMs returns the samples that completed at or after ms milliseconds.
+func AfterMs(all []Sample, ms int) []Sample {
+	if ms <= 0 {
+		return all
+	}
+	var out []Sample
+	for _, x := range all {
+		if x.TimeNs >= int64(ms)*1_000_000 {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // Bin is the Flush latency over one time window.

@@ -27,6 +27,10 @@ type Summary struct {
 	// the Flush time series is averaged over the same windows, so it lines up
 	// with fio's IOPS/bandwidth/latency points. 0 = unknown.
 	AvgMsec int `json:"avg_msec,omitempty"`
+	// OffsetMs is when fio's own clock starts, in ms after tracing started: fio's
+	// logs and statistics begin when its ramp_time ends. Flushes completed before
+	// that are not part of the summary or the series. 0 = unknown / no ramp.
+	OffsetMs int `json:"offset_ms,omitempty"`
 }
 
 // Collector turns trace events into a Summary for one device.

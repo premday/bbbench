@@ -938,6 +938,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	// For phases that fsync, time the device's Flush commands from kernel
 	// trace events while fio runs. Failure to trace never fails the phase.
 	stopTrace := func() {}
+	rampMs := phaseRampMs(workload, phase)
 	if ec.flushTrace && phaseHasFsync(phase) {
 		if sess, err := flushtrace.Start(drive.Device.Name, flushtrace.Options{}); err != nil {
 			logger.Warn("flush tracing unavailable",
@@ -949,11 +950,15 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 					logger.Warn("flush tracing cleanup", "device", drive.Device.Name, "err", err)
 				}
 				sum.AvgMsec = logAvgMsec // series follow fio's polling interval
+				sum.OffsetMs = rampMs    // and fio's clock, which starts after its ramp
 				result.FlushTrace = &sum
 				// Keep the samples with the fio logs, so the run can be
 				// re-summarized and graphed later.
 				if err := writeFlushLog(logPrefix, sum, sess.Samples()); err != nil {
 					logger.Warn("storing flush samples", "device", drive.Device.Name, "err", err)
+				} else if reread, _, ok := loadFlushLog(logPrefix); ok {
+					// Same statistics as a later load: without the ramp.
+					result.FlushTrace = reread
 				}
 				stopTrace = func() {}
 			}

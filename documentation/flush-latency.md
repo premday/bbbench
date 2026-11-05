@@ -72,8 +72,12 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
   (completion time since tracing started, latency). The summary (mean, p50,
   p99, max) and the graph series are rebuilt from these samples when a run is
   loaded. The series is averaged over fio's polling interval
-  (`--log-avg-msec`, stored in the log header), so it lines up with the fio
-  graphs.
+  (`--log-avg-msec`, stored in the log header) and uses fio's clock, so it lines
+  up with the fio graphs: time 0 is when fio's `ramp_time` ends (stored as
+  `offset_ms`; Flushes during the ramp are in neither the series nor the summary,
+  as with fio's statistics), and a point is stamped at the *end* of its window,
+  as fio does. With `--log-avg-msec 30000` the first point is at 30 s, and it
+  averages the first 30 s of the measured time.
 - **Other devices:** non-NVMe devices use `block_rq_issue` / `block_rq_complete`
   for requests that are Flushes. Pairing is first-in first-out, so only the mean
   is exact and no percentiles are reported.
