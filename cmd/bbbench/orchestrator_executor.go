@@ -598,7 +598,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 				fmt.Printf("[%s skipped: write through] ", drive.Device.Name)
 				markDriveSkipped(drive.Device.Name, reason)
 			} else if warn := ec.flushWarning(drive.Device.Name, workload.Phases[phaseIdx]); warn != "" {
-				fmt.Printf("[%s: write through, no Flush to trace] ", drive.Device.Name)
+				fmt.Printf("[%s: write through, see warning below] ", drive.Device.Name)
 				markDriveWarning(drive.Device.Name, warn)
 			}
 
@@ -655,6 +655,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		} else {
 			fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 		}
+		ec.printPhaseWarnings(phaseIdx, "  ")
 
 		// Save state after each phase
 		if err := ec.saveState(); err != nil {
@@ -792,7 +793,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			})
 
 			if warn := ec.flushWarning(drive.Device.Name, phase); warn != "" && ec.flushSkipReason(drive.Device.Name, phase) == "" {
-				fmt.Printf("[write through, no Flush to trace] ")
+				fmt.Printf("[write through, see warning below] ")
 				markDriveWarning(drive.Device.Name, warn)
 			}
 			result := ec.executePhase(drive, phase, phaseIdx, nil, nil)
@@ -810,6 +811,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			} else {
 				fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 			}
+			ec.printPhaseWarnings(phaseIdx, "    ")
 
 			// Update completed phases count and live result
 			completedPhases++

@@ -489,7 +489,7 @@ __NAVBAR_HTML__
                         html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';
                     }
                     if (drive.warning) {
-                        html += '<div class="drive-detail" style="color: #b26a00;">&#9888; ' + esc(drive.warning) + '</div>';
+                        html += '<div class="drive-detail" style="color: #b26a00; white-space: pre-line; text-align: left;">&#9888; ' + esc(drive.warning) + '</div>';
                     }
                     if (drive.skipped) {
                         html += '<div class="drive-detail" style="color: #b26a00;">' + esc(drive.skipped) + '</div>';

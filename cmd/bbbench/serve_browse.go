@@ -436,7 +436,7 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
                         '<div class="phase-stats" style="color:#1e3a5f;background:#e0ecff;border-radius:4px;padding:4px 8px;margin-top:4px;">' +
                         '<b>Skipped</b> ' + esc(why) + '</div>').join('');
                     const warned = Object.entries(phase.warnings || {}).map(([dev, why]) =>
-                        '<div class="phase-stats" style="color:#8a5300;background:#fff3e0;border-radius:4px;padding:4px 8px;margin-top:4px;">' +
+                        '<div class="phase-stats" style="color:#8a5300;background:#fff3e0;border-radius:4px;padding:4px 8px;margin-top:4px;white-space:pre-line;">' +
                         '&#9888; ' + esc(why) + '</div>').join('');
                     return '<li class="phase-item">' +
                         '<div class="phase-name">Phase ' + (i + 1) + ': ' + esc(phase.phase_name || 'Unnamed') + '</div>' +
