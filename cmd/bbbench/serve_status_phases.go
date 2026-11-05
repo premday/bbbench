@@ -15,6 +15,11 @@ type PhaseConfig struct {
 	Name    string `json:"name"`
 	Summary string `json:"summary"`
 	Config  string `json:"config"`
+	// DurationSec is the phase's expected length when Deterministic.
+	DurationSec   int  `json:"duration_sec"`
+	Deterministic bool `json:"deterministic"`
+	// Open explains a phase without a known length.
+	Open string `json:"open,omitempty"`
 }
 
 // summaryOptions are the fio options shown in a phase's one-line summary, in
@@ -36,12 +41,14 @@ func phaseConfigs(w *FioWorkload) []PhaseConfig {
 		for j, job := range phase {
 			names[j] = job.Name
 		}
-		out = append(out, PhaseConfig{
+		pc := PhaseConfig{
 			Index:   i,
 			Name:    strings.Join(names, ", "),
 			Summary: phaseSummary(global, phase),
 			Config:  stripFioComments(buildPhaseFioFile(w, phase)),
-		})
+		}
+		pc.DurationSec, pc.Deterministic, pc.Open = phaseDuration(global, phase)
+		out = append(out, pc)
 	}
 	return out
 }
@@ -119,4 +126,57 @@ func stripFioComments(config string) string {
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// phaseDuration estimates how long a phase takes. Jobs of a phase run side by
+// side, so it is the longest job: ramp_time + runtime for a time_based job.
+// A job without time_based ends when its I/O is done (e.g. a full-disk
+// write), which depends on the drive, so the phase has no known length.
+func phaseDuration(global map[string]string, phase []FioJob) (sec int, deterministic bool, open string) {
+	for _, job := range phase {
+		opts := map[string]string{}
+		for k, v := range global {
+			opts[k] = v
+		}
+		for k, v := range parseFioOptions(job.Section) {
+			opts[k] = v
+		}
+		runtime, ok := parseFioSeconds(opts["runtime"])
+		if opts["time_based"] == "" || !ok || runtime <= 0 {
+			if opts["size"] == "100%" || opts["rw"] == "trim" {
+				return 0, false, "runs until the whole disk is processed; the time depends on the drive"
+			}
+			return 0, false, "no time limit; it ends when its I/O is done"
+		}
+		ramp, _ := parseFioSeconds(opts["ramp_time"])
+		if d := runtime + ramp; d > sec {
+			sec = d
+		}
+	}
+	return sec, len(phase) > 0, ""
+}
+
+// parseFioSeconds reads an fio time value: a bare number is seconds, else a
+// suffix d, h, m, s, ms or us ("5m", "1h", "250ms").
+func parseFioSeconds(v string) (int, bool) {
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return 0, false
+	}
+	units := []struct {
+		suffix string
+		sec    float64
+	}{{"ms", 0.001}, {"us", 0.000001}, {"d", 86400}, {"h", 3600}, {"m", 60}, {"s", 1}}
+	mult := 1.0
+	for _, u := range units {
+		if strings.HasSuffix(v, u.suffix) {
+			v, mult = strings.TrimSuffix(v, u.suffix), u.sec
+			break
+		}
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return int(n*mult + 0.5), true
 }

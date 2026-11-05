@@ -77,6 +77,46 @@ func TestStripFioComments(t *testing.T) {
 	}
 }
 
+func TestPhaseDuration(t *testing.T) {
+	w := phasesTestWorkload(t)
+	got := phaseConfigs(w)
+	// seq_write: runtime=60 time_based, no ramp in this file.
+	if !got[0].Deterministic || got[0].DurationSec != 60 {
+		t.Errorf("phase 0 = %+v, want deterministic 60s", got[0])
+	}
+	// rand_write: runtime=300 without time_based ends with its I/O.
+	if got[1].Deterministic || got[1].Open == "" {
+		t.Errorf("phase 1 = %+v, want unknown length with a reason", got[1])
+	}
+}
+
+func TestPhaseDuration_RampAndFullDisk(t *testing.T) {
+	g := map[string]string{"ramp_time": "10"}
+	sec, det, _ := phaseDuration(g, []FioJob{{Section: "[a]\ntime_based\nruntime=5m"}, {Section: "[b]\ntime_based\nruntime=30"}})
+	if !det || sec != 310 {
+		t.Errorf("got %d,%v want 310,true", sec, det)
+	}
+	_, det, open := phaseDuration(g, []FioJob{{Section: "[a]\nrw=write\nsize=100%"}})
+	if det || !strings.Contains(open, "whole disk") {
+		t.Errorf("full disk: det=%v open=%q", det, open)
+	}
+	_, det, _ = phaseDuration(g, []FioJob{{Section: "[a]\nrw=trim\nsize=100%"}})
+	if det {
+		t.Error("trim must not be deterministic")
+	}
+}
+
+func TestParseFioSeconds(t *testing.T) {
+	for in, want := range map[string]int{"300": 300, "5m": 300, "1h": 3600, "250ms": 0, "2d": 172800, "90s": 90} {
+		if got, ok := parseFioSeconds(in); !ok || got != want {
+			t.Errorf("%q = %d,%v want %d", in, got, ok, want)
+		}
+	}
+	if _, ok := parseFioSeconds("abc"); ok {
+		t.Error("abc parsed")
+	}
+}
+
 func TestPhaseConfigs_NilWorkload(t *testing.T) {
 	if got := phaseConfigs(nil); got != nil {
 		t.Errorf("phaseConfigs(nil) = %v", got)

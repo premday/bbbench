@@ -523,6 +523,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 				s.Drives[i].Status = "running"
 				s.Drives[i].CurrentPhase = phaseIdx + 1
 				s.Drives[i].PhaseName = phaseName
+				s.Drives[i].PhaseStart = time.Now()
 			}
 		})
 
@@ -727,6 +728,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 					if s.Drives[j].Name == drive.Device.Name {
 						s.Drives[j].CurrentPhase = phaseIdx + 1
 						s.Drives[j].PhaseName = phaseName
+						s.Drives[j].PhaseStart = time.Now()
 						s.Drives[j].Status = "running"
 						break
 					}
