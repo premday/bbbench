@@ -40,7 +40,7 @@ func phaseConfigs(w *FioWorkload) []PhaseConfig {
 			Index:   i,
 			Name:    strings.Join(names, ", "),
 			Summary: phaseSummary(global, phase),
-			Config:  strings.TrimSpace(buildPhaseFioFile(w, phase)),
+			Config:  stripFioComments(buildPhaseFioFile(w, phase)),
 		})
 	}
 	return out
@@ -105,4 +105,18 @@ func handleStatusPhases(w http.ResponseWriter, r *http.Request) {
 		logger.Error("encode status phases", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+// stripFioComments drops comment lines (; or #) and blank lines from a job
+// file, leaving only what fio acts on.
+func stripFioComments(config string) string {
+	var out []string
+	for _, line := range strings.Split(config, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || t[0] == ';' || t[0] == '#' {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }

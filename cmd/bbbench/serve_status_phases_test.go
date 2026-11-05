@@ -70,6 +70,13 @@ func TestPhaseConfigs_SummaryAndConfig(t *testing.T) {
 	}
 }
 
+func TestStripFioComments(t *testing.T) {
+	got := stripFioComments("; a comment\n[global]\n# other\n\nbs=4k\n  ; indented\n")
+	if got != "[global]\nbs=4k" {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestPhaseConfigs_NilWorkload(t *testing.T) {
 	if got := phaseConfigs(nil); got != nil {
 		t.Errorf("phaseConfigs(nil) = %v", got)

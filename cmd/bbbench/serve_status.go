@@ -223,7 +223,7 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
             color: #666;
             margin-top: 5px;
         }
-        .phases { margin-top: 10px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
+        .phases { text-align: left; margin-top: 10px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
         .phases > summary { cursor: pointer; font-size: 13px; color: #555; font-weight: 600; }
         .phase { margin: 6px 0 0 4px; font-size: 13px; }
         .phase > summary { cursor: pointer; color: #333; }
@@ -231,6 +231,12 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
         .phase-sum { color: #888; font-family: monospace; font-size: 12px; display: block; margin-left: 14px; }
         .phase pre { background: #263238; color: #eceff1; padding: 8px 10px; border-radius: 4px;
             font-size: 12px; overflow-x: auto; margin: 6px 0 4px 14px; }
+        .phase pre .sec { color: #82aaff; font-weight: 600; }
+        .phase pre .key { color: #c3e88d; }
+        .phase pre .eq { color: #78909c; }
+        .phase pre .num { color: #f78c6c; }
+        .phase pre .val { color: #ffcb6b; }
+        .phase pre .flag { color: #c792ea; }
         .last-update {
             text-align: right;
             color: #999;
@@ -299,6 +305,20 @@ __NAVBAR_HTML__
                 .catch(() => { phasesFor = ''; });
         }
 
+        // Colors an fio job file: [section], key=value, bare flags.
+        function highlight(config) {
+            return config.split('\n').map(line => {
+                const t = line.trim();
+                if (t.charAt(0) === '[') return '<span class="sec">' + esc(line) + '</span>';
+                const i = line.indexOf('=');
+                if (i < 0) return t ? '<span class="flag">' + esc(line) + '</span>' : '';
+                const val = line.slice(i + 1);
+                const cls = /^[0-9][0-9a-zA-Z.%]*$/.test(val.trim()) ? 'num' : 'val';
+                return '<span class="key">' + esc(line.slice(0, i)) + '</span><span class="eq">=</span>' +
+                    '<span class="' + cls + '">' + esc(val) + '</span>';
+            }).join('\n');
+        }
+
         function phasesHTML(drive) {
             const phases = phasesByDrive[drive.name];
             if (!phases || phases.length === 0) return '';
@@ -312,7 +332,7 @@ __NAVBAR_HTML__
                     (openKeys.has(key) ? ' open' : '') + '>' +
                     '<summary>' + (p.index + 1) + '. ' + esc(p.name) + (cur ? ' (running)' : '') + '</summary>' +
                     '<span class="phase-sum">' + esc(p.summary) + '</span>' +
-                    '<pre>' + esc(p.config) + '</pre></details>';
+                    '<pre>' + highlight(p.config) + '</pre></details>';
             });
             return h + '</details>';
         }
