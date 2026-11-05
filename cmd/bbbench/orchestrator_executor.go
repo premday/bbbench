@@ -548,6 +548,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			// Mark all drives as running this phase
 			for i := range s.Drives {
 				s.Drives[i].Status = "running"
+				s.Drives[i].Skipped = ""
 				s.Drives[i].CurrentPhase = phaseIdx + 1
 				s.Drives[i].PhaseName = phaseName
 				s.Drives[i].PhaseStart = time.Now()
@@ -582,6 +583,11 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			// Skip if already completed in previous run
 			if ec.isPhaseCompleted(drive.Device.Name, phaseIdx) {
 				continue
+			}
+
+			if reason := ec.flushSkipReason(drive.Device.Name, workload.Phases[phaseIdx]); reason != "" {
+				fmt.Printf("[%s skipped: write through] ", drive.Device.Name)
+				markDriveSkipped(drive.Device.Name, reason)
 			}
 
 			wg.Add(1)
@@ -626,7 +632,11 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 				fmt.Printf("  - %v\n", err)
 			}
 		} else if skipped := ec.skippedInPhase(phaseIdx); len(skipped) > 0 {
-			fmt.Printf("SKIPPED on %d drive(s):\n", len(skipped))
+			if len(skipped) >= activeCount {
+				fmt.Printf("SKIPPED on %d drive(s):\n", len(skipped))
+			} else {
+				fmt.Printf("COMPLETE (%.1fs), skipped on %d drive(s):\n", elapsed.Seconds(), len(skipped))
+			}
 			for _, s := range skipped {
 				fmt.Printf("  - %s\n", s)
 			}
@@ -762,6 +772,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 						s.Drives[j].PhaseName = phaseName
 						s.Drives[j].PhaseStart = time.Now()
 						s.Drives[j].Status = "running"
+						s.Drives[j].Skipped = ""
 						break
 					}
 				}
@@ -777,6 +788,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			if result.Error != nil {
 				fmt.Printf("FAILED (%.1fs) - %v\n", elapsed.Seconds(), result.Error)
 			} else if result.Skipped != "" {
+				markDriveSkipped(drive.Device.Name, result.Skipped)
 				fmt.Printf("SKIPPED - %s\n", result.Skipped)
 			} else {
 				fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
@@ -994,4 +1006,18 @@ func (ec *ExecutionCoordinator) statusPhaseConfigs() map[string][]PhaseConfig {
 		out[drive.Device.Name] = phaseConfigs(ec.workloads[drive.Device.Name])
 	}
 	return out
+}
+
+// markDriveSkipped shows on the status page that a drive sits out the current
+// phase while the others may still run it.
+func markDriveSkipped(device, reason string) {
+	UpdateStatus(func(s *BenchmarkStatus) {
+		for i := range s.Drives {
+			if s.Drives[i].Name == device {
+				s.Drives[i].Status = "skipped"
+				s.Drives[i].Skipped = reason
+				return
+			}
+		}
+	})
 }
