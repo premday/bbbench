@@ -44,6 +44,9 @@ type groupConfig struct {
 	// Resume is a group file to continue: runs already done or invalid are
 	// skipped, every other run is executed again from its first phase.
 	Resume *rungroup.GroupFile
+	// Precheck, when non-nil, checks what a run needs (fio, the fio files,
+	// the engines) before any drive is read or changed.
+	Precheck func() error
 	// Execute runs the test plan once (executeRun in production).
 	Execute func(ctx context.Context, spec runSpec) (*BenchmarkResult, error)
 	// OnSave, when non-nil, is called after every save of the group file.
@@ -103,6 +106,11 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 			return nil, fmt.Errorf("run group: %s and %s have the same serial and model; they cannot be told apart for restoring", other, name)
 		}
 		identities[id] = name
+	}
+	if cfg.Precheck != nil {
+		if err := cfg.Precheck(); err != nil {
+			return nil, fmt.Errorf("run group: %w (nothing was changed)", err)
+		}
 	}
 	values := map[string]settings.Value{}
 	ids := make([]string, 0, len(cfg.Values))

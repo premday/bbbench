@@ -332,3 +332,10 @@ func TestHandleGroupDetail_NotRunValueHasRow(t *testing.T) {
 		t.Errorf("matrix = %+v, want a disabled row marked incomplete", out.Matrix)
 	}
 }
+
+func TestNewGroupConfig_HasPrecheck(t *testing.T) {
+	c := &groupChoice{Setting: newFakeSetting(nil), Values: fakeValues, Strategy: rungroup.Sequential}
+	if cfg := newGroupConfig(c, nil, runOptions{Mode: "sequential", OutDir: t.TempDir()}, "h", nil); cfg.Precheck == nil {
+		t.Error("no precheck: fio and the fio files would only be checked after the first apply")
+	}
+}

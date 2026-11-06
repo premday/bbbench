@@ -992,3 +992,19 @@ func TestRunGroup_ResumeAcceptsSameDrives(t *testing.T) {
 		t.Errorf("%d runs, want 1", len(ex.specs))
 	}
 }
+
+// A missing fio (or another environment check) stops the group before any
+// drive is touched.
+func TestRunGroup_PrecheckFailsBeforeApply(t *testing.T) {
+	cfg, fs, ex := testGroup(t, rungroup.Sequential, "sdb", "sdc")
+	cfg.Precheck = func() error { return errors.New("fio is not installed") }
+	if _, err := runGroup(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "fio is not installed") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(fs.callsOf("apply")) + len(fs.callsOf("read")); n != 0 || len(ex.specs) != 0 {
+		t.Errorf("setting touched (%d calls) or run executed (%d)", n, len(ex.specs))
+	}
+	if recoveryExists(t, cfg.RecoveryPath) {
+		t.Error("recovery file written")
+	}
+}

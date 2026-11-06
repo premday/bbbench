@@ -145,6 +145,8 @@ func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts run
 		Host:         host,
 		Settle:       groupSettle,
 		Resume:       resume,
+		// fio, the fio files and the engines, checked before the first apply.
+		Precheck: func() error { return precheckRun(opts, c.Drives) },
 		// A running group shows up on the web pages live.
 		OnSave: globalGroupStore.AddGroup,
 		Execute: func(ctx context.Context, spec runSpec) (*BenchmarkResult, error) {
@@ -155,6 +157,18 @@ func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts run
 			return executeRun(ctx, o, spec)
 		},
 	}
+}
+
+// precheckRun checks, without running anything, what executeRun checks
+// before the first phase: fio is installed, every drive's fio file exists and
+// parses, and fio has the I/O engines the workloads use.
+func precheckRun(opts runOptions, drives []DriveInfo) error {
+	ec, err := newExecutionCoordinator(drives, opts.Mode, opts.OutDir)
+	if err != nil {
+		return err
+	}
+	defer ec.cancel()
+	return checkFioEngines(fioEngineList(), ec.workloads)
 }
 
 // printGroupSummary prints one line per run and drive.
