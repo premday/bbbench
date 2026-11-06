@@ -14,7 +14,9 @@ Usage:
 
 Commands:
   generate             generate fio job files
-  orchestrator         run benchmarks on multiple drives
+  orchestrator         run benchmarks on multiple drives (single run, or a
+                       setting test: the plan once per value of a drive
+                       setting, restored afterwards)
   serve                start web server GUI (default [::1]:12345)
   validate-templates   validate template syntax
   doctor               check host readiness

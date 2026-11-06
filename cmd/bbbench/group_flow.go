@@ -1,0 +1,179 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"time"
+
+	"bbbench/internal/rungroup"
+	"bbbench/internal/settings"
+)
+
+const (
+	// groupRecoveryPath keeps the original values while a group runs.
+	groupRecoveryPath = "/var/lib/bbbench/group-recovery.json"
+	// groupSettle is how long a read-back may take to show an applied value.
+	groupSettle = 10 * time.Second
+)
+
+func settingByName(available []settings.Setting, name string) settings.Setting {
+	for _, s := range available {
+		if s.Name() == name {
+			return s
+		}
+	}
+	return nil
+}
+
+// offerRecovery checks for a recovery file left by a group that did not
+// restore its drives, and offers to restore them (answer read from in). The
+// file is removed only after every drive was restored. An error means the
+// run must stop: the file could not be read, or a drive was not restored.
+func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string, available []settings.Setting, drives []DriveInfo, targets map[string]settings.Target) error {
+	rec, err := rungroup.LoadRecovery(path)
+	if err != nil {
+		return fmt.Errorf("read the recovery file %s: %w (check it by hand: it lists drive settings bbbench changed)", path, err)
+	}
+	if rec == nil {
+		return nil
+	}
+	s := settingByName(available, rec.Setting)
+	if s == nil {
+		return fmt.Errorf("the recovery file %s is for the unknown setting %q; restore the drives by hand and remove it", path, rec.Setting)
+	}
+	fmt.Fprintf(out, "\nA previous setting test changed the %s of %d drive(s) and did not restore them:\n", s.Name(), len(rec.Drives))
+	for _, e := range rec.Drives {
+		fmt.Fprintf(out, "  %s (%s, S/N %s): original value %q\n", e.Name, e.Model, e.Serial, e.Original.Value)
+	}
+	fmt.Fprint(out, "Restore the original values now? [y/n] ")
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+		fmt.Fprintf(out, "Not restored. A setting test will refuse to start while %s exists; a single run is not affected.\n\n", path)
+		return nil
+	}
+	failed := restoreFromRecovery(ctx, s, rec, drives, targets)
+	if len(failed) > 0 {
+		fmt.Fprintf(out, "\nNot restored: %s. The recovery file %s is kept. Set them back by hand (the command is printed above when known); a power cycle also resets a volatile setting.\n", strings.Join(failed, ", "), path)
+		return fmt.Errorf("could not restore %s on %s", s.Name(), strings.Join(failed, ", "))
+	}
+	if err := rec.Remove(path); err != nil {
+		return fmt.Errorf("restored, but could not remove the recovery file %s: %w", path, err)
+	}
+	fmt.Fprintf(out, "Restored the original values.\n\n")
+	return nil
+}
+
+// findResumableGroup returns the newest group file in dir with a run that is
+// neither done nor invalid, or nil.
+func findResumableGroup(dir string) *rungroup.GroupFile {
+	groups, err := rungroup.LoadGroups(dir)
+	if err != nil {
+		return nil
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Created.After(groups[j].Created) })
+	for _, g := range groups {
+		for _, r := range g.Runs {
+			if r.Status != rungroup.RunDone && r.Status != rungroup.RunInvalid {
+				return g
+			}
+		}
+	}
+	return nil
+}
+
+// resumeChoice rebuilds what the user chose for group g: the setting, the
+// values in their order, and the drives (matched by serial and model).
+func resumeChoice(g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo) (*groupChoice, error) {
+	s := settingByName(available, g.Setting)
+	if s == nil {
+		return nil, fmt.Errorf("group %s is for the unknown setting %q", g.ID, g.Setting)
+	}
+	known := map[string]settings.Value{}
+	for _, v := range s.Values() {
+		known[v.ID] = v
+	}
+	c := &groupChoice{Setting: s, Strategy: g.Strategy, Excluded: map[string]string{}}
+	for _, id := range g.Values {
+		v, ok := known[id]
+		if !ok {
+			return nil, fmt.Errorf("group %s has the value %q, which %s does not offer", g.ID, id, s.Name())
+		}
+		c.Values = append(c.Values, v)
+	}
+	seen := map[string]bool{}
+	for _, r := range g.Runs {
+		for _, gd := range r.Drives {
+			id := gd.Serial + "\x00" + gd.Model
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			var found *DriveInfo
+			for i := range drives {
+				if drives[i].Device.Serial == gd.Serial && drives[i].Device.Model == gd.Model {
+					found = &drives[i]
+					break
+				}
+			}
+			if found == nil {
+				return nil, fmt.Errorf("cannot resume group %s: drive %s (%s, S/N %s) is not present", g.ID, gd.Device, gd.Model, gd.Serial)
+			}
+			c.Drives = append(c.Drives, *found)
+		}
+	}
+	if len(c.Drives) == 0 {
+		return nil, fmt.Errorf("cannot resume group %s: it recorded no drives (it stopped before its first run started); start a new setting test", g.ID)
+	}
+	return c, nil
+}
+
+// newGroupConfig builds the group to run from the confirmed choice.
+func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts runOptions, host string, resume *rungroup.GroupFile) groupConfig {
+	return groupConfig{
+		Setting:      c.Setting,
+		Values:       c.Values,
+		Strategy:     c.Strategy,
+		Drives:       c.Drives,
+		Targets:      targets,
+		OutDir:       opts.OutDir,
+		RecoveryPath: groupRecoveryPath,
+		Host:         host,
+		Settle:       groupSettle,
+		Resume:       resume,
+		Execute: func(ctx context.Context, spec runSpec) (*BenchmarkResult, error) {
+			// The group loop already removed the stale per-run state file; a
+			// run of a group never resumes mid-run.
+			o := opts
+			o.Resume = nil
+			return executeRun(ctx, o, spec)
+		},
+	}
+}
+
+// printGroupSummary prints one line per run and drive.
+func printGroupSummary(w io.Writer, g *rungroup.GroupFile) {
+	fmt.Fprintf(w, "\nSetting test %s: %s (%s)\n", g.ID, g.Setting, g.Strategy)
+	for i, r := range g.Runs {
+		fmt.Fprintf(w, "  run %d (round %d): %s\n", i+1, r.Round+1, r.Status)
+		for _, d := range r.Drives {
+			state := "verified"
+			switch {
+			case d.Label.Note != "":
+				state = d.Label.Note
+			case !d.Label.Valid:
+				state = "not verified"
+			}
+			fmt.Fprintf(w, "    %-10s %-12s %s\n", d.Device, d.Value, state)
+		}
+	}
+	switch g.Restore.Status {
+	case "done":
+		fmt.Fprintln(w, "  original values restored")
+	case "failed":
+		fmt.Fprintf(w, "  RESTORE FAILED on: %s\n", strings.Join(g.Restore.Failed, ", "))
+	}
+}

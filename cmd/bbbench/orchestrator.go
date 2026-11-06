@@ -49,6 +49,7 @@ import (
 	"bbbench/internal/config"
 	"bbbench/internal/dmi"
 	"bbbench/internal/rungroup"
+	"bbbench/internal/settings"
 	"bbbench/internal/util"
 )
 
@@ -147,6 +148,8 @@ func runOrchestrator(args []string) error {
 		fmt.Println()
 	}
 
+	allDrives := drives
+
 	// Apply filters
 	filter := DriveFilter{
 		Type:        *filterType,
@@ -168,16 +171,6 @@ func runOrchestrator(args []string) error {
 		return errors.New("no drives match the specified filters")
 	}
 
-	// Launch TUI for drive selection
-	selectedDrives, err := runDriveSelectionTUI(drives)
-	if err != nil {
-		return err
-	}
-
-	if len(selectedDrives) == 0 {
-		return errors.New("no drives selected")
-	}
-
 	// Determine output directory
 	outDir := *outputDir
 	if outDir == "" {
@@ -195,6 +188,60 @@ func runOrchestrator(args []string) error {
 	}
 	outDir = expandUser(outDir)
 
+	// A drive setting left changed by an earlier setting test is offered for
+	// restoring before anything else; all discovered drives are candidates.
+	available := settings.All(settings.Env{})
+	infos := infoFor(allDrives)
+	targets := targetsFor(allDrives, infos)
+	if err := offerRecovery(context.Background(), os.Stdin, os.Stdout, groupRecoveryPath, available, allDrives, targets); err != nil {
+		return err
+	}
+
+	// What to run: a group to resume, a setting test, or a single run.
+	var group *groupChoice
+	var resumeGroup *rungroup.GroupFile
+	var selectedDrives []DriveInfo
+	if *resume {
+		if g := findResumableGroup(outDir); g != nil {
+			if *dryRun {
+				return errors.New("a dry run cannot be combined with a setting test")
+			}
+			c, err := resumeChoice(g, available, allDrives)
+			if err != nil {
+				return err
+			}
+			group, resumeGroup, selectedDrives = c, g, c.Drives
+			fmt.Printf("Resuming setting test %s (%s, %s)\n", g.ID, g.Setting, g.Strategy)
+		}
+	}
+	if group == nil {
+		choice, err := runModeTUI(available, drives, targets)
+		if err != nil {
+			return err
+		}
+		if choice.Setting != nil && *dryRun {
+			return errors.New("a dry run cannot be combined with a setting test")
+		}
+
+		// Launch TUI for drive selection
+		selectedDrives, err = runDriveSelectionTUI(drives)
+		if err != nil {
+			return err
+		}
+
+		if len(selectedDrives) == 0 {
+			return errors.New("no drives selected")
+		}
+
+		if choice.Setting != nil {
+			group, err = runGroupSetupTUI(choice.Setting, selectedDrives, targets, infos)
+			if err != nil {
+				return err
+			}
+			selectedDrives = group.Drives
+		}
+	}
+
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
@@ -202,7 +249,7 @@ func runOrchestrator(args []string) error {
 	// Handle resume mode
 	var resumeState *ExecutionState
 	stateFile := getStateFilePath(outDir)
-	if *resume {
+	if *resume && group == nil {
 		state, err := loadState(stateFile)
 		if err != nil {
 			return fmt.Errorf("load state for resume: %w", err)
@@ -301,10 +348,24 @@ func runOrchestrator(args []string) error {
 		srv.Shutdown(ctx)
 	}()
 
-	result, runErr := executeRun(context.Background(), opts, spec)
-	if result == nil {
-		// Setup failed, or a dry run: nothing was executed, nothing to wait for.
-		return runErr
+	var runErr error
+	if group != nil {
+		cfg := newGroupConfig(group, targets, opts, host, resumeGroup)
+		fmt.Printf("Setting test: %s, %d values, strategy %s\n\n", group.Setting.Name(), len(group.Values), group.Strategy)
+		g, err := runGroup(context.Background(), cfg)
+		if g == nil {
+			// Setup failed before the first run: nothing to wait for.
+			return err
+		}
+		printGroupSummary(os.Stdout, g)
+		runErr = err
+	} else {
+		result, err := executeRun(context.Background(), opts, spec)
+		if result == nil {
+			// Setup failed, or a dry run: nothing was executed, nothing to wait for.
+			return err
+		}
+		runErr = err
 	}
 
 	// Keep web server running until user interrupts

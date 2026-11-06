@@ -99,6 +99,20 @@ Flags:
 
 Runs fio benchmarks. Presents a TUI to select drives, then executes the benchmark phases and saves results as JSON.
 
+**Single run or setting test.** The first question is what to do:
+
+- *Single run* is the flow described here: select drives, each gets the plan for its type, everything is tested at once. bbbench changes nothing on the drives.
+- *Setting test* runs the whole test plan once per value of one setting (the first setting is the drive write cache policy, enabled vs disabled), to measure what the setting costs or gains. The settings are listed with the number of discovered drives each applies to and, for the others, the reason (for example no controllable write cache on USB). A setting test asks, in order: the drives (the same selection screen), the values to test (both start ticked; at least two), and how to spread them:
+  - *one value after the other* (default): every drive gets the same value in a run, one run per value;
+  - *parallel*: identical drives (same vendor, model and capacity) are divided evenly among the values and all values run at the same time in one run. Offered only when every class of identical drives divides evenly; otherwise the screen says why;
+  - *parallel with swap rounds*: parallel, then the values rotate over the drive subsets and the plan runs again, so each value is measured on every subset (cancels drive-to-drive variance). Never preselected.
+
+  Drives of one model with different firmware get a warning (parallel stays offered). Drives the setting does not apply to are left out and listed with the reason. The last screen shows what will change on which drives, the number of runs and an estimated time; **nothing is changed on a drive before you confirm it** there. A setting that is laid out per variant (such as a software RAID layout) would ask for the variants with their disks instead; none exists yet.
+
+During a setting test bbbench reads the value of every drive before changing it, applies and verifies it before each run and again after it (a run whose value did not hold is marked invalid), and puts every drive back as it found it when the group ends, also after an error or Ctrl+C. The original values are kept in `/var/lib/bbbench/group-recovery.json` while the group runs. If bbbench was killed (or the power failed) before restoring, the next start of `orchestrator` finds that file and offers to restore the drives; if a restore fails it names the drive and prints the command to set it back by hand, and keeps the file. A setting test refuses to start while the file exists. bbbench changes drive settings only in setting-test mode, after the confirmation. `--dry-run` cannot be combined with a setting test.
+
+`--resume` continues an interrupted setting test: if the output directory holds a group (`group_<id>_group.json`) with runs that are not done, any left-over change is restored first (it asks), then the group continues with the same setting, values, strategy and drives (matched by serial and model), skipping the questions. Runs already done are kept; the others start again from their first phase.
+
 ```bash
 sudo ./bbbench orchestrator
 
@@ -155,6 +169,7 @@ sudo ./bbbench orchestrator --filter-vendor samsung --filter-min-capacity 1000
 | `<device>_phase<N>_<ts>_log_flush.1.log` | the device Flush latency, for phases that fsync (see [Flush tracing](#flush-tracing)) |
 | `<device>_diskinfo_<start>.txt` | the drive's configuration (interface, link, power, write cache, SMART) and the raw reports it is drawn from, one per run |
 | `run_<unix time>_summary.json` | the run's summary, which `bbbench serve` lists and graphs |
+| `group_<id>_group.json` | a setting test: its runs, the value each drive had, the readings before and after each run, and the restore result |
 | `.bbbench-orchestrator-state.json` | what is done, for `--resume`; removed when the run completes |
 
 Results are written to `~/.bbbench/output/` by default (one JSON file per run).
