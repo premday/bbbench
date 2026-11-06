@@ -6,7 +6,10 @@ Block-device benchmark tool. Discovers drives, generates [fio](https://github.co
 
 - Linux
 - Root privileges for `generate`, `doctor`, and `orchestrator`
-- `fio` installed for `orchestrator`
+- `fio` installed for `orchestrator`, built with the I/O engines of the workloads you run (the default flush workloads use `io_uring`, which needs an fio built with liburing)
+- Optional, for the disk configuration on the status page and in the text dump: `smartctl` (smartmontools) for SMART health, `nvme` (nvme-cli) for NVMe power state, APST, the drive's write cache and a SMART fallback, `hdparm` for the SATA identify report. For Flush tracing, tracefs mounted (`/sys/kernel/tracing`)
+
+`bbbench orchestrator` checks these when it starts, before anything interactive: a missing `fio`, or an I/O engine a selected workload needs that this fio lacks, stops the run with what to install; a missing optional program is a warning saying what is lost; an unavailable tracefs is a warning that the fsync phases will report fio's fsync latency only. `bbbench doctor` runs the same program checks.
 
 ## Build
 

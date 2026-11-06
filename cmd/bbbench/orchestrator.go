@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,11 @@ func runOrchestrator(args []string) error {
 
 	if os.Geteuid() != 0 {
 		return errors.New("bbbench orchestrator must run as root")
+	}
+
+	// Every external program is checked before anything interactive happens.
+	if err := printDependencies(checkDependencies(exec.LookPath, programVersion)); err != nil {
+		return err
 	}
 
 	// Acquire lock to prevent multiple orchestrator instances
@@ -267,6 +273,9 @@ func runOrchestrator(args []string) error {
 	coordinator.verbose = *verbose
 	coordinator.logAvgMsec = *logAvgMsec
 	coordinator.flushTrace = !*noFlushTrace
+	if err := coordinator.checkEnvironment(); err != nil {
+		return err
+	}
 	coordinator.skipWriteThrough = *skipWriteThrough
 
 	if *dryRun {

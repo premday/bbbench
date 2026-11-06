@@ -65,6 +65,13 @@ func findTracefs(opts Options) (string, error) {
 	return "", fmt.Errorf("%w: tracefs not found (is it mounted, and are you root?)", ErrUnsupported)
 }
 
+// TracefsAvailable reports whether tracefs can be found, so a run can say
+// before it starts that Flushes will not be traced.
+func TracefsAvailable() error {
+	_, err := findTracefs(Options{})
+	return err
+}
+
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // Start begins tracing Flushes of the block device `name` (e.g. "nvme0n1",
