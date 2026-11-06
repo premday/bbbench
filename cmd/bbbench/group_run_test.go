@@ -927,3 +927,24 @@ func TestRunGroup_InterruptedRunLabelsInvalid(t *testing.T) {
 		t.Errorf("summary labels not marked interrupted: %s", sum)
 	}
 }
+
+// A closed terminal (SIGHUP) must restore the drives like Ctrl+C.
+func TestRunGroup_SIGHUPRestores(t *testing.T) {
+	cfg, fs, ex := testGroup(t, rungroup.Sequential, "sdb", "sdc")
+	ex.hook = func(ctx context.Context, n int, spec runSpec) error {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("SIGHUP did not cancel the group context")
+		}
+		return errRunInterrupted
+	}
+	g, err := runGroup(context.Background(), cfg)
+	if err == nil || g.Runs[0].Status != rungroup.RunInterrupted {
+		t.Errorf("err %v, status %q", err, g.Runs[0].Status)
+	}
+	assertRestoredLast(t, fs, map[string]string{"sdb": "enabled", "sdc": "enabled"})
+}

@@ -73,7 +73,7 @@ func driveRefs(drives []DriveInfo, firmware map[string]string) []rungroup.DriveR
 // file after every run. The original values are written to the recovery file
 // before anything is applied, and restored (on a background context, then
 // verified) when runGroup returns for any reason: normal end, error, a
-// cancelled ctx, SIGINT/SIGTERM, or a panic, which is re-raised afterwards.
+// cancelled ctx, SIGINT/SIGTERM/SIGHUP, or a panic, which is re-raised afterwards.
 // The recovery file is removed only when every drive was restored; otherwise
 // it is kept with the drives that failed, and the error says so.
 func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err error) {
@@ -122,7 +122,7 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 	// A signal anywhere in the group (also between runs, when no
 	// coordinator listens) cancels ctx, so the restore below runs. Stopped
 	// only after the restore, so a signal during the restore is not fatal.
-	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stopSignals()
 
 	// The originals, read before anything changes.

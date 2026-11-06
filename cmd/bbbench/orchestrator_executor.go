@@ -198,7 +198,7 @@ const exitCodeSIGINT = 128 + int(syscall.SIGINT)
 // pile up.
 func (ec *ExecutionCoordinator) handleSignals() {
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 
 	select {
 	case <-sigChan:
