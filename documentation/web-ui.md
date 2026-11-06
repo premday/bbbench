@@ -35,7 +35,9 @@ The page auto-refreshes so you can monitor a long run without manually reloading
 
 The **Results** page lists every run found in the output directory (time, ID, mode, drives, phases) with a search box (ID, mode or drive name). Each row links to its **Details**, **Summary**, **Graphs** and **Compare** pages.
 
-- **Details** shows the run's overview, its drives, and its phases with duration and job count. A phase that did not run on a drive (`--skip-write-through`) shows the reason, and a phase that ran with a caveat, such as a write-through drive that never receives a Flush, shows the warning with how to check and fix it. An **Export HTML** button downloads a standalone report.
+The runs of a setting test (run group) are listed under one expandable row for their group, placed where its newest run is: the setting and its values, the strategy, how many runs are listed and their status, and links to the **Group** page and to the group's **Graphs** and **Compare** (`/graphs?group=`, `/compare?group=`). The ▸ button shows or hides its runs. Each member run names its group (a link to `/group?id=`) and the value(s) it ran under; the search box also matches the group ID and values. Single runs are listed as before. `/api/results` carries `group_id` and `setting_values` for member runs only.
+
+- **Details** shows the run's overview, its drives, and its phases with duration and job count. A phase that did not run on a drive (`--skip-write-through`) shows the reason, and a phase that ran with a caveat, such as a write-through drive that never receives a Flush, shows the warning with how to check and fix it. An **Export HTML** button downloads a standalone report. For a run of a run group, a **Run group** card links to the group (and its graphs and compare) and lists each drive's setting, value, the readings before and after the run (with the kernel's value), and whether the result is valid, with the reason when it is not.
 - **Summary** is a table of statistics (min, average, max and standard deviation) per phase, broken down by disk.
 
 ## Run Groups
@@ -57,6 +59,10 @@ The left sidebar provides filters that update the displayed graphs in real time:
 | **Vendor / Model / Serial** | Select specific hardware identities. |
 | **Disk** | Choose which drives to include. |
 | **Phase** | Select one or more benchmark phases (e.g. `seqread`, `randread-randread`). |
+| **Setting value** | Run groups only (`/graphs?group=<group id>`): the values of the setting (e.g. write cache `enabled`/`disabled`), to show or contrast the variants. |
+| **Hide invalid results** | Run groups only, on by default: results whose drive did not hold its value are left out. Unchecked, they are shown and their cards say `(invalid)`. |
+
+`/graphs?group=<group id>` shows the member runs of a group together (`/api/groups/graphs`); `/graphs?id=<run id>` shows one run, without the group filters. In a group, a card is titled `disk · value`, and `disk · value · round N` when a value was measured in several runs (parallel-swap), since the same disk appears in each run.
 
 Each matching combination of disk × phase is rendered as its own graph card. Click a card to maximize it; press **Esc** to return to the grid.
 
@@ -69,3 +75,5 @@ Each matching combination of disk × phase is rendered as its own graph card. Cl
 The **Compare** view overlays multiple disks on a single chart, making it easy to spot performance differences.
 
 Select two or more drives in the sidebar, choose a phase, then click **Compare**. Each drive is drawn in a distinct color with a legend. Metric, phase, and time axis are shared so curves are directly comparable. Flush latency is a metric there too; it has no read and write sides, so the direction checkboxes do not apply to it.
+
+For a run group (`/compare?group=<group id>`, linked from the group page and the results list) the sidebar adds a **Setting value** list and the **Hide invalid results** toggle (on by default; invalid series are labelled `(invalid)` when shown). Each (drive, run) is its own series, named `disk · value`, or `disk · value · round N` when a value was measured in several runs (with the phase after the disk when several phases are selected).

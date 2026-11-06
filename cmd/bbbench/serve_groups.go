@@ -83,7 +83,11 @@ func loadGroups(outputDir string) error {
 
 // groupFromRequest resolves ?id= to a group, answering 400 or 404 itself.
 func groupFromRequest(w http.ResponseWriter, r *http.Request) (*rungroup.GroupFile, bool) {
-	id := r.URL.Query().Get("id")
+	return groupByID(w, r.URL.Query().Get("id"))
+}
+
+// groupByID looks a group up, answering 400 (empty id) or 404 itself.
+func groupByID(w http.ResponseWriter, id string) (*rungroup.GroupFile, bool) {
 	if id == "" {
 		http.Error(w, "Missing group ID", http.StatusBadRequest)
 		return nil, false
@@ -94,6 +98,38 @@ func groupFromRequest(w http.ResponseWriter, r *http.Request) (*rungroup.GroupFi
 		return nil, false
 	}
 	return g, true
+}
+
+// chartSource resolves the data the graphs and compare pages read:
+// ?group=<id> (the member runs of a group together) or ?id=<run id>. It
+// answers 400 or 404 itself. query is the page's own query string, for links
+// between the two pages.
+func chartSource(w http.ResponseWriter, r *http.Request) (dataURL, query string, ok bool) {
+	q := r.URL.Query()
+	if q.Has("group") {
+		g, ok := groupByID(w, q.Get("group"))
+		if !ok {
+			return "", "", false
+		}
+		return "/api/groups/graphs?id=" + url.QueryEscape(g.ID), "group=" + url.QueryEscape(g.ID), true
+	}
+	id := q.Get("id")
+	if id == "" {
+		http.Error(w, "Missing result ID", http.StatusBadRequest)
+		return "", "", false
+	}
+	if _, ok := globalResultsStore.GetResult(id); !ok {
+		http.Error(w, "Result not found", http.StatusNotFound)
+		return "", "", false
+	}
+	return "/api/results/graphs?id=" + url.QueryEscape(id), "id=" + url.QueryEscape(id), true
+}
+
+// jsString is s as a JavaScript string literal that is safe inside a
+// <script> element (json.Marshal escapes <, > and &).
+func jsString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -158,7 +194,8 @@ func runFlushNote(res *BenchmarkResult) bool {
 }
 
 // groupEntries is the union of generateDiskPhaseData over the member runs;
-// runs that did not run contribute nothing.
+// runs that did not run contribute nothing. Labelled entries carry the
+// run's round (1-based).
 func groupEntries(g *rungroup.GroupFile) []DiskPhaseData {
 	out := []DiskPhaseData{}
 	for _, run := range g.Runs {
@@ -169,7 +206,12 @@ func groupEntries(g *rungroup.GroupFile) []DiskPhaseData {
 		if !ok {
 			continue
 		}
-		out = append(out, generateDiskPhaseData(res)...)
+		for _, e := range generateDiskPhaseData(res) {
+			if e.SettingValue != "" {
+				e.Round = run.Round + 1
+			}
+			out = append(out, e)
+		}
 	}
 	return out
 }
@@ -316,6 +358,7 @@ func handleGroupPage(w http.ResponseWriter, r *http.Request) {
 	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
 	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/results"))
 	html = strings.ReplaceAll(html, "__GROUP_ID__", escapeHTML(g.ID))
+	html = strings.ReplaceAll(html, "__GROUP_Q__", escapeHTML(url.QueryEscape(g.ID)))
 	html = strings.ReplaceAll(html, "__DETAIL_URL__", escapeHTML("/api/groups/detail?id="+url.QueryEscape(g.ID)))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
@@ -343,12 +386,16 @@ const groupPageHTML = `<!DOCTYPE html>
         .note { color: #b45309; font-size: 11px; margin-top: 3px; }
         .reading { font-family: monospace; }
         .incomplete td { color: #b45309; }
+        .links { margin: 6px 0 10px; font-size: 13px; display: flex; gap: 12px; }
+        .links a { color: #2563eb; text-decoration: none; }
     </style>
 </head>
 <body>
 __NAVBAR_HTML__
 <div class="wrap" id="app" data-detail="__DETAIL_URL__">
-    <div class="card"><h1>Run group __GROUP_ID__</h1><dl class="meta" id="meta"></dl></div>
+    <div class="card"><h1>Run group __GROUP_ID__</h1>
+        <div class="links"><a href="/graphs?group=__GROUP_Q__">Graphs</a> <a href="/compare?group=__GROUP_Q__">Compare</a></div>
+        <dl class="meta" id="meta"></dl></div>
     <div class="card"><h2>Runs and drives</h2><div id="runs">Loading...</div></div>
     <div class="card"><h2>Restore</h2><div id="restore"></div></div>
     <div class="card"><h2>Metrics per phase and value</h2><div id="matrix"></div></div>

@@ -128,6 +128,14 @@ func handleBrowsePage(w http.ResponseWriter, r *http.Request) {
             color: #999;
             font-size: 12px;
         }
+        .group-row { background: #fafbff; }
+        .group-row .expand {
+            border: 1px solid #ddd; background: #fff; border-radius: 3px;
+            cursor: pointer; font-size: 11px; padding: 0 5px; margin-right: 6px;
+        }
+        .badge-group { background: #e8f5e9; color: #2e7d32; }
+        .member td:first-child { padding-left: 32px; }
+        .group-of a { color: #2196f3; text-decoration: none; }
     </style>
 </head>
 <body>
@@ -167,10 +175,99 @@ __NAVBAR_HTML__
 
     <script>
         let allResults = [];
+        let allGroups = [];
+        // Run groups whose member runs are shown.
+        const EXPANDED = new Set();
+
+        function esc(s) {
+            return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
 
         function formatTimestamp(timestamp) {
             const date = new Date(timestamp);
             return date.toLocaleString();
+        }
+
+        // runRow is one run. A member run of a group also names its group (a
+        // link) and the value it ran under; under its group row it is hidden
+        // until the group is expanded.
+        function runRow(result, member, open) {
+            const modeBadge = result.mode === 'parallel-sync'
+                ? '<span class="badge badge-parallel">Parallel-Sync</span>'
+                : '<span class="badge badge-sequential">Sequential</span>';
+            const id = encodeURIComponent(result.id);
+            const groupOf = result.group_id
+                ? '<div class="stats group-of">group <a href="/group?id=' + encodeURIComponent(result.group_id) + '">' +
+                    esc(result.group_id) + '</a> \u00b7 ' + esc((result.setting_values || []).join(', ')) + '</div>'
+                : '';
+            const attrs = member
+                ? ' class="member" data-group="' + esc(result.group_id) + '"' + (open ? '' : ' style="display:none"')
+                : '';
+
+            return '<tr' + attrs + '>' +
+                '<td class="timestamp">' + formatTimestamp(result.timestamp) + '</td>' +
+                '<td><code>' + esc(result.id) + '</code>' + groupOf + '</td>' +
+                '<td>' + modeBadge + '</td>' +
+                '<td class="stats">' + result.drive_count + ' drive(s)</td>' +
+                '<td class="stats">' + result.phase_count + ' phase(s)</td>' +
+                '<td class="actions">' +
+                    '<a href="/result?id=' + id + '">Details</a>' +
+                    '<a href="/summary?id=' + id + '">Summary</a>' +
+                    '<a href="/graphs?id=' + id + '">Graphs</a>' +
+                    '<a href="/compare?id=' + id + '">Compare</a>' +
+                '</td>' +
+                '</tr>';
+        }
+
+        // groupRow is the expandable row of a run group: its setting and
+        // values, and links to the group page and its graphs and compare.
+        function groupRow(g, members, open) {
+            const id = encodeURIComponent(g.id);
+            const counts = Object.entries(g.status_counts || {}).sort()
+                .map(([k, n]) => n + ' ' + esc(k)).join(', ');
+            return '<tr class="group-row">' +
+                '<td class="timestamp">' + formatTimestamp(g.created) + '</td>' +
+                '<td><button class="expand" data-g="' + esc(g.id) + '" onclick="toggleGroup(this.dataset.g)" title="Show or hide its runs">' +
+                    (open ? '\u25be' : '\u25b8') + '</button>Run group <code>' + esc(g.id) + '</code>' +
+                    '<div class="stats">' + esc(g.setting) + ': ' + esc((g.values || []).join(', ')) + '</div></td>' +
+                '<td><span class="badge badge-group">' + esc(g.strategy) + '</span></td>' +
+                '<td class="stats">' + members.length + ' of ' + (g.runs || 0) + ' run(s)</td>' +
+                '<td class="stats">' + counts + '</td>' +
+                '<td class="actions">' +
+                    '<a href="/group?id=' + id + '">Group</a>' +
+                    '<a href="/graphs?group=' + id + '">Graphs</a>' +
+                    '<a href="/compare?group=' + id + '">Compare</a>' +
+                '</td>' +
+                '</tr>';
+        }
+
+        // buildRows lists the runs in order; the member runs of a known group
+        // are listed under one group row, placed where its newest run is.
+        function buildRows(results, groups) {
+            const byId = {};
+            (groups || []).forEach(g => { byId[g.id] = g; });
+            const members = {};
+            results.forEach(r => {
+                if (r.group_id && byId[r.group_id]) (members[r.group_id] = members[r.group_id] || []).push(r);
+            });
+            const shown = new Set();
+            const rows = [];
+            results.forEach(r => {
+                const g = r.group_id ? byId[r.group_id] : null;
+                if (!g) { rows.push(runRow(r, false, false)); return; }
+                if (shown.has(g.id)) return;
+                shown.add(g.id);
+                const open = EXPANDED.has(g.id);
+                rows.push(groupRow(g, members[g.id], open));
+                members[g.id].forEach(m => rows.push(runRow(m, true, open)));
+            });
+            return rows.join('');
+        }
+
+        function toggleGroup(id) {
+            if (EXPANDED.has(id)) EXPANDED.delete(id); else EXPANDED.add(id);
+            filterResults();
         }
 
         function renderResults(results) {
@@ -181,25 +278,7 @@ __NAVBAR_HTML__
                 return;
             }
 
-            tbody.innerHTML = results.map(result => {
-                const modeBadge = result.mode === 'parallel-sync'
-                    ? '<span class="badge badge-parallel">Parallel-Sync</span>'
-                    : '<span class="badge badge-sequential">Sequential</span>';
-
-                return '<tr>' +
-                    '<td class="timestamp">' + formatTimestamp(result.timestamp) + '</td>' +
-                    '<td><code>' + result.id + '</code></td>' +
-                    '<td>' + modeBadge + '</td>' +
-                    '<td class="stats">' + result.drive_count + ' drive(s)</td>' +
-                    '<td class="stats">' + result.phase_count + ' phase(s)</td>' +
-                    '<td class="actions">' +
-                        '<a href="/result?id=' + result.id + '">Details</a>' +
-                        '<a href="/summary?id=' + result.id + '">Summary</a>' +
-                        '<a href="/graphs?id=' + result.id + '">Graphs</a>' +
-                        '<a href="/compare?id=' + result.id + '">Compare</a>' +
-                    '</td>' +
-                    '</tr>';
-            }).join('');
+            tbody.innerHTML = buildRows(results, allGroups);
         }
 
         function filterResults() {
@@ -213,7 +292,9 @@ __NAVBAR_HTML__
                 filtered = filtered.filter(r =>
                     r.id.toLowerCase().includes(searchTerm) ||
                     r.mode.toLowerCase().includes(searchTerm) ||
-                    String(r.drive_count).includes(searchTerm)
+                    String(r.drive_count).includes(searchTerm) ||
+                    (r.group_id || '').toLowerCase().includes(searchTerm) ||
+                    (r.setting_values || []).join(' ').toLowerCase().includes(searchTerm)
                 );
             }
 
@@ -226,12 +307,15 @@ __NAVBAR_HTML__
         }
 
         function refreshResults() {
+            // Groups are optional: without them every run is listed on its own.
+            const groups = fetch('/api/groups').then(r => r.json()).catch(() => []);
             fetch('/api/results')
                 .then(response => response.json())
-                .then(results => {
+                .then(results => groups.then(gs => {
+                    allGroups = gs || [];
                     allResults = results;
                     filterResults();
-                })
+                }))
                 .catch(error => {
                     console.error('Error loading results:', error);
                     document.getElementById('results-body').innerHTML =
@@ -371,6 +455,13 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
         .btn-secondary:hover {
             background: #616161;
         }
+        .labels { border-collapse: collapse; width: 100%%; font-size: 13px; margin-top: 10px; }
+        .labels th, .labels td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+        .labels th { color: #666; font-size: 12px; text-transform: uppercase; }
+        .labels .ok { color: #2e7d32; font-weight: 600; }
+        .labels .bad { color: #c62828; font-weight: 600; }
+        .labels .dim { color: #999; }
+        .labels .note { color: #8a5300; font-size: 12px; margin-top: 3px; }
     </style>
 </head>
 <body>
@@ -405,6 +496,11 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
             </div>
         </div>
 
+        <div class="card" id="group-card" style="display:none">
+            <h2>Run group</h2>
+            <div id="group-block"></div>
+        </div>
+
         <div class="card">
             <h2>Phases</h2>
             <ul class="phase-list" id="phases-list">
@@ -416,10 +512,49 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
     <script>
         const resultID = '%s';
 
+        function escG(s) {
+            return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+        function readingHTML(r) {
+            if (!r) return '<span class="dim">-</span>';
+            return escG(r.value) + (r.kernel ? ' <span class="dim">(kernel: ' + escG(r.kernel) + ')</span>' : '');
+        }
+        // groupBlockHTML shows the run group of a member run and, per drive,
+        // the value it ran under and the readings that verified it; '' for a
+        // plain run.
+        function groupBlockHTML(result) {
+            const labels = result.labels || {};
+            const devs = Object.keys(labels).sort();
+            if (!result.group_id && devs.length === 0) return '';
+            const gid = encodeURIComponent(result.group_id || '');
+            let h = '';
+            if (result.group_id) {
+                h += '<div>Part of run group <a href="/group?id=' + gid + '"><code>' + escG(result.group_id) + '</code></a>' +
+                    ' (<a href="/graphs?group=' + gid + '">graphs</a>, <a href="/compare?group=' + gid + '">compare</a>)</div>';
+            }
+            if (devs.length) {
+                h += '<table class="labels"><tr><th>Drive</th><th>Setting</th><th>Value</th><th>Before</th><th>After</th><th>Result</th></tr>' +
+                    devs.map(dev => {
+                        const l = labels[dev] || {};
+                        return '<tr><td>' + escG(dev) + '</td><td>' + escG(l.setting) + '</td><td>' + escG(l.value) + '</td>' +
+                            '<td>' + readingHTML(l.before) + '</td><td>' + readingHTML(l.after) + '</td>' +
+                            '<td>' + (l.valid ? '<span class="ok">valid</span>' : '<span class="bad">invalid</span>') +
+                            (l.note ? '<div class="note">' + escG(l.note) + '</div>' : '') + '</td></tr>';
+                    }).join('') + '</table>';
+            }
+            return h;
+        }
+
         // Fetch full result details
         fetch('/api/results/detail?id=' + resultID)
             .then(response => response.json())
             .then(result => {
+                const gb = groupBlockHTML(result);
+                if (gb) {
+                    document.getElementById('group-block').innerHTML = gb;
+                    document.getElementById('group-card').style.display = '';
+                }
                 const phasesList = document.getElementById('phases-list');
 
                 if (!result.phases || result.phases.length === 0) {

@@ -7,16 +7,10 @@ import (
 )
 
 // handleComparePage serves the comparison view where multiple disks and/or
-// phases can be overlaid on the same chart.
+// phases can be overlaid on the same chart (?id=<run> or ?group=<group>).
 func handleComparePage(w http.ResponseWriter, r *http.Request) {
-	resultID := r.URL.Query().Get("id")
-	if resultID == "" {
-		http.Error(w, "Missing result ID", http.StatusBadRequest)
-		return
-	}
-	_, ok := globalResultsStore.GetResult(resultID)
+	dataURL, query, ok := chartSource(w, r)
 	if !ok {
-		http.Error(w, "Result not found", http.StatusNotFound)
 		return
 	}
 
@@ -116,7 +110,7 @@ func handleComparePage(w http.ResponseWriter, r *http.Request) {
 __NAVBAR_HTML__
 <div class="workspace">
     <aside class="sidebar">
-        <a class="back-link" href="/graphs?id=__RESULT_ID__">&#8592; Filter View</a>
+        <a class="back-link" href="/graphs?__QUERY__">&#8592; Filter View</a>
 
         <div class="fg">
             <div class="fg-hdr"><span class="fg-title">Metric</span></div>
@@ -145,6 +139,23 @@ __NAVBAR_HTML__
             <ul class="flist" id="phase-list"></ul>
         </div>
 
+        <!-- A run group's data only: its setting values and the invalid toggle. -->
+        <div id="group-filters" style="display:none">
+            <div class="fg">
+                <div class="fg-hdr">
+                    <span class="fg-title">Setting value</span>
+                    <span class="fg-allnone">
+                        <a href="#" onclick="setAll('value-list',selValues,true);return false">All</a>
+                        <a href="#" onclick="setAll('value-list',selValues,false);return false">None</a>
+                    </span>
+                </div>
+                <ul class="flist" id="value-list"></ul>
+            </div>
+            <div class="fg">
+                <ul class="flist"><li><label><input type="checkbox" id="hide-invalid" checked>&nbsp;Hide invalid results</label></li></ul>
+            </div>
+        </div>
+
         <div class="fg">
             <div class="fg-hdr"><span class="fg-title">Direction</span></div>
             <ul class="flist">
@@ -165,7 +176,7 @@ __NAVBAR_HTML__
 </div>
 
 <script>
-    const resultID = '__RESULT_ID__';
+    const DATA_URL = __DATA_URL__;
     let allData = [];
     let cmpChart = null;
 
@@ -212,10 +223,21 @@ __NAVBAR_HTML__
     let selMetricKey = 'iops';
     const selDisks   = new Set();
     const selPhases  = new Set();
-
+    // Run-group data only (entries carry setting_value): the selected values,
+    // whether invalid results are shown, and the runs per value.
+    const selValues  = new Set();
+    let HAS_SETTING = false;
+    let SHOW_INVALID = false;
+    let RPV = {};
 
     function getEntries() {
-        return allData.filter(d => selDisks.has(d.disk) && selPhases.has(d.phase_name));
+        return visibleEntries(allData, SHOW_INVALID).filter(d => selDisks.has(d.disk) && selPhases.has(d.phase_name) &&
+            (!HAS_SETTING || selValues.has(d.setting_value || '')));
+    }
+
+    function setShowInvalid(on) {
+        SHOW_INVALID = on;
+        updateCount();
     }
 
     function updateCount() {
@@ -322,11 +344,24 @@ __NAVBAR_HTML__
         buildDiskList();
         const phases = [...new Set(allData.map(d => d.phase_name))].sort();
         buildCheckList('phase-list', phases, selPhases, isTrimPhase);
+        if (hasSettingData(allData)) {
+            HAS_SETTING = true;
+            RPV = runsPerValue(allData);
+            const values = [...new Set(allData.map(d => d.setting_value || ''))].sort();
+            buildCheckList('value-list', values, selValues);
+            document.getElementById('group-filters').style.display = '';
+        }
         updateCount();
     }
 
-    // Returns a series label smart enough to omit the constant dimension.
-    function seriesLabel(d, nDisks, nPhases) {
+    // Returns a series label smart enough to omit the constant dimension. An
+    // entry of a run group always names its disk, value and (when the value
+    // was measured in several runs) round: disk · value · round N.
+    function seriesLabel(d, nDisks, nPhases, rpv) {
+        if (d.setting_value) {
+            return (nPhases === 1 ? d.disk : d.disk + ' · ' + (d.phase_name || ('Phase ' + d.phase_num))) +
+                settingTag(d, rpv);
+        }
         if (nDisks   === 1) return d.phase_name || ('Phase ' + d.phase_num);
         if (nPhases  === 1) return d.disk;
         return d.disk + ' \u00b7 ' + (d.phase_name || ('Phase ' + d.phase_num));
@@ -409,7 +444,7 @@ __NAVBAR_HTML__
             entries.forEach((d, i) => {
                 const ts = d[metric.tsKey];
                 const [solid, fill] = PALETTE[i % PALETTE.length];
-                const lbl = seriesLabel(d, nDisks, nPhases);
+                const lbl = seriesLabel(d, nDisks, nPhases, RPV);
                 const shift = metric.key === 'flush' ? 0 : fioShift(d);
                 rampMax = Math.max(rampMax, rampOf(d));
                 if (ts && ts.length > 0) {
@@ -498,7 +533,7 @@ __NAVBAR_HTML__
                 if (doRead)  vals.push(metric.sumR(d));
                 if (doWrite) vals.push(metric.sumW(d));
                 return {
-                    label:           seriesLabel(d, nDisks, nPhases),
+                    label:           seriesLabel(d, nDisks, nPhases, RPV),
                     data:            vals,
                     backgroundColor: barBg,
                     borderColor:     solid,
@@ -532,8 +567,9 @@ __NAVBAR_HTML__
     }
 
     document.getElementById('btn-compare').addEventListener('click', renderCompare);
+    document.getElementById('hide-invalid').addEventListener('change', e => setShowInvalid(!e.target.checked));
 
-    fetch('/api/results/graphs?id=' + resultID)
+    fetch(DATA_URL)
         .then(r => r.json())
         .then(data => { allData = data || []; initSidebar(); })
         .catch(err => {
@@ -547,7 +583,8 @@ __NAVBAR_HTML__
 	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
 	html = strings.ReplaceAll(html, "__CHART_SHARED_JS__", chartSharedJS)
 	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/results"))
-	html = strings.ReplaceAll(html, "__RESULT_ID__", resultID)
+	html = strings.ReplaceAll(html, "__DATA_URL__", jsString(dataURL))
+	html = strings.ReplaceAll(html, "__QUERY__", escapeHTML(query))
 
 	fmt.Fprint(w, html)
 }
