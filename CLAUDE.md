@@ -103,6 +103,8 @@ Templates are stored in `dist/templates/` with subdirectory `includes/` for reus
 
 **External programs** (`cmd/bbbench/deps.go`): `fio` (required), `smartctl`, `nvme`, `hdparm` (optional, for `internal/diskinfo`). `checkDependencies`/`printDependencies` run at orchestrator start (before the TUI) and in `doctor`; `ec.checkEnvironment` (after the workloads are parsed) checks that this fio has every `ioengine` the workloads use (`fio --enghelp`) and warns when tracefs is missing for fsync phases. A new external program must be added to `dependencies`.
 
+**internal/disktemp**: Drive temperature sampling. `Find` picks the source (hwmon: `/sys/class/nvme/nvmeN/hwmon*/temp1_*` with `_max`/`_crit` as limits, or `/sys/block/<dev>/device/hwmon/*` from `drivetemp`; else `smartctl -j -A`; implausible limits such as 65261 °C are dropped); `StartSampler` reads every interval; `WriteLog`/`ReadLog` store `<prefix>_temp.1.log` in fio's shape (value in milli-°C) and recompute the `Summary`. `cmd/bbbench/orchestrator_temp.go` samples around fio in `executePhase` (every phase, `--temp-interval`), puts the last reading on `DriveStatus.TempC` and rebuilds `PhaseResult.Temp`/`TempSeries` from the log (`applyTempLog`, also on load). In the JS, Flush and Temperature are "own clock" metrics (`own: true`, `chart`, `yRange` in `METRICS`, drawn by `makeSeriesChart`; no fio shift); a new such metric is a new entry there.
+
 **internal/dmi**: Reads DMI information from sysfs for host identification. Currently only uses `chassis_serial`.
 
 **internal/flushtrace**: Times device Flush commands from kernel trace events (tracefs), isolating the Flush from the rest of an fsync() that fio measures.
