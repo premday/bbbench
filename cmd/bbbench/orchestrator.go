@@ -41,6 +41,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -275,22 +276,30 @@ func runOrchestrator(args []string) error {
 	}
 	spec := runSpec{Drives: selectedDrives}
 
-	// Start web server in background (not for a dry run, which executes nothing)
-	if !*dryRun {
-		srv := newWebServer("0.0.0.0:12345")
-		go func() {
-			logger.Info("starting web server from orchestrator", "addr", srv.Addr)
-			fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logger.Error("web server error", "err", err)
-			}
-		}()
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			srv.Shutdown(ctx)
-		}()
+	// The web server starts when the run is registered (see OnStarted), once
+	// per process; a dry run never gets there.
+	var srv *http.Server
+	var startOnce sync.Once
+	opts.OnStarted = func() {
+		startOnce.Do(func() {
+			srv = newWebServer("0.0.0.0:12345")
+			go func(srv *http.Server) {
+				logger.Info("starting web server from orchestrator", "addr", srv.Addr)
+				fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
+				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					logger.Error("web server error", "err", err)
+				}
+			}(srv)
+		})
 	}
+	defer func() {
+		if srv == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
 
 	result, runErr := executeRun(context.Background(), opts, spec)
 	if result == nil {
@@ -322,6 +331,33 @@ type runOptions struct {
 	FlushTrace       bool
 	SkipWriteThrough bool
 	LogAvgMsec       int
+	// OnStarted, when non-nil, is called once the run's live result is in
+	// the results store, just before the phases execute (the web server
+	// starts here).
+	OnStarted func()
+}
+
+// registerLiveRun creates the live result for the web view (updated
+// incrementally as phases complete), adds it to the results store, and then
+// calls opts.OnStarted.
+func registerLiveRun(opts runOptions, spec runSpec, coordinator *ExecutionCoordinator) *BenchmarkResult {
+	runID := fmt.Sprintf("run_%d", time.Now().Unix())
+	liveResult := &BenchmarkResult{
+		ID:        runID,
+		Timestamp: time.Now(),
+		Mode:      opts.Mode,
+		Drives:    spec.Drives,
+		Phases:    make([]PhaseResult, 0),
+		OutputDir: opts.OutDir,
+		GroupID:   spec.GroupID,
+		Labels:    spec.Labels,
+	}
+	globalResultsStore.AddResult(liveResult)
+	coordinator.liveResult = liveResult
+	if opts.OnStarted != nil {
+		opts.OnStarted()
+	}
+	return liveResult
 }
 
 // runSpec describes one run: its drives and, for a run group, its labels.
@@ -371,20 +407,7 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 		}
 	}()
 
-	// Create live result for web view (updated incrementally as phases complete)
-	runID := fmt.Sprintf("run_%d", time.Now().Unix())
-	liveResult := &BenchmarkResult{
-		ID:        runID,
-		Timestamp: time.Now(),
-		Mode:      opts.Mode,
-		Drives:    spec.Drives,
-		Phases:    make([]PhaseResult, 0),
-		OutputDir: opts.OutDir,
-		GroupID:   spec.GroupID,
-		Labels:    spec.Labels,
-	}
-	globalResultsStore.AddResult(liveResult)
-	coordinator.liveResult = liveResult
+	liveResult := registerLiveRun(opts, spec, coordinator)
 
 	// Execute based on mode
 	var execErr error
