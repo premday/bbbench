@@ -178,7 +178,7 @@ Flags:
 
 Pages available:
 - `/` — home
-- `/status` — live benchmark status while the orchestrator runs: progress, and per drive its configuration (interface, link speed, power, write cache policy, SMART), and its phases with the fio config, real and expected time and an ETA (details in [documentation/web-ui.md](documentation/web-ui.md))
+- `/status` — live benchmark status while the orchestrator runs: progress, and per drive its configuration (interface, physical slot, controller, link speed, power, write cache policy, SMART), and its phases with the fio config, real and expected time and an ETA (details in [documentation/web-ui.md](documentation/web-ui.md))
 - `/results` — browse and search past runs
 - `/summary?id=<id>` — statistics table (min/avg/max/σ) per phase, broken down by disk
 - `/graphs?id=<id>` — time-series charts per phase: IOPS, bandwidth and latency (from fio) and Flush latency (from kernel traces), on one shared time axis with the ramp-up shaded

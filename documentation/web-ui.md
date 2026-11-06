@@ -7,7 +7,7 @@ The `bbbench serve` command (also started automatically by `orchestrator` during
 The **Status** page shows live progress while `orchestrator` is running.
 
 - **Current Status** — running/idle indicator, overall progress bar, current phase number, and completed phase count.
-- **Drives** — one card per benchmarked drive showing model, serial, capacity, current status, and active phase name.
+- **Drives** — one card per benchmarked drive showing model, serial, capacity, current status, and active phase name, then its configuration (below) and its phases.
 
 Each drive card also shows how the disk is configured, read once when the run starts (read-only: bbbench never changes it):
 
