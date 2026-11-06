@@ -241,9 +241,12 @@ type MatrixRow struct {
 }
 
 // groupMatrix aggregates entries per (phase, value) over the valid ones
-// (Invalid entries and unlabelled ones with no value do not count). Rows come
-// in order of first appearance.
-func groupMatrix(entries []DiskPhaseData) []MatrixRow {
+// (Invalid entries and unlabelled ones with no value do not count). Every
+// phase seen gets a row for each of values, marked incomplete when the value
+// has no valid result there (also when all its runs were not run). Rows come
+// by phase, then in the order of values (other values after them, in order of
+// first appearance).
+func groupMatrix(entries []DiskPhaseData, values []string) []MatrixRow {
 	type key struct {
 		phase int
 		name  string
@@ -281,13 +284,49 @@ func groupMatrix(entries []DiskPhaseData) []MatrixRow {
 		r.IOPS.Min, r.IOPS.Max = minf(r.IOPS.Min, iops), maxf(r.IOPS.Max, iops)
 		r.BWMbps.Min, r.BWMbps.Max = minf(r.BWMbps.Min, bw), maxf(r.BWMbps.Max, bw)
 	}
+	type phaseKey struct {
+		num  int
+		name string
+	}
+	var phases []phaseKey
+	seen := map[phaseKey]bool{}
+	for _, r := range rows {
+		if p := (phaseKey{r.PhaseNum, r.PhaseName}); !seen[p] {
+			seen[p] = true
+			phases = append(phases, p)
+		}
+	}
+	for _, p := range phases {
+		for _, v := range values {
+			k := key{p.num, p.name, v}
+			if _, ok := idx[k]; !ok {
+				idx[k] = len(rows)
+				rows = append(rows, MatrixRow{PhaseNum: p.num, PhaseName: p.name, Value: v, Incomplete: true})
+			}
+		}
+	}
 	for i := range rows {
 		if n := float64(rows[i].N); n > 0 {
 			rows[i].IOPS.Mean = sums[i][0] / n
 			rows[i].BWMbps.Mean = sums[i][1] / n
 		}
 	}
-	sort.SliceStable(rows, func(a, b int) bool { return rows[a].PhaseNum < rows[b].PhaseNum })
+	order := map[string]int{}
+	for i, v := range values {
+		order[v] = i
+	}
+	rank := func(v string) int {
+		if i, ok := order[v]; ok {
+			return i
+		}
+		return len(values)
+	}
+	sort.SliceStable(rows, func(a, b int) bool {
+		if rows[a].PhaseNum != rows[b].PhaseNum {
+			return rows[a].PhaseNum < rows[b].PhaseNum
+		}
+		return rank(rows[a].Value) < rank(rows[b].Value)
+	})
 	return rows
 }
 
@@ -339,7 +378,7 @@ func handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 		"id": g.ID, "created": g.Created, "host": g.Host, "plan": g.Plan,
 		"setting": g.Setting, "strategy": g.Strategy, "values": g.Values,
 		"originals": g.Originals, "restore": g.Restore,
-		"runs": runs, "matrix": groupMatrix(groupEntries(g)),
+		"runs": runs, "matrix": groupMatrix(groupEntries(g), g.Values),
 	})
 }
 

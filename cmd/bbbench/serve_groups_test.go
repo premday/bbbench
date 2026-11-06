@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -189,7 +190,7 @@ func TestGroupMatrix(t *testing.T) {
 	rows := groupMatrix([]DiskPhaseData{
 		mk("w", "on", 100, false), mk("w", "on", 300, false), mk("w", "on", 9999, true),
 		mk("w", "off", 5, true),
-	})
+	}, []string{"on", "off"})
 	if len(rows) != 2 {
 		t.Fatalf("rows = %+v", rows)
 	}
@@ -282,7 +283,7 @@ func TestGroupEntries_InterruptedRunIsInvalid(t *testing.T) {
 			t.Errorf("%s Invalid = %v, want %v", e.RunID, e.Invalid, want)
 		}
 	}
-	for _, row := range groupMatrix(entries) {
+	for _, row := range groupMatrix(entries, g.Values) {
 		if row.Value == "disabled" && (row.N != 0 || !row.Incomplete) {
 			t.Errorf("interrupted value row = %+v, want n=0 incomplete", row)
 		}
@@ -292,5 +293,42 @@ func TestGroupEntries_InterruptedRunIsInvalid(t *testing.T) {
 func TestGroupPage_InterruptedRunNotValid(t *testing.T) {
 	if !strings.Contains(groupPageHTML, "function runValid(run, d) { return run.status !== 'interrupted' && d.label && d.label.valid; }") {
 		t.Error("the group page must treat an interrupted run as invalid")
+	}
+}
+
+// A value whose runs were all not run still has a row per phase, marked
+// incomplete, in the order of the group's values.
+func TestGroupMatrix_SeedsValuesWithoutResults(t *testing.T) {
+	mk := func(num int, phase, value string, iops float64) DiskPhaseData {
+		return DiskPhaseData{PhaseNum: num, PhaseName: phase, SettingValue: value, WriteIOPS: iops, HasWrite: true}
+	}
+	rows := groupMatrix([]DiskPhaseData{mk(1, "w", "off", 10), mk(2, "r", "off", 20)}, []string{"on", "off"})
+	var got []string
+	for _, r := range rows {
+		got = append(got, fmt.Sprintf("%d %s %s n=%d inc=%v", r.PhaseNum, r.PhaseName, r.Value, r.N, r.Incomplete))
+	}
+	want := []string{"1 w on n=0 inc=true", "1 w off n=1 inc=false", "2 r on n=0 inc=true", "2 r off n=1 inc=false"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("rows =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestHandleGroupDetail_NotRunValueHasRow(t *testing.T) {
+	globalGroupStore.Clear()
+	globalResultsStore.Clear()
+	t.Cleanup(func() { globalGroupStore.Clear(); globalResultsStore.Clear() })
+	globalResultsStore.AddResult(groupTestResult("r1", "sda", "enabled", true, 100))
+	globalGroupStore.AddGroup(&rungroup.GroupFile{ID: "g2", Values: []string{"enabled", "disabled"}, Runs: []rungroup.GroupRun{
+		{RunID: "r1", Status: rungroup.RunDone},
+		{Status: rungroup.RunNotRun},
+	}})
+	var out struct {
+		Matrix []MatrixRow `json:"matrix"`
+	}
+	if err := json.Unmarshal(get(handleGroupDetail, "/api/groups/detail?id=g2").Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Matrix) != 2 || out.Matrix[1].Value != "disabled" || !out.Matrix[1].Incomplete || out.Matrix[1].N != 0 {
+		t.Errorf("matrix = %+v, want a disabled row marked incomplete", out.Matrix)
 	}
 }
