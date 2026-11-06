@@ -43,6 +43,9 @@ type ExecutionCoordinator struct {
 	sysBlock         string // sysfs block dir override for tests ("" = /sys/block)
 }
 
+// fioStampSlackMs is how early (ms) a fio log stamp can be for its window.
+const fioStampSlackMs = 10
+
 // defaultLogAvgMsec is fio's log averaging interval when none is set (the
 // --log-avg-msec default); also the Flush series window for logs that do not
 // record one.
@@ -325,7 +328,11 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 		}
 		fileBuckets := make(map[int64]*bucketAcc, len(perTime))
 		for tms, a := range perTime {
-			bucket := (tms / thresholdMs) * thresholdMs
+			// Floor, with a few ms of slack: fio stamps a window late (up to
+			// about a second after the boundary, when several jobs log) or a
+			// millisecond early (9999 for 10 s). Plain flooring sends the early
+			// stamp to the previous bucket, merging two windows and leaving a gap.
+			bucket := ((tms + fioStampSlackMs) / thresholdMs) * thresholdMs
 			ba := fileBuckets[bucket]
 			if ba == nil {
 				ba = &bucketAcc{}

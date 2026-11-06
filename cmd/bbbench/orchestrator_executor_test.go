@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"os"
 	"testing"
 )
 
@@ -317,6 +318,32 @@ func TestCoalesceMsec(t *testing.T) {
 		got := ec.coalesceMsec()
 		if got != c.want {
 			t.Errorf("coalesceMsec(logAvgMsec=%d) = %d, want %d", c.logAvgMsec, got, c.want)
+		}
+	}
+}
+
+// fio stamps most windows a millisecond early (5000, 9999, 14999, 19999): each
+// must stay in its own bucket, not merge into the previous one.
+func TestParseFioSingleLog_EarlyStampsKeepTheirWindow(t *testing.T) {
+	dir := t.TempDir()
+	prefix := dir + "/d_log"
+	body := "5000, 157395, 0, 0, 0\n9999, 157377, 0, 0, 0\n14999, 157401, 0, 0, 0\n19999, 157417, 0, 0, 0\n"
+	if err := os.WriteFile(prefix+"_iops.1.log", []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 5 s windows: the threshold is max(5000/10, 1000) = 1000 ms.
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
+	var got []float64
+	for _, p := range pts {
+		got = append(got, p.T)
+	}
+	want := []float64{5, 10, 15, 20}
+	if len(got) != len(want) {
+		t.Fatalf("points at %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("points at %v, want %v", got, want)
 		}
 	}
 }

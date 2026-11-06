@@ -36,6 +36,7 @@
 
 ### Fixed
 
+- fio log points stamped a millisecond early (9999 for 10 s) no longer fall into the previous 1 s bucket, which merged two windows and left a gap after them
 - Flush tracing stop no longer waits for an EOF that a live `trace_pipe` never sends (it timed out with "trace reader did not finish"); a stop marker ends the reader
 
 ## [0.1.0] - 2026-03-31
