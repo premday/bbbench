@@ -21,8 +21,9 @@ type dependency struct {
 var dependencies = []dependency{
 	{"fio", []string{"--version"}, true, "runs every benchmark", "fio"},
 	{"smartctl", []string{"--version"}, false, "SMART health on the status page and in the disk dump", "smartmontools"},
-	{"nvme", []string{"--version"}, false, "NVMe power state, APST, drive write cache and the SMART fallback on the status page", "nvme-cli"},
-	{"hdparm", []string{"-V"}, false, "the SATA identify report in the disk dump", "hdparm"},
+	{"nvme", []string{"--version"}, false, "NVMe power state, APST, drive write cache and the SMART fallback on the status page, and changing the write cache of NVMe drives in a setting test", "nvme-cli"},
+	{"hdparm", []string{"-V"}, false, "the SATA identify report in the disk dump, and changing the write cache of SATA drives in a setting test", "hdparm"},
+	{"sdparm", []string{"--version"}, false, "changing the write cache of SAS/SCSI drives in a setting test", "sdparm"},
 	{"lspci", []string{"--version"}, false, "the storage controller's name on the status page", "pciutils"},
 }
 
