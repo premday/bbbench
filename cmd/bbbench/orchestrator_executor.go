@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -122,13 +123,20 @@ func validateFioFile(path string) error {
 }
 
 // newExecutionCoordinator creates a new coordinator and parses all fio files.
-func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*ExecutionCoordinator, error) {
+func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (_ *ExecutionCoordinator, err error) {
 	// Check if fio is installed
 	if err := checkFioInstalled(); err != nil {
 		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// On a setup error nobody gets the coordinator: end its context so its
+	// signal handler stops.
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
 
 	ec := &ExecutionCoordinator{
 		drives:    drives,
@@ -177,15 +185,27 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*Execu
 	return ec, nil
 }
 
+// errRunInterrupted is returned by the executors when the run was stopped
+// (signal or cancelled context) before all phases ran.
+var errRunInterrupted = errors.New("execution interrupted by user")
+
 // exitCodeSIGINT is the conventional exit code for processes terminated by SIGINT (128 + signal number).
 const exitCodeSIGINT = 128 + int(syscall.SIGINT)
 
-// handleSignals sets up signal handling for graceful shutdown.
+// handleSignals sets up signal handling for graceful shutdown. It stops
+// listening when the coordinator's context ends without a signal, so the
+// handlers of finished runs (a run group has one coordinator per run) do not
+// pile up.
 func (ec *ExecutionCoordinator) handleSignals() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	<-sigChan
+	select {
+	case <-sigChan:
+	case <-ec.ctx.Done():
+		signal.Stop(sigChan)
+		return
+	}
 	fmt.Println("\n\nReceived interrupt signal. Gracefully shutting down...")
 	fmt.Println("Waiting for current phase to complete...")
 	fmt.Println("Press Ctrl+C again to force quit (may leave temporary files)")
@@ -511,25 +531,8 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		s.CompletedPhases = 0
 		s.CurrentPhase = 0
 		s.phaseConfigs = ec.statusPhaseConfigs()
-		// Build drive status list
-		s.Drives = make([]DriveStatus, len(ec.drives))
-		for i, drive := range ec.drives {
-			driveType := "SSD"
-			if drive.Device.Rotational {
-				driveType = "HDD"
-			}
-			capacityGB := drive.Device.CapacityBytes / (1024 * 1024 * 1024)
-			s.Drives[i] = DriveStatus{
-				Name:         drive.Device.Name,
-				Vendor:       drive.Device.Vendor,
-				Model:        drive.Device.Model,
-				Serial:       drive.Device.Serial,
-				Capacity:     capacityGB,
-				Type:         driveType,
-				Status:       "pending",
-				CurrentPhase: 0,
-			}
-		}
+		// Build drive status list (a run group's per-drive setting is kept)
+		s.Drives = newDriveStatuses(ec.drives, s.Drives)
 	})
 
 	ec.collectDiskConfig()
@@ -542,7 +545,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			fmt.Println("\nExecution interrupted. Cleaning up...")
 			ec.cleanup()
 			ec.saveState()
-			return fmt.Errorf("execution interrupted by user")
+			return errRunInterrupted
 		default:
 		}
 
@@ -727,25 +730,8 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		s.CompletedPhases = 0
 		s.CurrentPhase = 0
 		s.phaseConfigs = ec.statusPhaseConfigs()
-		// Build drive status list
-		s.Drives = make([]DriveStatus, len(ec.drives))
-		for i, drive := range ec.drives {
-			driveType := "SSD"
-			if drive.Device.Rotational {
-				driveType = "HDD"
-			}
-			capacityGB := drive.Device.CapacityBytes / (1024 * 1024 * 1024)
-			s.Drives[i] = DriveStatus{
-				Name:         drive.Device.Name,
-				Vendor:       drive.Device.Vendor,
-				Model:        drive.Device.Model,
-				Serial:       drive.Device.Serial,
-				Capacity:     capacityGB,
-				Type:         driveType,
-				Status:       "pending",
-				CurrentPhase: 0,
-			}
-		}
+		// Build drive status list (a run group's per-drive setting is kept)
+		s.Drives = newDriveStatuses(ec.drives, s.Drives)
 	})
 
 	ec.collectDiskConfig()
@@ -758,7 +744,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		case <-ec.ctx.Done():
 			fmt.Println("\nExecution interrupted. Cleaning up...")
 			ec.cleanup()
-			return fmt.Errorf("execution interrupted by user")
+			return errRunInterrupted
 		default:
 		}
 
@@ -784,7 +770,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 				fmt.Println("\n  Interrupted during execution. Cleaning up...")
 				ec.cleanup()
 				ec.saveState()
-				return fmt.Errorf("execution interrupted by user")
+				return errRunInterrupted
 			default:
 			}
 

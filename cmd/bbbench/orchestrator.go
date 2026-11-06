@@ -378,6 +378,9 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 	if err != nil {
 		return nil, err
 	}
+	// Ending the coordinator's context when the run returns also stops its
+	// signal handler.
+	defer coordinator.cancel()
 	coordinator.dryRun = opts.DryRun
 	coordinator.stateFile = getStateFilePath(opts.OutDir)
 	coordinator.resumeState = opts.Resume
@@ -396,12 +399,16 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 		return nil, displayDryRun(coordinator)
 	}
 
-	// Stop the coordinator when the caller cancels ctx.
+	// Stop the coordinator when the caller cancels ctx, reported as an
+	// interruption like a signal.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
+			coordinator.mu.Lock()
+			coordinator.interrupted = true
+			coordinator.mu.Unlock()
 			coordinator.cancel()
 		case <-done:
 		}

@@ -424,3 +424,43 @@ func TestRecordPhaseTime(t *testing.T) {
 		t.Errorf("/api/status = %s", w.Body.String())
 	}
 }
+
+// The snapshot holds its own copy of the group state, and rebuilding the
+// drive list at the start of a run keeps each drive's setting state.
+func TestGetStatus_GroupCopiedAndSettingKept(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	valid := true
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Group = &GroupStatus{ID: "g1", Setting: "cache", Strategy: "sequential", Run: 1, Runs: 2, Step: "applying"}
+		s.Drives = []DriveStatus{{Name: "sda", Setting: &DriveSetting{Value: "enabled", Valid: &valid}}}
+	})
+	snap := GetStatus()
+	UpdateStatus(func(s *BenchmarkStatus) { s.Group.Step = "running" })
+	if snap.Group == nil || snap.Group.Step != "applying" {
+		t.Errorf("snapshot group changed with the status: %+v", snap.Group)
+	}
+
+	drives := []DriveInfo{{Device: blockdev.Device{Name: "sda"}}, {Device: blockdev.Device{Name: "sdb"}}}
+	UpdateStatus(func(s *BenchmarkStatus) { s.Drives = newDriveStatuses(drives, s.Drives) })
+	got := GetStatus().Drives
+	if len(got) != 2 || got[0].Setting == nil || got[0].Setting.Value != "enabled" || got[1].Setting != nil {
+		t.Errorf("drives after rebuild = %+v", got)
+	}
+	if got[0].Status != "pending" {
+		t.Errorf("rebuilt drive status %q, want pending", got[0].Status)
+	}
+
+	w := httptest.NewRecorder()
+	handleStatus(w, httptest.NewRequest("GET", "/api/status", nil))
+	body := w.Body.String()
+	for _, want := range []string{`"group":{`, `"step":"running"`, `"setting":{"value":"enabled"`, `"valid":true`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/api/status lacks %s: %s", want, body)
+		}
+	}
+	ResetStatus()
+	if GetStatus().Group != nil {
+		t.Error("ResetStatus kept the group")
+	}
+}

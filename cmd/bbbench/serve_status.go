@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"bbbench/internal/diskinfo"
+	"bbbench/internal/rungroup"
+	"bbbench/internal/settings"
 )
 
 // BenchmarkStatus represents the current state of benchmark execution.
@@ -36,9 +38,43 @@ type BenchmarkStatus struct {
 	// LastUpdate is the last time the status was updated
 	LastUpdate time.Time `json:"last_update"`
 
+	// Group is the run group being executed (nil for a single run). It is
+	// replaced, never mutated, on every update.
+	Group *GroupStatus `json:"group,omitempty"`
+
 	// phaseConfigs describes each drive's phases (keyed by device name); it is
 	// served by /api/status/phases, not with every status poll.
 	phaseConfigs map[string][]PhaseConfig
+}
+
+// Group steps, in the order a run goes through them.
+const (
+	stepApplying        = "applying"
+	stepVerifyingBefore = "verifying-before"
+	stepRunning         = "running"
+	stepVerifyingAfter  = "verifying-after"
+	stepRestoring       = "restoring"
+	stepDone            = "done"
+)
+
+// GroupStatus is where a run group is: run Run (1-based) of Runs, at Step.
+type GroupStatus struct {
+	ID       string            `json:"id"`
+	Setting  string            `json:"setting"`
+	Strategy rungroup.Strategy `json:"strategy"`
+	Run      int               `json:"run"`
+	Runs     int               `json:"runs"`
+	Step     string            `json:"step"`
+}
+
+// DriveSetting is a drive's setting value in the current run of a group and
+// its verification: Before and After are nil until read, Valid is nil until
+// the run has been verified after.
+type DriveSetting struct {
+	Value  string            `json:"value"`
+	Before *settings.Reading `json:"before,omitempty"`
+	After  *settings.Reading `json:"after,omitempty"`
+	Valid  *bool             `json:"valid,omitempty"`
 }
 
 // DriveStatus represents the status of a single drive.
@@ -68,6 +104,38 @@ type DriveStatus struct {
 	// Warning is a caveat about the phase the drive is running.
 	Warning       string `json:"warning,omitempty"`
 	LastCompleted string `json:"last_completed,omitempty"`
+	// Setting is the run group setting of the drive (nil for a single run).
+	// It is replaced, never mutated, so snapshots can share it.
+	Setting *DriveSetting `json:"setting,omitempty"`
+}
+
+// newDriveStatuses is the pending status of each drive at the start of a
+// run. A drive's Setting is kept from prev (the run group sets it before the
+// run starts).
+func newDriveStatuses(drives []DriveInfo, prev []DriveStatus) []DriveStatus {
+	out := make([]DriveStatus, len(drives))
+	for i, drive := range drives {
+		driveType := "SSD"
+		if drive.Device.Rotational {
+			driveType = "HDD"
+		}
+		out[i] = DriveStatus{
+			Name:     drive.Device.Name,
+			Vendor:   drive.Device.Vendor,
+			Model:    drive.Device.Model,
+			Serial:   drive.Device.Serial,
+			Capacity: drive.Device.CapacityBytes / (1024 * 1024 * 1024),
+			Type:     driveType,
+			Status:   "pending",
+		}
+		for _, p := range prev {
+			if p.Name == drive.Device.Name {
+				out[i].Setting = p.Setting
+				break
+			}
+		}
+	}
+	return out
 }
 
 // clearNotes drops the per-phase skip reason and warning (a new phase starts).
@@ -101,6 +169,8 @@ type BenchmarkStatusSnapshot struct {
 	LastUpdate      time.Time     `json:"last_update"`
 	// ServerTime lets the page measure elapsed time without trusting its own clock.
 	ServerTime time.Time `json:"server_time"`
+	// Group is a copy of the run group state (nil for a single run).
+	Group *GroupStatus `json:"group,omitempty"`
 }
 
 // GetStatus returns a point-in-time snapshot of the current status.
@@ -122,6 +192,10 @@ func GetStatus() BenchmarkStatusSnapshot {
 		snap.Drives = make([]DriveStatus, len(globalStatus.Drives))
 		copy(snap.Drives, globalStatus.Drives)
 	}
+	if globalStatus.Group != nil {
+		g := *globalStatus.Group
+		snap.Group = &g
+	}
 	return snap
 }
 
@@ -136,6 +210,7 @@ func ResetStatus() {
 		s.TotalPhases = 0
 		s.CompletedPhases = 0
 		s.phaseConfigs = nil
+		s.Group = nil
 	})
 }
 
