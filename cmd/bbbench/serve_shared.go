@@ -19,14 +19,16 @@ const chartSharedJS = `function rampOf(d) {
     // ramp-up ends instead of one polling interval later. Flush points are
     // already window starts.
     function windowOf(d) {
-        if (d.log_avg_msec) return d.log_avg_msec / 1000;
-        // Runs saved without the interval: fio's first point closes the first
-        // window, so its time is the window width.
+        // What fio really used: its first point closes the first window, so its
+        // time is the window width. The saved --log-avg-msec can disagree (the
+        // job file's [global] sets its own log_avg_msec), so it is only the
+        // fallback when there is no fio series.
         let m = Infinity;
         ['ts_iops', 'ts_bw', 'ts_lat'].forEach(k => {
             if (d[k] && d[k].length) m = Math.min(m, d[k][0].t);
         });
-        return isFinite(m) ? m : 0;
+        if (isFinite(m)) return m;
+        return d.log_avg_msec ? d.log_avg_msec / 1000 : 0;
     }
     function fioShift(d) {
         return rampOf(d) - windowOf(d);
