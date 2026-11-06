@@ -31,9 +31,14 @@ it ran under, verified, and visible in the web UI.
   `run_<unix>_summary.json`).
 - **Run group**: the set of runs of one plan that differ by the value of one
   setting. A normal run is a group of one with no setting.
-- **Label**: the value a drive carried during a run. It belongs to the pair
-  (run, drive), not to the run: with the parallel option a run holds drives
-  with different values.
+- **Target**: what the plan runs on. Today a target is a drive. Later it may be
+  an md array or a controller's virtual drive.
+- **Label**: the value a target carried during a run. It belongs to the pair
+  (run, target), not to the run: with the parallel option a run holds targets
+  with different values. In the first version every target is a drive, so this
+  reads "(run, drive)" everywhere below; the data model uses a generic target
+  (name, serial and model for a drive; name and members for an array) so that
+  later settings fit without a migration.
 
 ## Goals
 
@@ -55,8 +60,8 @@ it ran under, verified, and visible in the web UI.
 
 ## Non-goals (first version)
 
-- The RAID layout setting (it uses the same mechanism later; the mdadm build and
-  teardown code is in `raid_testing`) and power management.
+- The software RAID layout setting (mdadm), hardware RAID / controller mode, and
+  power management. Room is left for them, see "Later settings"; none is built.
 - Combining two settings in one group (a matrix); one setting per group.
 - Verification between phases; it is per run.
 - Changing a setting while a run is in progress.
@@ -157,7 +162,28 @@ configuration. After this change the rule is: it changes it only in setting-test
 mode, after an explicit confirmation, and always restores it. README,
 `flush-latency.md`, `web-ui.md`, CLAUDE.md and the warning texts must say so.
 
-### Later: controller mode (not built now)
+### Later settings (not built now; room only)
+
+Two more settings are planned and **must not be implemented in this version**:
+**hardware RAID** (controller mode, below) and **software RAID with mdadm** (the
+builder, teardown and in-use protection already exist on the `raid_testing`
+branch). What they ask of the first version is the same as the controller mode,
+plus:
+
+- **They change the targets.** A "layout" value turns the selected drives into a
+  different set of targets: four drives are four targets for the value *none*, one
+  target for *raid10*. So a run's targets are part of the run (stored in the group
+  file and the summary, with members for an array), and comparison between values
+  cannot assume the same drives. The pages compare **by label**, and show the
+  members of each target.
+- **Apply builds and Restore tears down.** The recovery file must be able to hold
+  "arrays assembled by bbbench" as well as drive values (the cleanup state of
+  `raid_testing` is the model), and the same restore-on-every-exit path covers
+  both.
+- **Verification differs**: for a layout it checks that the arrays exist with the
+  expected level and members, before and after the run.
+
+#### Controller mode
 
 Grouping runs by a hardware controller mode (HBA / IT against RAID, JBOD or
 passthrough against virtual drives, the controller's cache policy) is the
