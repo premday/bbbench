@@ -29,6 +29,8 @@ it ran under, verified, and visible in the web UI.
 - **Value**: one choice of a setting (`write cache: enabled`, `disabled`).
 - **Run**: one execution of the whole test plan, as today (one coordinator, one
   `run_<unix>_summary.json`).
+- **Variant**: one configuration inside a run: a value and the drives it applies
+  to (see "Creating a group").
 - **Run group**: the set of runs of one plan that differ by the value of one
   setting. A normal run is a group of one with no setting.
 - **Target**: what the plan runs on. Today a target is a drive. Later it may be
@@ -79,34 +81,53 @@ it ran under, verified, and visible in the web UI.
 
 ## Creating a group (orchestrator TUI)
 
-Order: drive selection (as today) -> **mode** -> setting -> values -> strategy
--> confirmation -> run.
+A single run is what bbbench does today: the user picks drives, each drive gets
+the plan for its type (SSD or HDD plan), and everything is tested at once. A
+group is for something else: it tests **one setting over a criterion**, and
+what the user must provide depends on the setting's **scope**.
+
+Order: **mode** -> (single run: drive selection as today) | (setting test:
+setting -> that setting's input form -> confirmation) -> run. The mode comes
+first because for some settings the drives are not one common selection.
 
 1. **Mode**: *single run* or *setting test*. Single run is today's flow,
    unchanged.
-2. **Setting**: a list of available settings, each shown with the number of
-   selected drives it applies to, and the reason for those it does not.
-3. **Values**: the user ticks the values to test. For write cache both
-   `enabled` and `disabled` start ticked **(call)**.
-4. **Strategy**, offered only when it is possible:
-   - *one value after the other* (default): every selected drive gets the same
-     value in a run; one run per value.
-   - *parallel*: identical drives are divided among the values, all values run
-     at the same time in one run.
-   - *parallel with swap round*: parallel, then the values are rotated over the
-     drive subsets and the plan runs again, so each value is measured on every
-     subset. Not the default.
-5. **Confirmation**: a summary of what will be changed on which drives, the
+2. **Setting**: the available settings, each with the number of discovered
+   drives it applies to and, for those it does not, the reason.
+3. **The setting's input form**, by scope:
+   - **Drive scope** (write cache policy): select the drives (the drive
+     selection screen, as today), then tick the values to test (for write cache
+     both `enabled` and `disabled` start ticked **(call)**), then the strategy.
+     The same setting acts on separate drives, so values can run side by side:
+     - *one value after the other* (default): every selected drive gets the same
+       value in a run; one run per value.
+     - *parallel*: identical drives are divided among the values, all values run
+       at the same time in one run.
+     - *parallel with swap round*: parallel, then the values are rotated over the
+       drive subsets and the plan runs again, so each value is measured on every
+       subset. Not the default.
+   - **Layout scope** (software RAID with mdadm, later; not built now): the user
+     lists the variants one by one; for each, the layout and the disks it uses
+     (a disk may appear in several variants, since variants run one after the
+     other). No parallel or swap: a layout makes its disks one target.
+   Each variant still runs the plan for the type of its disks.
+4. **Confirmation**: a summary of what will be changed on which drives, the
    number of runs, the estimated time, and the statement that the original
    values will be restored. Nothing is applied before the user confirms.
 
-Parallel rules **(call)**: drives are classed by (vendor, model, capacity).
-Parallel is offered only if every selected drive belongs to a class whose size
-is a multiple of the number of values, and each class is divided evenly among
-the values. Otherwise the TUI says why it is not offered. With K values and
-subsets S1..SK, the swap rounds are the K cyclic rotations (each subset sees
-each value once); for two values this is the simple swap. Different firmware in
-one class is shown as a warning, not a blocker.
+A **variant** is one configuration of a run: a value and the drives it applies
+to. A run holds one variant (sequential strategy, or a layout), or several
+disjoint ones (parallel). The input form of a setting only decides how the user
+produces the list of variants; everything after (apply, verify, run, verify,
+restore, labels) is the same for every setting.
+
+Parallel rules **(call)** (drive scope only): drives are classed by (vendor,
+model, capacity). Parallel is offered only if every selected drive belongs to a
+class whose size is a multiple of the number of values, and each class is
+divided evenly among the values. Otherwise the TUI says why it is not offered.
+With K values and subsets S1..SK, the swap rounds are the K cyclic rotations
+(each subset sees each value once); for two values this is the simple swap.
+Different firmware in one class is shown as a warning, not a blocker.
 
 ## The setting abstraction
 
