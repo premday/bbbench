@@ -431,10 +431,17 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
                     const jobCount = phase.jobs ? phase.jobs.length : 0;
                     const duration = phase.duration_seconds ? phase.duration_seconds.toFixed(1) : 'N/A';
 
+                    const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+                    const skipped = Object.entries(phase.skipped || {}).map(([dev, why]) =>
+                        '<div class="phase-stats" style="color:#1e3a5f;background:#e0ecff;border-radius:4px;padding:4px 8px;margin-top:4px;">' +
+                        '<b>Skipped</b> ' + esc(why) + '</div>').join('');
+                    const warned = Object.entries(phase.warnings || {}).map(([dev, why]) =>
+                        '<div class="phase-stats" style="color:#8a5300;background:#fff3e0;border-radius:4px;padding:4px 8px;margin-top:4px;white-space:pre-line;">' +
+                        '&#9888; ' + esc(why) + '</div>').join('');
                     return '<li class="phase-item">' +
-                        '<div class="phase-name">Phase ' + (i + 1) + ': ' + (phase.phase_name || 'Unnamed') + '</div>' +
+                        '<div class="phase-name">Phase ' + (i + 1) + ': ' + esc(phase.phase_name || 'Unnamed') + '</div>' +
                         '<div class="phase-stats">Jobs: ' + jobCount + ' | Duration: ' + duration + 's</div>' +
-                        '</li>';
+                        warned + skipped + '</li>';
                 }).join('');
             })
             .catch(error => {

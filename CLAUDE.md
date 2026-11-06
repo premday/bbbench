@@ -101,6 +101,16 @@ Templates are stored in `dist/templates/` with subdirectory `includes/` for reus
 
 **internal/dmi**: Reads DMI information from sysfs for host identification. Currently only uses `chassis_serial`.
 
+**internal/flushtrace**: Times device Flush commands from kernel trace events (tracefs), isolating the Flush from the rest of an fsync() that fio measures.
+- `ParseLine` parses ftrace text lines into `Event`s.
+- `NVMe` collector: `nvme_setup_cmd`/`nvme_complete_rq`, paired exactly by (controller, queue, cmdid); reports mean, min, max, p50, p99.
+- `Start`/`Session.Stop`: runs a collector against a private tracefs instance (`instances/bbbench-flush-*`), so global tracing is untouched and sessions can run in parallel. NVMe namespaces use the NVMe tracepoints when present, else the block ones. Needs root and tracefs; returns `ErrUnsupported` otherwise. `executePhase` starts a session for phases whose fio jobs set `fsync=N` (`phaseHasFsync`) unless `--no-flush-trace`; the `Summary` lands in `FioResult.FlushTrace` and `PhaseResult.FlushTrace`; the per-window log is stored as `<fio log prefix>_flush.1.log` (`cmd/bbbench/flushlog.go`), and loading a run (`loadBenchmarkSummary`, `updateLivePhase`) reads `FlushTrace`/`FlushSeries` back from that file. Rationale: fio only times the whole fsync() call, so the device's own Flush time is taken from kernel trace events instead (see README, "Flush tracing"). Tests use a fake tracefs tree (`Options.TracefsRoot`, `SysBlock`).
+- Chart code shared by the graphs and compare pages (time axis: `rampOf`, `windowOf`, `fioShift`, the ramp-up shading plugin, `fmtTick`) lives once in `cmd/bbbench/serve_shared.go` (`chartSharedJS`, spliced in at `__CHART_SHARED_JS__`; no backticks in it).
+- bbbench never changes drive or kernel settings (write cache, NVMe features, queue/scheduler); it only reads `queue/write_cache`. Warnings and docs must say the user applies fixes themselves.
+- Write-through rule (`cmd/bbbench/orchestrator_skip.go`): a phase with `fsync=N` on a device whose `queue/write_cache` is `write through` (`flushtrace.WriteCache`) still runs, with `FioResult.Warning` -> `PhaseResult.Warnings` (device -> text) and `DriveStatus.Warning`; with `--skip-write-through` `executePhase` refuses it instead: `FioResult.Skipped` -> `PhaseResult.Skipped` -> `DiskPhaseData.Skipped`, not marked completed in the state file.
+- Flush log (`log.go`): `WriteLog`/`ReadLog` store a phase as `<fio log prefix>_flush.1.log`, in fio's shape: one line per `--log-avg-msec` window stamped at the window END (`end_ms, mean_ns, 3, 0, 0, count, min_ns, max_ns`; the first five columns are fio's), plus `#` header lines with the metadata (`source`, `exact`, `lost`, `write_cache`, `avg_msec`, `offset_ms`) and the whole-phase summary. The summary is built once at stop by `Finish` (`Summarize` over the Flushes after the ramp, `offset_ms` = fio's `ramp_time`), from the raw `Sample`s, which are not stored (exact percentiles cannot be rebuilt from windows); `Windows` aggregates them. `loadFlushLog` turns window ends into series points stamped at window START (windows that ended inside the ramp-up are left out, like fio's own logs) (the graph JS moves fio's end-of-window points back by one window; fio's own series start when its ramp ends, so the JS shifts them by `ramp_sec` and draws the ramp-up zone; all time-series charts share one x axis 0..max). The old per-Flush format (`_flush.log`) is not read. `Session.Samples()` gives times relative to the start marker.
+- `Block` collector (any block device): `block_rq_issue`/`block_rq_complete` for requests whose rwbs starts with `F` and cover 0 sectors, paired first-in first-out. The mean is exact; percentiles are not reported because pairing is not exact under concurrent Flushes.
+
 **internal/util**: Contains `SanitizeFilename()` for making hardware identifiers filesystem-safe.
 
 ### Embedded Assets
@@ -120,6 +130,18 @@ Templates are stored in `dist/templates/` with subdirectory `includes/` for reus
 1. Add workload definition to `dist/default.yml` under `bbbench.workloadsdb`
 2. Map device type to workload in `bbbench.workloads` section
 3. Create corresponding include template in `dist/templates/includes/` if needed
+
+A workload can optionally override the template's `[global]` fio settings
+(libaio, iodepth 128, direct I/O, no fsync) for its own job:
+
+- `ioengine`: fio engine, e.g. `psync`, `io_uring`
+- `iodepth`: queue depth
+- `direct`: `true`/`false` (`false` = buffered I/O)
+- `fsync`: issue an fsync after every N writes (`1` = after each write)
+
+Unset fields emit nothing, so existing workloads render exactly as before.
+Generated log file names and the fioplot `iodepth` use the effective values
+(`iodepth<N>_direct` or `iodepth<N>_buffered`).
 
 ### Template Context Variables
 

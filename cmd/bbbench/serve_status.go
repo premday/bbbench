@@ -51,11 +51,18 @@ type DriveStatus struct {
 	CurrentPhase int    `json:"current_phase"`
 	PhaseName    string `json:"phase_name,omitempty"`
 	// PhaseStart is when the running phase started (zero when none runs).
-	PhaseStart    time.Time `json:"phase_start,omitzero"`
-	Status        string    `json:"status"` // "running", "complete", "error", "pending"
-	ErrorMessage  string    `json:"error,omitempty"`
-	LastCompleted string    `json:"last_completed,omitempty"`
+	PhaseStart   time.Time `json:"phase_start,omitzero"`
+	Status       string    `json:"status"` // "running", "complete", "error", "pending"
+	ErrorMessage string    `json:"error,omitempty"`
+	// Skipped is why the drive sits out the current phase (Status "skipped").
+	Skipped string `json:"skipped,omitempty"`
+	// Warning is a caveat about the phase the drive is running.
+	Warning       string `json:"warning,omitempty"`
+	LastCompleted string `json:"last_completed,omitempty"`
 }
+
+// clearNotes drops the per-phase skip reason and warning (a new phase starts).
+func (d *DriveStatus) clearNotes() { d.Skipped, d.Warning = "", "" }
 
 // globalStatus is the singleton status tracker
 var (
@@ -341,7 +348,7 @@ __NAVBAR_HTML__
         // when the drive has moved on to a later phase (current_phase is 1-based).
         function phaseDone(drive, i) {
             if (drive.status === 'complete') return true;
-            if (drive.status === 'running' || drive.status === 'error') return i < drive.current_phase - 1;
+            if (drive.status === 'running' || drive.status === 'error' || drive.status === 'skipped') return i < drive.current_phase - 1;
             return false;
         }
 
@@ -461,6 +468,9 @@ __NAVBAR_HTML__
                     } else if (statusText === 'complete') {
                         statusColor = '#2196f3';
                         statusText = 'Complete';
+                    } else if (statusText === 'skipped') {
+                        statusColor = '#b26a00';
+                        statusText = 'Skipped this phase';
                     } else if (statusText === 'error') {
                         statusColor = '#f44336';
                         statusText = 'Error';
@@ -480,6 +490,12 @@ __NAVBAR_HTML__
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
                         html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';
+                    }
+                    if (drive.warning) {
+                        html += '<div class="drive-detail" style="color: #b26a00; white-space: pre-line; text-align: left;">&#9888; ' + esc(drive.warning) + '</div>';
+                    }
+                    if (drive.skipped) {
+                        html += '<div class="drive-detail" style="color: #b26a00;">' + esc(drive.skipped) + '</div>';
                     }
                     if (drive.error) {
                         html += '<div class="drive-detail" style="color: #f44336;">Error: ' + drive.error + '</div>';

@@ -180,3 +180,20 @@ func parseFioSeconds(v string) (int, bool) {
 	}
 	return int(n*mult + 0.5), true
 }
+
+// phaseRampMs is the ramp_time of the phase in ms: fio starts its logs and
+// statistics only when the ramp ends (a job's value overrides [global]).
+func phaseRampMs(w *FioWorkload, phase []FioJob) int {
+	ramp := 0
+	global := parseFioOptions(w.GlobalSection)
+	for _, job := range phase {
+		opts := map[string]string{"ramp_time": global["ramp_time"]}
+		if v, ok := parseFioOptions(job.Section)["ramp_time"]; ok {
+			opts["ramp_time"] = v
+		}
+		if sec, ok := parseFioSeconds(opts["ramp_time"]); ok && sec*1000 > ramp {
+			ramp = sec * 1000
+		}
+	}
+	return ramp
+}

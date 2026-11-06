@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"bbbench/internal/flushtrace"
 )
 
 // FioJsonOutput represents the structure of fio's JSON output.
@@ -35,7 +37,29 @@ type FioJsonOutput struct {
 			Runtime  int64   `json:"runtime"`
 			TotalIos int64   `json:"total_ios"`
 		} `json:"trim"`
+		// Sync holds fsync completion stats; only populated by jobs that set fsync=.
+		Sync struct {
+			TotalIos int64 `json:"total_ios"`
+			LatNs    struct {
+				Mean float64 `json:"mean"`
+			} `json:"lat_ns"`
+		} `json:"sync"`
 	} `json:"jobs"`
+}
+
+// fsyncLatency returns the mean fsync latency in microseconds across all jobs,
+// weighted by each job's number of fsyncs, and that number. It returns
+// (0, 0) when no job issued fsyncs.
+func fsyncLatency(o *FioJsonOutput) (meanUs float64, count int64) {
+	var sumNs float64
+	for _, j := range o.Jobs {
+		sumNs += j.Sync.LatNs.Mean * float64(j.Sync.TotalIos)
+		count += j.Sync.TotalIos
+	}
+	if count == 0 {
+		return 0, 0
+	}
+	return sumNs / float64(count) / 1000, count
 }
 
 // stripFioPrefix removes any non-JSON preamble that fio may write to the output
@@ -109,6 +133,11 @@ func displayResults(coordinator *ExecutionCoordinator) error {
 				continue
 			}
 
+			if result.Skipped != "" {
+				fmt.Printf("  Phase %d: SKIPPED - %s\n", result.Phase, result.Skipped)
+				continue
+			}
+
 			successCount++
 
 			// Parse and display key metrics
@@ -145,6 +174,13 @@ func displayResults(coordinator *ExecutionCoordinator) error {
 			if totalTrimIops > 0 {
 				parts = append(parts, fmt.Sprintf("Trim: %.0f IOPS (%.1f MB/s)",
 					totalTrimIops, float64(totalTrimBw)/(1024*1024)))
+			}
+
+			if us, n := fsyncLatency(fioOutput); n > 0 {
+				parts = append(parts, fmt.Sprintf("fsync avg: %.1f us (%d fsyncs)", us, n))
+			}
+			if result.FlushTrace != nil {
+				parts = append(parts, formatFlushSummary(result.FlushTrace))
 			}
 
 			if len(parts) > 0 {
@@ -187,4 +223,20 @@ func joinStrings(parts []string, sep string) string {
 		result += sep + parts[i]
 	}
 	return result
+}
+
+// formatFlushSummary renders a kernel-measured Flush latency for the run
+// summary. Percentiles are shown only when the source paired events exactly.
+func formatFlushSummary(s *flushtrace.Summary) string {
+	if s.Count == 0 {
+		if s.WriteCache == "write through" {
+			return fmt.Sprintf("Flush (%s): none seen (the kernel sends no Flush to a write-through device: its volatile write cache is disabled or absent)", s.Source)
+		}
+		return fmt.Sprintf("Flush (%s): none seen", s.Source)
+	}
+	out := fmt.Sprintf("Flush (%s): avg %.1f us", s.Source, s.MeanNs/1000)
+	if s.Exact {
+		out += fmt.Sprintf(", p99 %.1f us, max %.1f us", float64(s.P99Ns)/1000, float64(s.MaxNs)/1000)
+	}
+	return fmt.Sprintf("%s (%d flushes)", out, s.Count)
 }

@@ -299,3 +299,21 @@ func findSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+func TestMarkDrive(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Drives = []DriveStatus{{Name: "nvme0n1", Status: "running"}, {Name: "nvme1n1", Status: "running"}}
+	})
+
+	markDrive("nvme1n1", func(d *DriveStatus) { d.Status, d.Skipped = "skipped", "write through" })
+
+	got := GetStatus().Drives
+	if got[0].Status != "running" || got[0].Skipped != "" {
+		t.Errorf("other drive changed: %+v", got[0])
+	}
+	if got[1].Status != "skipped" || got[1].Skipped != "write through" {
+		t.Errorf("skipped drive = %+v", got[1])
+	}
+}

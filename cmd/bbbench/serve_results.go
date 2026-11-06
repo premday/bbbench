@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"bbbench/internal/flushtrace"
 )
 
 // BenchmarkResult represents a complete benchmark run.
@@ -28,6 +30,20 @@ type PhaseResult struct {
 	Jobs        []JobResult                  `json:"jobs"`
 	FioFiles    map[string]string            `json:"fio_files"`            // device -> fio output file path
 	LogSeries   map[string]*DeviceTimeSeries `json:"log_series,omitempty"` // device -> time-series data
+	// FlushTrace holds the kernel-measured Flush latency per device, for
+	// phases that fsync and where tracing was available.
+	FlushTrace map[string]*flushtrace.Summary `json:"flush_trace,omitempty"`
+	// Skipped says why the phase was not run, per device (not an error).
+	Skipped map[string]string `json:"skipped,omitempty"`
+	// RampSec is the fio ramp_time of the phase: fio logs start when it ends.
+	RampSec int `json:"ramp_sec,omitempty"`
+	// LogAvgMsec is the fio polling interval (--log-avg-msec) of the phase.
+	LogAvgMsec int `json:"log_avg_msec,omitempty"`
+	// Warnings are caveats about a phase that did run, per device.
+	Warnings map[string]string `json:"warnings,omitempty"`
+	// FlushSeries is the Flush latency over time (mean µs per second, W
+	// column) per device, read back from the stored <prefix>_flush.1.log.
+	FlushSeries map[string][]TimePoint `json:"flush_series,omitempty"`
 }
 
 // JobResult represents results for a single fio job.

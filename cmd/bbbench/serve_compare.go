@@ -93,6 +93,12 @@ func handleComparePage(w http.ResponseWriter, r *http.Request) {
             padding: 16px; display: flex; flex-direction: column; min-height: 0;
         }
         .cmp-canvas-wrap { position: relative; flex: 1; min-height: 0; }
+        .src {
+            font-size: 9px; font-weight: 600; letter-spacing: 0.03em; vertical-align: middle;
+            padding: 0 5px; border-radius: 8px; border: 1px solid #cbd5e1;
+            color: #64748b; background: #f8fafc; cursor: help;
+        }
+        .src-ftrace { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
         .cmp-note {
             font-size: 11px; color: #92400e; background: #fef3c7;
             border: 1px solid #fcd34d; border-radius: 3px;
@@ -164,12 +170,17 @@ __NAVBAR_HTML__
     let cmpChart = null;
 
     const METRICS = [
-        { key: 'iops', label: 'IOPS',            unit: 'IOPS', tsKey: 'ts_iops',
+        { key: 'iops', label: 'IOPS',            unit: 'IOPS', tsKey: 'ts_iops', source: 'fio',
           sumR: d => d.read_iops    || 0, sumW: d => d.write_iops    || 0 },
-        { key: 'bw',   label: 'Bandwidth (MB/s)', unit: 'MB/s', tsKey: 'ts_bw',
+        { key: 'bw',   label: 'Bandwidth (MB/s)', unit: 'MB/s', tsKey: 'ts_bw', source: 'fio',
           sumR: d => d.read_bw_mbps || 0, sumW: d => d.write_bw_mbps || 0 },
-        { key: 'lat',  label: 'Latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_lat',
+        { key: 'lat',  label: 'Latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
           sumR: d => d.read_lat_us  || 0, sumW: d => d.write_lat_us  || 0 },
+        // Device Flush latency, timed from kernel trace events (not fio).
+        { key: 'flush', label: 'Flush latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
+          has:  d => !!(d.flush && d.flush.count > 0) || !!(d.ts_flush && d.ts_flush.length),
+          none: d => !!d.flush && !(d.flush.count > 0),
+          sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns || 0) / 1000 : 0 },
     ];
 
     // [solid border, area fill, bar background]
@@ -186,15 +197,22 @@ __NAVBAR_HTML__
         ['#4338ca', 'rgba(67,56,202,0.08)',   'rgba(67,56,202,0.75)'],
     ];
 
+    const SRC_TITLE = {
+        fio:    'Measured by fio',
+        ftrace: 'Measured from kernel ftrace events (device Flush commands), not by fio',
+    };
+    function srcBadge(metric) {
+        const b = document.createElement('span');
+        b.className = 'src src-' + metric.source;
+        b.textContent = metric.source;
+        b.title = SRC_TITLE[metric.source];
+        return b;
+    }
+
     let selMetricKey = 'iops';
     const selDisks   = new Set();
     const selPhases  = new Set();
 
-    function fmtTick(v) {
-        const a = Math.abs(v);
-        if (a === 0) return '0';
-        return a >= 1000 ? (a / 1000).toFixed(1) + 'k' : a.toFixed(0);
-    }
 
     function getEntries() {
         return allData.filter(d => selDisks.has(d.disk) && selPhases.has(d.phase_name));
@@ -219,7 +237,8 @@ __NAVBAR_HTML__
             rb.style.accentColor = '#2563eb';
             rb.addEventListener('change', () => { selMetricKey = m.key; updateCount(); });
             lbl.appendChild(rb);
-            lbl.appendChild(document.createTextNode('\u00a0' + m.label));
+            lbl.appendChild(document.createTextNode('\u00a0' + m.label + ' '));
+            lbl.appendChild(srcBadge(m));
             li.appendChild(lbl);
             ul.appendChild(li);
         });
@@ -313,22 +332,42 @@ __NAVBAR_HTML__
         return d.disk + ' \u00b7 ' + (d.phase_name || ('Phase ' + d.phase_num));
     }
 
+    __CHART_SHARED_JS__
+
     function renderCompare() {
         if (cmpChart) { cmpChart.destroy(); cmpChart = null; }
         const main = document.getElementById('main');
         main.innerHTML = '';
 
-        const entries = getEntries();
+        const metric  = METRICS.find(m => m.key === selMetricKey);
+        const all0    = getEntries();
+        const skippedE = all0.filter(d => d.skipped);   // phases that were not run
+        const all     = all0.filter(d => !d.skipped);
+        const entries = metric.has ? all.filter(metric.has) : all;
+        if (entries.length === 0 && skippedE.length > 0 && all.length === 0) {
+            main.innerHTML = '<div class="cmp-placeholder">Skipped, not run: ' +
+                skippedE[0].skipped.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</div>';
+            return;
+        }
         if (entries.length === 0) {
-            main.innerHTML = '<div class="cmp-placeholder">No entries match. Select at least one disk and one phase.</div>';
+            const zero = metric.none ? all.filter(metric.none) : [];
+            const wt = zero.some(d => d.flush.write_cache === 'write through');
+            main.innerHTML = '<div class="cmp-placeholder">' + (all.length === 0
+                ? 'No entries match. Select at least one disk and one phase.'
+                : zero.length
+                    ? 'ftrace saw 0 Flush commands for the selected disks and phases' + (wt
+                        ? ': the kernel sends no Flush to a write-through drive (volatile write cache disabled or absent).'
+                        : '.')
+                    : 'No ' + metric.source + ' data for the selected disks and phases.') + '</div>';
             return;
         }
 
-        const metric  = METRICS.find(m => m.key === selMetricKey);
-        const doRead  = document.getElementById('dir-read').checked;
-        const doWrite = document.getElementById('dir-write').checked;
+        // Flush latency has no read/write split: it is always drawn.
+        const isFlush = metric.key === 'flush';
+        const doRead  = isFlush ? false : document.getElementById('dir-read').checked;
+        const doWrite = isFlush ? true  : document.getElementById('dir-write').checked;
 
-        if (!doRead && !doWrite) {
+        if (!isFlush && !doRead && !doWrite) {
             main.innerHTML = '<div class="cmp-placeholder">Select at least one direction (Read / Write).</div>';
             return;
         }
@@ -336,6 +375,21 @@ __NAVBAR_HTML__
         const nDisks  = new Set(entries.map(e => e.disk)).size;
         const nPhases = new Set(entries.map(e => e.phase_name)).size;
         const hasTS   = entries.some(d => { const ts = d[metric.tsKey]; return ts && ts.length > 0; });
+
+        // Source hint
+        if (skippedE.length > 0) {
+            const sk = document.createElement('div');
+            sk.className = 'cmp-note';
+            sk.textContent = '\u26a0 ' + skippedE.length + ' entr' + (skippedE.length !== 1 ? 'ies were' : 'y was') +
+                ' skipped (not run): ' + skippedE[0].skipped;
+            main.appendChild(sk);
+        }
+        const srcNote = document.createElement('div');
+        srcNote.className = 'cmp-note';
+        srcNote.appendChild(document.createTextNode('Source: '));
+        srcNote.appendChild(srcBadge(metric));
+        srcNote.appendChild(document.createTextNode(' ' + SRC_TITLE[metric.source].toLowerCase()));
+        main.appendChild(srcNote);
 
         // Container
         const wrap = document.createElement('div');
@@ -351,13 +405,16 @@ __NAVBAR_HTML__
             // ── Multi-line time-series chart ──
             const datasets = [];
             let skipped = 0;
+            let rampMax = 0;
             entries.forEach((d, i) => {
                 const ts = d[metric.tsKey];
                 const [solid, fill] = PALETTE[i % PALETTE.length];
                 const lbl = seriesLabel(d, nDisks, nPhases);
+                const shift = metric.key === 'flush' ? 0 : fioShift(d);
+                rampMax = Math.max(rampMax, rampOf(d));
                 if (ts && ts.length > 0) {
                     if (doRead) {
-                        const pts = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t), y: p.r}));
+                        const pts = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y: p.r}));
                         if (pts.length > 0) datasets.push({
                             label:           lbl + (doWrite ? ' [R]' : ''),
                             data:            pts,
@@ -370,7 +427,7 @@ __NAVBAR_HTML__
                         });
                     }
                     if (doWrite) {
-                        const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w}));
+                        const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: p.w}));
                         if (pts.length > 0) datasets.push({
                             label:           lbl + (doRead ? ' [W]' : ''),
                             data:            pts,
@@ -394,21 +451,22 @@ __NAVBAR_HTML__
             }
 
             cmpChart = new Chart(canvas, {
-                type: 'line',
+                type: 'line', plugins: [rampPlugin],
                 data: { datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
+                        rampZone: { sec: rampMax },
                         legend: { display: true, position: 'right',
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { mode: 'index', intersect: false, callbacks: {
-                            title: items => items[0].raw.x + ' s',
+                            title: items => 'at ' + items[0].raw.x + ' s',
                             label: ctx => ctx.dataset.label + ': ' +
-                                         fmtTick(ctx.raw.y) + ' ' + metric.unit,
+                                         (metric.key === 'flush' ? ctx.raw.y.toFixed(1) : fmtTick(ctx.raw.y)) + ' ' + metric.unit,
                         }}
                     },
                     scales: {
-                        x: { type: 'linear',
+                        x: { type: 'linear', min: 0,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 10} },
                              ticks: { font: {size: 10}, color: '#64748b', maxTicksLimit: 8 } },
                         y: { min: 0,
@@ -432,7 +490,7 @@ __NAVBAR_HTML__
             // ── Summary grouped bar chart ──
             const dirLabels = [];
             if (doRead)  dirLabels.push('Read');
-            if (doWrite) dirLabels.push('Write');
+            if (doWrite) dirLabels.push(isFlush ? 'Flush' : 'Write');
 
             const datasets = entries.map((d, i) => {
                 const [solid, , barBg] = PALETTE[i % PALETTE.length];
@@ -487,6 +545,7 @@ __NAVBAR_HTML__
 </html>`
 
 	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
+	html = strings.ReplaceAll(html, "__CHART_SHARED_JS__", chartSharedJS)
 	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/results"))
 	html = strings.ReplaceAll(html, "__RESULT_ID__", resultID)
 

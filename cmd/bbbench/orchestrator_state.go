@@ -50,7 +50,8 @@ func (ec *ExecutionCoordinator) saveState() error {
 	for driveName, results := range ec.results {
 		completed := make([]int, 0, len(results))
 		for _, result := range results {
-			if result.Error == nil {
+			// A skipped phase is not done: after fixing the cause, --resume runs it.
+			if result.Error == nil && result.Skipped == "" {
 				completed = append(completed, result.Phase)
 			}
 		}

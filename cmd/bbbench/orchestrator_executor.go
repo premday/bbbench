@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"bbbench/internal/flushtrace"
 )
 
 // ExecutionCoordinator manages benchmark execution across multiple drives.
@@ -35,16 +37,32 @@ type ExecutionCoordinator struct {
 	startTime   time.Time
 	liveResult  *BenchmarkResult // updated after each phase for live web view
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
+	flushTrace  bool             // trace device Flush latency during phases that fsync
+
+	skipWriteThrough bool   // do not run fsync phases on write-through devices (default: warn)
+	sysBlock         string // sysfs block dir override for tests ("" = /sys/block)
+}
+
+// fioStampSlackMs is how early (ms) a fio log stamp can be for its window.
+const fioStampSlackMs = 10
+
+// defaultLogAvgMsec is fio's log averaging interval when none is set (the
+// --log-avg-msec default); also the Flush series window for logs that do not
+// record one.
+const defaultLogAvgMsec = flushtrace.DefaultWindowMs
+
+// avgMsec is the fio log averaging interval of the run.
+func (ec *ExecutionCoordinator) avgMsec() int {
+	if ec.logAvgMsec <= 0 {
+		return defaultLogAvgMsec
+	}
+	return ec.logAvgMsec
 }
 
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
 // It is logAvgMsec/10, with a minimum of 1000ms (1 second).
 func (ec *ExecutionCoordinator) coalesceMsec() int64 {
-	msec := ec.logAvgMsec
-	if msec <= 0 {
-		msec = 1000
-	}
-	threshold := int64(msec) / 10
+	threshold := int64(ec.avgMsec()) / 10
 	if threshold < 1000 {
 		threshold = 1000
 	}
@@ -62,6 +80,13 @@ type FioResult struct {
 	Error      error
 	StartTime  time.Time
 	EndTime    time.Time
+	// FlushTrace is the device Flush latency measured from kernel trace
+	// events, for phases that issue fsyncs. Nil when not measured.
+	FlushTrace *flushtrace.Summary
+	// Skipped is why the phase was not run on this device (not an error).
+	Skipped string
+	// Warning is a caveat about a phase that did run (e.g. no Flush to trace).
+	Warning string
 }
 
 // checkFioInstalled verifies that the fio binary is available in PATH.
@@ -303,7 +328,11 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 		}
 		fileBuckets := make(map[int64]*bucketAcc, len(perTime))
 		for tms, a := range perTime {
-			bucket := (tms / thresholdMs) * thresholdMs
+			// Floor, with a few ms of slack: fio stamps a window late (up to
+			// about a second after the boundary, when several jobs log) or a
+			// millisecond early (9999 for 10 s). Plain flooring sends the early
+			// stamp to the previous bucket, merging two windows and leaving a gap.
+			bucket := ((tms + fioStampSlackMs) / thresholdMs) * thresholdMs
 			ba := fileBuckets[bucket]
 			if ba == nil {
 				ba = &bucketAcc{}
@@ -376,6 +405,7 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 	phaseResult := PhaseResult{
 		PhaseNumber: phaseIdx + 1,
 		FioFiles:    make(map[string]string),
+		LogAvgMsec:  ec.avgMsec(),
 	}
 
 	for _, drive := range ec.drives {
@@ -389,10 +419,35 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 			continue
 		}
 
+		if sec := phaseRampMs(workload, phase) / 1000; sec > phaseResult.RampSec {
+			phaseResult.RampSec = sec
+		}
 		for _, result := range ec.results[deviceName] {
 			if result.Phase == phaseIdx && result.Error == nil {
+				if result.Warning != "" {
+					if phaseResult.Warnings == nil {
+						phaseResult.Warnings = make(map[string]string)
+					}
+					phaseResult.Warnings[deviceName] = result.Warning
+				}
+				if result.Skipped != "" {
+					if phaseResult.Skipped == nil {
+						phaseResult.Skipped = make(map[string]string)
+					}
+					phaseResult.Skipped[deviceName] = result.Skipped
+				}
 				if result.OutputPath != "" {
 					phaseResult.FioFiles[deviceName] = result.OutputPath
+				}
+				if result.FlushTrace != nil {
+					if phaseResult.FlushTrace == nil {
+						phaseResult.FlushTrace = make(map[string]*flushtrace.Summary)
+					}
+					phaseResult.FlushTrace[deviceName] = result.FlushTrace
+				}
+				if result.LogPrefix != "" {
+					// Same path as reloading a saved run: from the stored log.
+					applyFlushLog(&phaseResult, deviceName, result.LogPrefix)
 				}
 				if len(result.JsonOutput) > 0 {
 					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)
@@ -521,6 +576,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			// Mark all drives as running this phase
 			for i := range s.Drives {
 				s.Drives[i].Status = "running"
+				s.Drives[i].clearNotes()
 				s.Drives[i].CurrentPhase = phaseIdx + 1
 				s.Drives[i].PhaseName = phaseName
 				s.Drives[i].PhaseStart = time.Now()
@@ -556,6 +612,8 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			if ec.isPhaseCompleted(drive.Device.Name, phaseIdx) {
 				continue
 			}
+
+			ec.noteFlushGate(drive.Device.Name, workload.Phases[phaseIdx])
 
 			wg.Add(1)
 			go func(drv DriveInfo, wl *FioWorkload, idx int) {
@@ -598,9 +656,19 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			for _, err := range phaseErrors {
 				fmt.Printf("  - %v\n", err)
 			}
+		} else if skipped := ec.skippedInPhase(phaseIdx); len(skipped) > 0 {
+			if len(skipped) >= activeCount {
+				fmt.Printf("SKIPPED on %d drive(s):\n", len(skipped))
+			} else {
+				fmt.Printf("COMPLETE (%.1fs), skipped on %d drive(s):\n", elapsed.Seconds(), len(skipped))
+			}
+			for _, s := range skipped {
+				fmt.Printf("  - %s\n", s)
+			}
 		} else {
 			fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 		}
+		ec.printPhaseWarnings(phaseIdx, "  ")
 
 		// Save state after each phase
 		if err := ec.saveState(); err != nil {
@@ -730,11 +798,13 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 						s.Drives[j].PhaseName = phaseName
 						s.Drives[j].PhaseStart = time.Now()
 						s.Drives[j].Status = "running"
+						s.Drives[j].clearNotes()
 						break
 					}
 				}
 			})
 
+			ec.noteFlushGate(drive.Device.Name, phase)
 			result := ec.executePhase(drive, phase, phaseIdx, nil, nil)
 
 			ec.mu.Lock()
@@ -744,9 +814,12 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			elapsed := time.Since(phaseStart)
 			if result.Error != nil {
 				fmt.Printf("FAILED (%.1fs) - %v\n", elapsed.Seconds(), result.Error)
+			} else if result.Skipped != "" {
+				fmt.Printf("SKIPPED - %s\n", result.Skipped)
 			} else {
 				fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 			}
+			ec.printPhaseWarnings(phaseIdx, "    ")
 
 			// Update completed phases count and live result
 			completedPhases++
@@ -815,6 +888,19 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		}
 	}
 
+	// With --skip-write-through, refuse a test that cannot measure a Flush.
+	// Otherwise it runs and carries a warning (printed by the caller, not
+	// logged here: a log line would land inside the "Phase N/M (...): " line).
+	warn, skip := ec.flushGate(drive.Device.Name, phase)
+	result.Warning = warn
+	if skip != "" {
+		result.Skipped = skip
+		signalReady()
+		result.StartTime = time.Now()
+		result.EndTime = result.StartTime
+		return result
+	}
+
 	// Build temporary fio file for this phase
 	phaseFioContent := buildPhaseFioFile(workload, phase)
 	tmpFile, err := os.CreateTemp("", fmt.Sprintf("bbbench-phase-%s-*.fio", drive.Device.Name))
@@ -852,9 +938,36 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	signalReady()
 	result.StartTime = time.Now()
 
-	logAvgMsec := ec.logAvgMsec
-	if logAvgMsec <= 0 {
-		logAvgMsec = 1000
+	logAvgMsec := ec.avgMsec()
+
+	// For phases that fsync, time the device's Flush commands from kernel
+	// trace events while fio runs. Failure to trace never fails the phase.
+	stopTrace := func() {}
+	rampMs := phaseRampMs(workload, phase)
+	if ec.flushTrace && phaseHasFsync(phase) {
+		if sess, err := flushtrace.Start(drive.Device.Name, flushtrace.Options{}); err != nil {
+			logger.Warn("flush tracing unavailable",
+				"device", drive.Device.Name, "phase", phaseIdx, "err", err)
+		} else {
+			stopTrace = func() {
+				sum, err := sess.Stop()
+				if err != nil {
+					logger.Warn("flush tracing cleanup", "device", drive.Device.Name, "err", err)
+				}
+				sum.AvgMsec = logAvgMsec // series follow fio's polling interval
+				sum.OffsetMs = rampMs    // and fio's clock, which starts after its ramp
+				samples := sess.Samples()
+				// Same statistics as a later load of the log: without the ramp.
+				final := flushtrace.Finish(sum, samples)
+				result.FlushTrace = &final
+				// Keep the samples with the fio logs, so the run can be
+				// re-summarized and graphed later.
+				if err := writeFlushLog(logPrefix, final, samples); err != nil {
+					logger.Warn("storing flush samples", "device", drive.Device.Name, "err", err)
+				}
+				stopTrace = func() {}
+			}
+		}
 	}
 
 	// Execute fio with context for cancellation support
@@ -884,6 +997,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		"output", outputFile)
 
 	output, err := cmd.CombinedOutput()
+	stopTrace()
 	if err != nil {
 		// Check if it was cancelled
 		if ec.ctx.Err() != nil {
@@ -922,4 +1036,16 @@ func (ec *ExecutionCoordinator) statusPhaseConfigs() map[string][]PhaseConfig {
 		out[drive.Device.Name] = phaseConfigs(ec.workloads[drive.Device.Name])
 	}
 	return out
+}
+
+// markDrive updates a drive's entry on the status page.
+func markDrive(device string, f func(*DriveStatus)) {
+	UpdateStatus(func(s *BenchmarkStatus) {
+		for i := range s.Drives {
+			if s.Drives[i].Name == device {
+				f(&s.Drives[i])
+				return
+			}
+		}
+	})
 }

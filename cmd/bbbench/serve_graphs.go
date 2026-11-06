@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"bbbench/internal/flushtrace"
 )
 
 // DiskPhaseData holds metrics for one disk × one phase combination.
@@ -30,6 +32,18 @@ type DiskPhaseData struct {
 	TSiops []TimePoint `json:"ts_iops,omitempty"`
 	TSbw   []TimePoint `json:"ts_bw,omitempty"`
 	TSlat  []TimePoint `json:"ts_lat,omitempty"`
+	// Device Flush latency (µs, W column), from the kernel trace samples
+	// stored with the run; nil when the phase did not fsync or tracing was
+	// unavailable.
+	TSflush []TimePoint         `json:"ts_flush,omitempty"`
+	Flush   *flushtrace.Summary `json:"flush,omitempty"`
+	// RampSec is the length of fio's ramp-up at the start of the phase; fio's
+	// series (t) start after it, the Flush series (t) include it.
+	RampSec int `json:"ramp_sec,omitempty"`
+	// LogAvgMsec is the width of one fio log point (its polling interval).
+	LogAvgMsec int `json:"log_avg_msec,omitempty"`
+	// Skipped is why this phase was not run on the disk ("" = it ran).
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // DiskGraphData holds per-disk metrics across all phases (used by export).
@@ -122,6 +136,20 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 				dp.HasWrite = true
 			}
 		}
+		// Phases skipped on a disk have no jobs; still emit an entry that
+		// carries the reason, so the UI can show it.
+		for dev, reason := range phase.Skipped {
+			di, ok := info[dev]
+			if !ok || byDisk[dev] != nil {
+				continue
+			}
+			byDisk[dev] = &DiskPhaseData{
+				Disk: dev, Path: di.path, Vendor: di.vendor, Model: di.model,
+				Serial: di.serial, Technology: di.technology,
+				PhaseNum: phase.PhaseNumber, PhaseName: phase.PhaseName,
+				Skipped: reason,
+			}
+		}
 		// Emit in disk order, attaching time-series if available.
 		for _, name := range diskOrder {
 			if dp, ok := byDisk[name]; ok {
@@ -132,6 +160,10 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 						dp.TSlat = ts.Lat
 					}
 				}
+				dp.TSflush = phase.FlushSeries[name]
+				dp.RampSec = phase.RampSec
+				dp.LogAvgMsec = phase.LogAvgMsec
+				dp.Flush = phase.FlushTrace[name]
 				out = append(out, *dp)
 			}
 		}
@@ -389,6 +421,15 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             font-size: 12px; font-weight: 700; color: #1e293b;
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
+        .src {
+            font-size: 9px; font-weight: 600; letter-spacing: 0.03em; vertical-align: middle;
+            padding: 0 5px; border-radius: 8px; border: 1px solid #cbd5e1;
+            color: #64748b; background: #f8fafc; cursor: help;
+        }
+        .none-note.skipped { color: #1e3a5f; background: #e0ecff; }
+        .none-note { display: flex; align-items: center; font-size: 11px; color: #92400e;
+                     background: #fef3c7; border-radius: 4px; padding: 6px 8px; height: auto; min-height: 60px; }
+        .src-ftrace { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
         .card-subtitle {
             font-size: 10px; color: #64748b; margin-top: 2px;
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -463,13 +504,35 @@ __NAVBAR_HTML__
     const charts = {};
 
     const METRICS = [
-        { key: 'iops', label: 'IOPS',           unit: 'IOPS',  tsKey: 'ts_iops',
+        { key: 'iops', label: 'IOPS',           unit: 'IOPS',  tsKey: 'ts_iops', source: 'fio',
           sumR: d => d.read_iops||0,    sumW: d => d.write_iops||0    },
-        { key: 'bw',   label: 'Bandwidth MB/s', unit: 'MB/s',  tsKey: 'ts_bw',
+        { key: 'bw',   label: 'Bandwidth MB/s', unit: 'MB/s',  tsKey: 'ts_bw', source: 'fio',
           sumR: d => d.read_bw_mbps||0, sumW: d => d.write_bw_mbps||0 },
-        { key: 'lat',  label: 'Latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_lat',
+        { key: 'lat',  label: 'Latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
           sumR: d => d.read_lat_us||0,  sumW: d => d.write_lat_us||0  },
+        // Device Flush latency, timed from kernel trace events (not fio).
+        { key: 'flush', label: 'Flush latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
+          has:  d => !!d.flush || !!d.skipped || !!(d.ts_flush && d.ts_flush.length),
+          sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns||0)/1000 : 0 },
     ];
+    const SRC_TITLE = {
+        fio:    'Measured by fio',
+        ftrace: 'Measured from kernel ftrace events (device Flush commands), not by fio',
+    };
+    // flushNone explains a Flush phase that was traced but saw no Flush.
+    function flushNone(d, metric) {
+        if (metric.key !== 'flush' || !d.flush || d.flush.count > 0) return '';
+        return 'ftrace saw 0 Flush commands' + (d.flush.write_cache === 'write through'
+            ? ': the kernel sends no Flush to this drive (write cache: write through, i.e. its volatile write cache is disabled or absent).'
+            : '.');
+    }
+    function srcBadge(metric) {
+        const b = document.createElement('span');
+        b.className = 'src src-' + metric.source;
+        b.textContent = metric.source;
+        b.title = SRC_TITLE[metric.source];
+        return b;
+    }
 
     // Selections: Set of checked values per dimension.
     const SEL = {
@@ -558,7 +621,7 @@ __NAVBAR_HTML__
 
     function initFilters() {
         // graph_type: static list
-        const GT = [['iops','IOPS'],['bw','Bandwidth (MB/s)'],['lat','Latency (\u03bcs)']];
+        const GT = [['iops','IOPS'],['bw','Bandwidth (MB/s)'],['lat','Latency (\u03bcs)'],['flush','Flush latency (\u03bcs)']];
         const ul = document.getElementById('list-graph_type');
         GT.forEach(([v, label]) => {
             SEL.graph_type.add(v);
@@ -572,6 +635,8 @@ __NAVBAR_HTML__
             });
             lbl.appendChild(cb);
             lbl.appendChild(document.createTextNode('\u00a0' + label));
+            lbl.appendChild(document.createTextNode(' '));
+            lbl.appendChild(srcBadge(METRICS.find(m => m.key === v)));
             li.appendChild(lbl);
             ul.appendChild(li);
         });
@@ -593,11 +658,6 @@ __NAVBAR_HTML__
 
     // ── Chart rendering ──
 
-    function fmtTick(v) {
-        const a = Math.abs(v);
-        if (a === 0) return '0';
-        return a >= 1000 ? (a/1000).toFixed(1)+'k' : a.toFixed(0);
-    }
 
     function destroyAllCharts() {
         Object.keys(charts).forEach(id => { charts[id].destroy(); delete charts[id]; });
@@ -608,10 +668,65 @@ __NAVBAR_HTML__
         hdr.classList.toggle('collapsed', collapsed);
     }
 
+    // Flush latency: one positive series (mean per second) from the stored
+    // ftrace samples, or the phase mean as a single bar when no series exists.
+    // ── Shared time axis ──
+    // Every time-series chart counts seconds from the start of the phase and
+    // spans 0..X_MAX, so graphs line up. fio's own logs start when its
+    // ramp-up ends, so their points are shifted by the ramp; the Flush series
+    // already counts from the start of tracing. The ramp-up is shaded.
+    let X_MAX = 0;
+    __CHART_SHARED_JS__
+
+    function makeFlushChart(canvas, d, metric, yHigh) {
+        const ts = d[metric.tsKey];
+        const color = 'rgba(124,58,237,0.9)';
+        if (ts && ts.length > 0) {
+            const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w}));
+            return new Chart(canvas, {
+                type: 'line', plugins: [rampPlugin],
+                data: { datasets: [{ label: 'Flush (ftrace)', data: pts,
+                    borderColor: color, backgroundColor: 'rgba(124,58,237,0.07)',
+                    fill: 'origin', tension: 0.2, pointRadius: 1.5, borderWidth: 1.5 }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    plugins: {
+                        rampZone: { sec: rampOf(d) },
+                        legend: { display: true, position: 'top',
+                            labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
+                        tooltip: { callbacks: {
+                            title: items => 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
+                            label: ctx => 'Flush latency: ' + ctx.raw.y.toFixed(1) + ' ' + metric.unit +
+                                ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
+                    },
+                    scales: {
+                        x: { type: 'linear', min: 0, max: X_MAX || undefined,
+                             title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
+                             ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
+                        y: { min: 0, max: yHigh,
+                             ticks: { callback: fmtTick, font: {size: 9}, color: '#64748b' },
+                             grid: { color: '#f1f5f9' } }
+                    }
+                }
+            });
+        }
+        return new Chart(canvas, {
+            type: 'bar',
+            data: { labels: ['Flush (ftrace)'], datasets: [{ data: [metric.sumW(d)],
+                backgroundColor: 'rgba(124,58,237,0.75)', borderWidth: 1 }] },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                plugins: { legend: { display: false } },
+                scales: { y: { min: 0, max: yHigh, ticks: { callback: fmtTick, font: {size: 9} } } }
+            }
+        });
+    }
+
     // makeChart renders a Chart.js instance onto canvas for (d, metric).
     // Returns the Chart instance. warnEl (optional) will receive a ts-warn message.
     function makeChart(canvas, d, metric, yLow, yHigh, warnEl) {
         const ts = d[metric.tsKey];
+        if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
         if (ts && ts.length > 0) {
             const incompleteCount = ts.filter(p => p.i).length;
             if (warnEl) {
@@ -624,8 +739,9 @@ __NAVBAR_HTML__
                     warnEl.textContent = '';
                 }
             }
-            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t), y:  p.r}));
-            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: -p.w}));
+            const ramp = rampOf(d), shift = fioShift(d);
+            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));
+            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));
             const datasets = [];
             if (readPts.length > 0) datasets.push({
                 label: 'Read',  data: readPts,
@@ -638,20 +754,21 @@ __NAVBAR_HTML__
                 fill: 'origin', tension: 0.2, pointRadius: 2, borderWidth: 1.5,
             });
             return new Chart(canvas, {
-                type: 'line', data: { datasets },
+                type: 'line', data: { datasets }, plugins: [rampPlugin],
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
+                        rampZone: { sec: ramp },
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
-                            title: items => items[0].raw.x + ' s',
+                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
                                           fmtTick(Math.abs(ctx.raw.y)) + ' ' + metric.unit
                         }}
                     },
                     scales: {
-                        x: { type: 'linear',
+                        x: { type: 'linear', min: 0, max: X_MAX || undefined,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                              ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
                         y: { min: yLow, max: yHigh,
@@ -689,7 +806,7 @@ __NAVBAR_HTML__
         document.getElementById('modal-title').textContent = d.disk;
         const tech = d.technology ? d.technology.toUpperCase() : '';
         document.getElementById('modal-subtitle').textContent =
-            [d.vendor, d.model, d.serial, tech, metric.label].filter(Boolean).join('  \u00b7  ');
+            [d.vendor, d.model, d.serial, tech, metric.label, 'source: ' + metric.source].filter(Boolean).join('  \u00b7  ');
 
         if (modalChart) { modalChart.destroy(); modalChart = null; }
 
@@ -725,6 +842,8 @@ __NAVBAR_HTML__
         const t1 = document.createElement('div');
         t1.className = 'card-title';
         t1.textContent = d.disk;
+        t1.appendChild(document.createTextNode(' '));
+        t1.appendChild(srcBadge(metric));
         card.appendChild(t1);
 
         const t2 = document.createElement('div');
@@ -739,9 +858,17 @@ __NAVBAR_HTML__
         wrap.appendChild(canvas);
         card.appendChild(wrap);
 
-        const ts = d[metric.tsKey];
         const warnEl = document.createElement('div');
         card.appendChild(warnEl);
+        const why = d.skipped ? 'Skipped: ' + d.skipped : flushNone(d, metric);
+        if (why) {
+            // Traced, but no Flush command reached the device: say why
+            // instead of drawing an empty chart.
+            wrap.removeChild(canvas);
+            wrap.className = 'chart-wrap none-note' + (d.skipped ? ' skipped' : '');
+            wrap.textContent = why;
+            return card;
+        }
         charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl);
 
         card.addEventListener('click', () => openModal(d, metric, yLow, yHigh));
@@ -765,6 +892,10 @@ __NAVBAR_HTML__
             return;
         }
 
+        // One time axis for every chart shown.
+        X_MAX = 0;
+        data.forEach(d => selMetrics.forEach(m => { X_MAX = Math.max(X_MAX, seriesMaxT(d, m)); }));
+
         selMetrics.forEach(metric => {
             // ── Metric-level foldable section ──
             const section = document.createElement('div');
@@ -772,7 +903,8 @@ __NAVBAR_HTML__
 
             const secHdr = document.createElement('div');
             secHdr.className = 'sec-hdr';
-            secHdr.innerHTML = '<span class="chev">▼</span>' + metric.label;
+            secHdr.innerHTML = '<span class="chev">▼</span>' + metric.label + ' ';
+            secHdr.appendChild(srcBadge(metric));
             section.appendChild(secHdr);
 
             const secBody = document.createElement('div');
@@ -782,10 +914,18 @@ __NAVBAR_HTML__
 
             secHdr.addEventListener('click', () => toggleSection(secHdr, secBody));
 
-            // Group data by phase, preserving encounter order.
+            // Group data by phase, preserving encounter order. Metrics with a
+            // "has" test (Flush) only show disks that have that data.
             const phaseOrder = [];
             const byPhase = {};
-            data.forEach(d => {
+            const mdata = metric.has ? data.filter(metric.has) : data;
+            if (mdata.length === 0) {
+                const none = document.createElement('div');
+                none.className = 'placeholder';
+                none.textContent = 'No ' + metric.source + ' data for the selected disks and phases.';
+                secBody.appendChild(none);
+            }
+            mdata.forEach(d => {
                 const pname = d.phase_name || ('Phase ' + d.phase_num);
                 if (!byPhase[pname]) { phaseOrder.push(pname); byPhase[pname] = []; }
                 byPhase[pname].push(d);
@@ -800,7 +940,10 @@ __NAVBAR_HTML__
                 let yMax = 0, yMin = 0;
                 phaseData.forEach(d => {
                     const ts = d[metric.tsKey];
-                    if (ts && ts.length > 0) {
+                    if (metric.key === 'flush') {
+                        const top = Math.max(metric.sumW(d), ...(ts || []).map(p => p.w || 0));
+                        if (top > yMax) yMax = top;
+                    } else if (ts && ts.length > 0) {
                         ts.forEach(p => {
                             if (p.r > yMax) yMax = p.r;
                             if (p.w > 0 && -p.w < yMin) yMin = -p.w;
@@ -854,6 +997,7 @@ __NAVBAR_HTML__
 </html>`
 
 	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
+	html = strings.ReplaceAll(html, "__CHART_SHARED_JS__", chartSharedJS)
 	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/results"))
 	html = strings.ReplaceAll(html, "__RESULT_ID__", resultID)
 	html = strings.ReplaceAll(html, "__SIDEBAR__", sidebar)

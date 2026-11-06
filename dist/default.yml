@@ -86,6 +86,44 @@ bbbench:
         randread: 5
         randwrite: 5
 
+    # Flush-latency workloads: 4k random writes with an fsync after every
+    # write, so each write costs one device Flush. They compare how the drive
+    # (and kernel) handle Flush; 5 minutes each so the per-second Flush
+    # series has enough points, no per-interval fio logs.
+    ssd_fsync_psync_qd1:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: &fsync_duration 300
+      write_log: False
+      ioengine: psync
+      iodepth: 1
+      direct: False
+      fsync: 1
+      process:
+        randwrite: 1
+    ssd_fsync_uring_qd1:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *fsync_duration
+      write_log: False
+      ioengine: io_uring
+      iodepth: 1
+      direct: True
+      fsync: 1
+      process:
+        randwrite: 1
+    ssd_fsync_uring_qd32:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *fsync_duration
+      write_log: False
+      ioengine: io_uring
+      iodepth: 32
+      direct: True
+      fsync: 1
+      process:
+        randwrite: 1
+
     hdd_seqread:
       blocksize: *default_blocksize
       fulldisk: *default_fulldisk
@@ -249,6 +287,9 @@ bbbench:
       - ssd_seqwrite
       - ssd_blkdiscard
       - ssd_randwrite
+      - ssd_fsync_psync_qd1
+      - ssd_fsync_uring_qd1
+      - ssd_fsync_uring_qd32
 
     hdd:
       - hdd_seqread

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -148,14 +149,21 @@ func groupJobsIntoPhases(jobs []FioJob) [][]FioJob {
 	return phases
 }
 
+// logAvgOptRe matches a log_avg_msec setting in a job file.
+var logAvgOptRe = regexp.MustCompile(`(?mi)^[ \t]*log_avg_msec[ \t]*=.*\n?`)
+
 // buildPhaseFioFile generates a temporary fio file for a specific phase.
 // It removes wait_for directives that reference jobs from other phases,
-// since phases run sequentially in separate fio invocations.
+// since phases run sequentially in separate fio invocations. The template's
+// own log_avg_msec (30 s, for hand-run fio) is dropped: the orchestrator sets
+// the polling interval with --log-avg-msec on the command line, and a value in
+// the file must not silently replace it (the first point of every series, and
+// the blank before it, is one polling interval long).
 func buildPhaseFioFile(workload *FioWorkload, phase []FioJob) string {
 	var sb strings.Builder
 
 	// Add global section
-	sb.WriteString(workload.GlobalSection)
+	sb.WriteString(logAvgOptRe.ReplaceAllString(workload.GlobalSection, ""))
 	sb.WriteString("\n")
 
 	// Build map of job names in this phase
@@ -205,4 +213,17 @@ func filterJobSection(job FioJob, jobsInPhase map[string]bool) string {
 	}
 
 	return strings.Join(filtered, "\n")
+}
+
+var fsyncOptRe = regexp.MustCompile(`(?m)^\s*fsync\s*=\s*[1-9]`)
+
+// phaseHasFsync reports whether any job of the phase issues fsyncs
+// (fio's fsync=N with N > 0), i.e. whether device Flushes are expected.
+func phaseHasFsync(phase []FioJob) bool {
+	for _, j := range phase {
+		if fsyncOptRe.MatchString(j.Section) {
+			return true
+		}
+	}
+	return false
 }
