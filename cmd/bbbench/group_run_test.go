@@ -35,6 +35,7 @@ type fakeSetting struct {
 	calls      []fakeCall
 	onApply    func(dev string, v settings.Value) bool // nil: always effective
 	restoreErr map[string]bool
+	applyErr   map[string]bool // Apply returns an error (and changes nothing)
 	applyN     int
 }
 
@@ -65,7 +66,11 @@ func (f *fakeSetting) Apply(ctx context.Context, t settings.Target, v settings.V
 	hook := f.onApply
 	f.applyN++
 	f.calls = append(f.calls, fakeCall{"apply", t.Name, v.ID, ctx.Err()})
+	failApply := f.applyErr[t.Name]
 	f.mu.Unlock()
+	if failApply {
+		return fmt.Errorf("apply %s failed", t.Name)
+	}
 	effective := hook == nil || hook(t.Name, v)
 	if effective {
 		f.set(t.Name, v.ID)
@@ -1086,5 +1091,70 @@ func TestRunGroup_ResumeSkipsNotRun(t *testing.T) {
 	}
 	if g.Runs[0].Status != rungroup.RunNotRun {
 		t.Errorf("run 1 = %q", g.Runs[0].Status)
+	}
+}
+
+// Apply fails on the second drive after the first was changed: the run is
+// not run, nothing executes, and the first drive is still put back.
+func TestRunGroup_ApplyFailsOnSecondDrive(t *testing.T) {
+	cfg, fs, ex := testGroup(t, rungroup.Sequential, "sdb", "sdc")
+	cfg.Values = fakeValues[1:] // one run: disabled (the drives start enabled)
+	fs.applyErr = map[string]bool{"sdc": true}
+	g, err := runGroup(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("runGroup: %v", err)
+	}
+	if applies := fs.callsOf("apply"); len(applies) != 2 || applies[0].Dev != "sdb" {
+		t.Fatalf("applies %+v, want sdb then sdc", applies)
+	}
+	if len(ex.specs) != 0 {
+		t.Errorf("Execute called %d times, want none", len(ex.specs))
+	}
+	r := g.Runs[0]
+	if r.Status != rungroup.RunNotRun {
+		t.Errorf("status %q, want not_run", r.Status)
+	}
+	for _, d := range r.Drives {
+		if d.Label.Valid {
+			t.Errorf("%s label valid", d.Device)
+		}
+		if d.Device == "sdc" && !strings.Contains(d.Label.Note, "apply failed") {
+			t.Errorf("sdc note %q", d.Label.Note)
+		}
+	}
+	assertRestoredLast(t, fs, map[string]string{"sdb": "enabled", "sdc": "enabled"})
+	if g.Restore.Status != "done" || recoveryExists(t, cfg.RecoveryPath) {
+		t.Errorf("restore %+v, recovery kept %v", g.Restore, recoveryExists(t, cfg.RecoveryPath))
+	}
+}
+
+// The group file cannot be saved any more in the middle of the group (the
+// output directory went away): the group stops with an error and the drives
+// are still restored.
+func TestRunGroup_GroupSaveFailsMidGroupRestores(t *testing.T) {
+	cfg, fs, ex := testGroup(t, rungroup.Sequential, "sdb", "sdc")
+	cfg.RecoveryPath = filepath.Join(t.TempDir(), "group-recovery.json")
+	ex.hook = func(ctx context.Context, n int, spec runSpec) error {
+		if err := os.RemoveAll(cfg.OutDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfg.OutDir, nil, 0o644); err != nil { // a file: nothing can be saved under it
+			t.Fatal(err)
+		}
+		return nil
+	}
+	g, err := runGroup(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "save the group file") {
+		t.Fatalf("err = %v, want a save error", err)
+	}
+	if len(ex.specs) != 1 {
+		t.Errorf("Execute called %d times, want 1 (the group stops)", len(ex.specs))
+	}
+	assertRestoredLast(t, fs, map[string]string{"sdb": "enabled", "sdc": "enabled"})
+	if g.Restore.Status != "done" {
+		t.Errorf("restore %+v, want done", g.Restore)
+	}
+	if recoveryExists(t, cfg.RecoveryPath) {
+		t.Error("recovery file kept although every drive was restored")
 	}
 }
