@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"bbbench/internal/diskinfo"
+	"bbbench/internal/disktemp"
 	"bbbench/internal/flushtrace"
 )
 
@@ -47,6 +48,11 @@ type ExecutionCoordinator struct {
 	// collectDisk reads a drive's configuration and its text dump (nil:
 	// diskinfo.CollectDump).
 	collectDisk func(drive DriveInfo) (diskinfo.Info, string)
+
+	// tempInterval is how often temperatures are sampled during a phase (0 = off);
+	// findTemp locates a drive's sensor (nil: disktemp.Find).
+	tempInterval time.Duration
+	findTemp     func(name string) (*disktemp.Sensor, error)
 }
 
 // fioStampSlackMs is how early (ms) a fio log stamp can be for its window.
@@ -89,6 +95,8 @@ type FioResult struct {
 	// FlushTrace is the device Flush latency measured from kernel trace
 	// events, for phases that issue fsyncs. Nil when not measured.
 	FlushTrace *flushtrace.Summary
+	// Temp is the drive's temperature over the phase; nil when not sampled.
+	Temp *disktemp.Summary
 	// Skipped is why the phase was not run on this device (not an error).
 	Skipped string
 	// Warning is a caveat about a phase that did run (e.g. no Flush to trace).
@@ -452,8 +460,9 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 					phaseResult.FlushTrace[deviceName] = result.FlushTrace
 				}
 				if result.LogPrefix != "" {
-					// Same path as reloading a saved run: from the stored log.
+					// Same path as reloading a saved run: from the stored logs.
 					applyFlushLog(&phaseResult, deviceName, result.LogPrefix)
+					applyTempLog(&phaseResult, deviceName, result.LogPrefix)
 				}
 				if len(result.JsonOutput) > 0 {
 					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)
@@ -982,6 +991,9 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		}
 	}
 
+	// Sample the drive's temperature while fio runs (never fails the phase).
+	stopTemp := ec.startTempSampling(drive.Device.Name, logPrefix, result)
+
 	// Execute fio with context for cancellation support
 	cmd := exec.CommandContext(ec.ctx, "fio",
 		"--output-format=json",
@@ -1010,6 +1022,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 
 	output, err := cmd.CombinedOutput()
 	stopTrace()
+	stopTemp()
 	if err != nil {
 		// Check if it was cancelled
 		if ec.ctx.Err() != nil {

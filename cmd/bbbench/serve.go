@@ -311,7 +311,9 @@ func loadBenchmarkSummary(path string) error {
 		// Flush samples stored with the fio logs: rebuild the summary and the
 		// series from them (also for runs saved before the series existed).
 		for device, fioPath := range phase.FioFiles {
-			applyFlushLog(phase, device, strings.TrimSuffix(fioPath, ".json")+"_log")
+			prefix := strings.TrimSuffix(fioPath, ".json") + "_log"
+			applyFlushLog(phase, device, prefix)
+			applyTempLog(phase, device, prefix)
 		}
 		// Backfill time-series from log files if not already present
 		if phase.LogSeries == nil && len(phase.FioFiles) > 0 {

@@ -58,6 +58,8 @@ type DriveStatus struct {
 	ErrorMessage string    `json:"error,omitempty"`
 	// Skipped is why the drive sits out the current phase (Status "skipped").
 	Skipped string `json:"skipped,omitempty"`
+	// TempC is the last temperature read while a phase ran (nil before one has).
+	TempC *float64 `json:"temp_c,omitempty"`
 	// PhaseSeconds is how long each finished phase really took on this drive,
 	// by phase index (0-based). The map is replaced, never mutated, on every
 	// update, so snapshots can be encoded without the lock.
@@ -594,6 +596,9 @@ __NAVBAR_HTML__
                         html += '<div class="drive-detail">Capacity: ' + drive.capacity_gb + ' GB</div>';
                     }
                     html += configHTML(drive.config);
+                    if (drive.temp_c != null) {
+                        html += '<div class="drive-detail">Temperature: ' + drive.temp_c.toFixed(1) + ' &deg;C <span class="dim" title="last reading while a phase ran">(last sampled)</span></div>';
+                    }
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
                         html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';

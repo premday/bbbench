@@ -42,7 +42,7 @@ The left sidebar provides filters that update the displayed graphs in real time:
 
 | Filter | Description |
 |--------|-------------|
-| **Graph Type** | Toggle IOPS, Bandwidth (MB/s), and Latency (µs) charts independently. |
+| **Graph Type** | Toggle IOPS, Bandwidth (MB/s), Latency (µs), Flush latency (µs, `ftrace`) and Temperature (°C, `hwmon`) charts independently. Every type carries a small tag saying where its numbers come from. |
 | **Drive Type** | Narrow down to HDD or SSD results. |
 | **Vendor / Model / Serial** | Select specific hardware identities. |
 | **Disk** | Choose which drives to include. |

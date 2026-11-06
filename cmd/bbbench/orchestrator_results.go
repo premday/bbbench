@@ -182,6 +182,9 @@ func displayResults(coordinator *ExecutionCoordinator) error {
 			if result.FlushTrace != nil {
 				parts = append(parts, formatFlushSummary(result.FlushTrace))
 			}
+			if result.Temp != nil {
+				parts = append(parts, formatTempSummary(result.Temp))
+			}
 
 			if len(parts) > 0 {
 				fmt.Printf("%s (%.1fs)\n", joinStrings(parts, ", "), duration.Seconds())

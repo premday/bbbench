@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"bbbench/internal/disktemp"
 	"bbbench/internal/flushtrace"
 )
 
@@ -41,6 +42,10 @@ type PhaseResult struct {
 	LogAvgMsec int `json:"log_avg_msec,omitempty"`
 	// Warnings are caveats about a phase that did run, per device.
 	Warnings map[string]string `json:"warnings,omitempty"`
+	// Temp is each drive's temperature summary over the phase, and TempSeries
+	// the readings in °C (W column), both read back from <prefix>_temp.1.log.
+	Temp       map[string]*disktemp.Summary `json:"temp,omitempty"`
+	TempSeries map[string][]TimePoint       `json:"temp_series,omitempty"`
 	// FlushSeries is the Flush latency over time (mean µs per second, W
 	// column) per device, read back from the stored <prefix>_flush.1.log.
 	FlushSeries map[string][]TimePoint `json:"flush_series,omitempty"`

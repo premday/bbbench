@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"bbbench/internal/disktemp"
 	"bbbench/internal/flushtrace"
 )
 
@@ -35,8 +36,11 @@ type DiskPhaseData struct {
 	// Device Flush latency (µs, W column), from the kernel trace samples
 	// stored with the run; nil when the phase did not fsync or tracing was
 	// unavailable.
-	TSflush []TimePoint         `json:"ts_flush,omitempty"`
-	Flush   *flushtrace.Summary `json:"flush,omitempty"`
+	TSflush []TimePoint `json:"ts_flush,omitempty"`
+	// TStemp is the drive's temperature in °C (W column) and Temp its summary.
+	TStemp []TimePoint         `json:"ts_temp,omitempty"`
+	Temp   *disktemp.Summary   `json:"temp,omitempty"`
+	Flush  *flushtrace.Summary `json:"flush,omitempty"`
 	// RampSec is the length of fio's ramp-up at the start of the phase; fio's
 	// series (t) start after it, the Flush series (t) include it.
 	RampSec int `json:"ramp_sec,omitempty"`
@@ -161,6 +165,8 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 					}
 				}
 				dp.TSflush = phase.FlushSeries[name]
+				dp.TStemp = phase.TempSeries[name]
+				dp.Temp = phase.Temp[name]
 				dp.RampSec = phase.RampSec
 				dp.LogAvgMsec = phase.LogAvgMsec
 				dp.Flush = phase.FlushTrace[name]
@@ -430,6 +436,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .none-note { display: flex; align-items: center; font-size: 11px; color: #92400e;
                      background: #fef3c7; border-radius: 4px; padding: 6px 8px; height: auto; min-height: 60px; }
         .src-ftrace { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
+        .src-hwmon { color: #c2410c; border-color: #fdba74; background: #fff7ed; }
         .card-subtitle {
             font-size: 10px; color: #64748b; margin-top: 2px;
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -510,14 +517,51 @@ __NAVBAR_HTML__
           sumR: d => d.read_bw_mbps||0, sumW: d => d.write_bw_mbps||0 },
         { key: 'lat',  label: 'Latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
           sumR: d => d.read_lat_us||0,  sumW: d => d.write_lat_us||0  },
-        // Device Flush latency, timed from kernel trace events (not fio).
-        { key: 'flush', label: 'Flush latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
+        // Series with their own clock (seconds since the phase started, in the W
+        // column), not from fio: drawn by makeSeriesChart, no Read/Write sides.
+        // Device Flush latency, timed from kernel trace events.
+        { key: 'flush', label: 'Flush latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace', own: true,
           has:  d => !!d.flush || !!d.skipped || !!(d.ts_flush && d.ts_flush.length),
-          sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns||0)/1000 : 0 },
+          sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns||0)/1000 : 0,
+          yRange: ds => {
+              let top = 0;
+              ds.forEach(d => { top = Math.max(top, d.flush ? (d.flush.mean_ns||0)/1000 : 0, ...(d.ts_flush || []).map(p => p.w || 0)); });
+              return [0, top > 0 ? top * 1.15 : 1];
+          },
+          chart: { label: 'Flush (ftrace)', color: 'rgba(124,58,237,0.9)', fill: 'rgba(124,58,237,0.07)', fillTo: 'origin',
+              tipTitle: (d, x) => 'window ' + x + '\u2013' + (x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
+              tipLabel: (d, y, m) => 'Flush latency: ' + y.toFixed(1) + ' ' + m.unit +
+                  ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } },
+        // The drive's temperature, sampled while the phase runs (hwmon, else smartctl).
+        { key: 'temp', label: 'Temperature \u00b0C', unit: '\u00b0C', tsKey: 'ts_temp', source: 'hwmon', own: true,
+          has:  d => !!(d.ts_temp && d.ts_temp.length),
+          sumR: d => 0, sumW: d => d.temp ? d.temp.max_c || 0 : 0,
+          yRange: ds => {
+              let lo = Infinity, hi = -Infinity, warn = 0;
+              ds.forEach(d => {
+                  (d.ts_temp || []).forEach(p => { lo = Math.min(lo, p.w); hi = Math.max(hi, p.w); });
+                  if (d.temp && d.temp.warn_c) warn = Math.max(warn, d.temp.warn_c);
+              });
+              if (!isFinite(lo)) return [0, 1];
+              // Show the drive's warning limit when it is near enough to matter,
+              // not when it would flatten a cool drive's curve.
+              const top = warn && warn - hi <= 20 ? warn : hi;
+              return [Math.floor(lo - 3), Math.ceil(top + 2)];
+          },
+          chart: { label: 'Temperature', color: 'rgba(234,88,12,0.9)', fill: 'rgba(234,88,12,0.07)', fillTo: false,
+              limits: (d, yHigh) => {
+                  const out = [];
+                  if (d.temp && d.temp.warn_c && d.temp.warn_c <= yHigh) out.push({label: 'warning limit ' + d.temp.warn_c.toFixed(1) + ' \u00b0C', y: d.temp.warn_c, color: 'rgba(202,138,4,0.9)'});
+                  if (d.temp && d.temp.crit_c && d.temp.crit_c <= yHigh) out.push({label: 'critical ' + d.temp.crit_c.toFixed(1) + ' \u00b0C', y: d.temp.crit_c, color: 'rgba(220,38,38,0.9)'});
+                  return out;
+              },
+              tipTitle: (d, x) => 'at ' + x + ' s',
+              tipLabel: (d, y, m) => 'Temperature: ' + y.toFixed(1) + ' ' + m.unit + (d.temp && d.temp.sensor ? ' (' + d.temp.sensor + ')' : '') } },
     ];
     const SRC_TITLE = {
         fio:    'Measured by fio',
         ftrace: 'Measured from kernel ftrace events (device Flush commands), not by fio',
+        hwmon:  'Read from the drive\'s temperature sensor (kernel hwmon, or smartctl), not by fio',
     };
     // flushNone explains a Flush phase that was traced but saw no Flush.
     function flushNone(d, metric) {
@@ -621,7 +665,7 @@ __NAVBAR_HTML__
 
     function initFilters() {
         // graph_type: static list
-        const GT = [['iops','IOPS'],['bw','Bandwidth (MB/s)'],['lat','Latency (\u03bcs)'],['flush','Flush latency (\u03bcs)']];
+        const GT = [['iops','IOPS'],['bw','Bandwidth (MB/s)'],['lat','Latency (\u03bcs)'],['flush','Flush latency (\u03bcs)'],['temp','Temperature (\u00b0C)']];
         const ul = document.getElementById('list-graph_type');
         GT.forEach(([v, label]) => {
             SEL.graph_type.add(v);
@@ -668,8 +712,6 @@ __NAVBAR_HTML__
         hdr.classList.toggle('collapsed', collapsed);
     }
 
-    // Flush latency: one positive series (mean per second) from the stored
-    // ftrace samples, or the phase mean as a single bar when no series exists.
     // ── Shared time axis ──
     // Every time-series chart counts seconds from the start of the phase and
     // spans 0..X_MAX, so graphs line up. fio's own logs start when its
@@ -678,16 +720,23 @@ __NAVBAR_HTML__
     let X_MAX = 0;
     __CHART_SHARED_JS__
 
-    function makeFlushChart(canvas, d, metric, yHigh) {
+    // A series with its own clock (Flush latency, temperature): one line per
+    // disk from the W column, or the phase value as a single bar when there is
+    // no series. What differs per metric is in metric.chart.
+    function makeSeriesChart(canvas, d, metric, yLow, yHigh) {
         const ts = d[metric.tsKey];
-        const color = 'rgba(124,58,237,0.9)';
+        const c = metric.chart;
         if (ts && ts.length > 0) {
             const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w}));
+            const datasets = [{ label: c.label, data: pts,
+                borderColor: c.color, backgroundColor: c.fill,
+                fill: c.fillTo, tension: 0.2, pointRadius: 1.5, borderWidth: 1.5 }];
+            const xEnd = Math.max(X_MAX, pts.length ? pts[pts.length - 1].x : 0);
+            (c.limits ? c.limits(d, yHigh) : []).forEach(l => datasets.push({
+                label: l.label, data: [{x: 0, y: l.y}, {x: xEnd, y: l.y}],
+                borderColor: l.color, borderDash: [5, 4], borderWidth: 1, pointRadius: 0, fill: false }));
             return new Chart(canvas, {
-                type: 'line', plugins: [rampPlugin],
-                data: { datasets: [{ label: 'Flush (ftrace)', data: pts,
-                    borderColor: color, backgroundColor: 'rgba(124,58,237,0.07)',
-                    fill: 'origin', tension: 0.2, pointRadius: 1.5, borderWidth: 1.5 }] },
+                type: 'line', plugins: [rampPlugin], data: { datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
@@ -695,15 +744,14 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
-                            title: items => 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
-                            label: ctx => 'Flush latency: ' + ctx.raw.y.toFixed(1) + ' ' + metric.unit +
-                                ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
+                            title: items => c.tipTitle(d, items[0].raw.x),
+                            label: ctx => ctx.dataset.label !== c.label ? ctx.dataset.label : c.tipLabel(d, ctx.raw.y, metric) } }
                     },
                     scales: {
                         x: { type: 'linear', min: 0, max: X_MAX || undefined,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                              ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
-                        y: { min: 0, max: yHigh,
+                        y: { min: yLow, max: yHigh,
                              ticks: { callback: fmtTick, font: {size: 9}, color: '#64748b' },
                              grid: { color: '#f1f5f9' } }
                     }
@@ -712,12 +760,12 @@ __NAVBAR_HTML__
         }
         return new Chart(canvas, {
             type: 'bar',
-            data: { labels: ['Flush (ftrace)'], datasets: [{ data: [metric.sumW(d)],
-                backgroundColor: 'rgba(124,58,237,0.75)', borderWidth: 1 }] },
+            data: { labels: [c.label], datasets: [{ data: [metric.sumW(d)],
+                backgroundColor: c.color, borderWidth: 1 }] },
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false } },
-                scales: { y: { min: 0, max: yHigh, ticks: { callback: fmtTick, font: {size: 9} } } }
+                scales: { y: { min: yLow, max: yHigh, ticks: { callback: fmtTick, font: {size: 9} } } }
             }
         });
     }
@@ -726,7 +774,7 @@ __NAVBAR_HTML__
     // Returns the Chart instance. warnEl (optional) will receive a ts-warn message.
     function makeChart(canvas, d, metric, yLow, yHigh, warnEl) {
         const ts = d[metric.tsKey];
-        if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
+        if (metric.chart) return makeSeriesChart(canvas, d, metric, yLow, yHigh);
         if (ts && ts.length > 0) {
             const incompleteCount = ts.filter(p => p.i).length;
             if (warnEl) {
@@ -940,9 +988,8 @@ __NAVBAR_HTML__
                 let yMax = 0, yMin = 0;
                 phaseData.forEach(d => {
                     const ts = d[metric.tsKey];
-                    if (metric.key === 'flush') {
-                        const top = Math.max(metric.sumW(d), ...(ts || []).map(p => p.w || 0));
-                        if (top > yMax) yMax = top;
+                    if (metric.yRange) {
+                        // its own range, below
                     } else if (ts && ts.length > 0) {
                         ts.forEach(p => {
                             if (p.r > yMax) yMax = p.r;
@@ -954,8 +1001,9 @@ __NAVBAR_HTML__
                         if (w > 0 && -w < yMin) yMin = -w;
                     }
                 });
-                const yHigh = yMax > 0 ? yMax * 1.15 : (yMin < 0 ? 0 : 1);
-                const yLow  = yMin < 0 ? yMin * 1.15 : 0;
+                let yHigh = yMax > 0 ? yMax * 1.15 : (yMin < 0 ? 0 : 1);
+                let yLow  = yMin < 0 ? yMin * 1.15 : 0;
+                if (metric.yRange) [yLow, yHigh] = metric.yRange(phaseData);
 
                 const phaseHdr = document.createElement('div');
                 phaseHdr.className = 'phase-hdr';

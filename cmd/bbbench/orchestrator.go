@@ -73,6 +73,7 @@ func runOrchestrator(args []string) error {
 	filterMinCap := fs.Uint64("filter-min-capacity", 0, "filter drives by minimum capacity in GB")
 	filterMaxCap := fs.Uint64("filter-max-capacity", 0, "filter drives by maximum capacity in GB (0 = no limit)")
 	skipWriteThrough := fs.Bool("skip-write-through", false, "do not run fsync (Flush-latency) phases on write-through devices, where the kernel sends no Flush (default: run them and warn)")
+	tempInterval := fs.Duration("temp-interval", defaultTempInterval, "how often to read each drive's temperature during a phase (0 disables)")
 	noFlushTrace := fs.Bool("no-flush-trace", false, "do not trace device Flush latency (kernel trace events) during fsync phases")
 	logAvgMsec := fs.Int("log-avg-msec", 1000, "fio log averaging interval in milliseconds (--log_avg_msec)")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
@@ -273,6 +274,7 @@ func runOrchestrator(args []string) error {
 	coordinator.verbose = *verbose
 	coordinator.logAvgMsec = *logAvgMsec
 	coordinator.flushTrace = !*noFlushTrace
+	coordinator.tempInterval = *tempInterval
 	if err := coordinator.checkEnvironment(); err != nil {
 		return err
 	}

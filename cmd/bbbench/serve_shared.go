@@ -55,7 +55,7 @@ const chartSharedJS = `function rampOf(d) {
     function seriesMaxT(d, metric) {
         const ts = d[metric.tsKey];
         if (!ts || ts.length === 0) return 0;
-        const shift = metric.key === 'flush' ? 0 : fioShift(d);
+        const shift = metric.own ? 0 : fioShift(d);
         return Math.max(...ts.map(p => p.t)) + shift;
     }
 

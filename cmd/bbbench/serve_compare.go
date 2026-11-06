@@ -99,6 +99,7 @@ func handleComparePage(w http.ResponseWriter, r *http.Request) {
             color: #64748b; background: #f8fafc; cursor: help;
         }
         .src-ftrace { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
+        .src-hwmon { color: #c2410c; border-color: #fdba74; background: #fff7ed; }
         .cmp-note {
             font-size: 11px; color: #92400e; background: #fef3c7;
             border: 1px solid #fcd34d; border-radius: 3px;
@@ -177,10 +178,13 @@ __NAVBAR_HTML__
         { key: 'lat',  label: 'Latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
           sumR: d => d.read_lat_us  || 0, sumW: d => d.write_lat_us  || 0 },
         // Device Flush latency, timed from kernel trace events (not fio).
-        { key: 'flush', label: 'Flush latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
+        { key: 'flush', label: 'Flush latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace', own: true, short: 'Flush',
           has:  d => !!(d.flush && d.flush.count > 0) || !!(d.ts_flush && d.ts_flush.length),
           none: d => !!d.flush && !(d.flush.count > 0),
           sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns || 0) / 1000 : 0 },
+        { key: 'temp', label: 'Temperature (\u00b0C)', unit: '\u00b0C', tsKey: 'ts_temp', source: 'hwmon', own: true, short: 'Temp',
+          has:  d => !!(d.ts_temp && d.ts_temp.length),
+          sumR: d => 0, sumW: d => d.temp ? d.temp.max_c || 0 : 0 },
     ];
 
     // [solid border, area fill, bar background]
@@ -200,6 +204,7 @@ __NAVBAR_HTML__
     const SRC_TITLE = {
         fio:    'Measured by fio',
         ftrace: 'Measured from kernel ftrace events (device Flush commands), not by fio',
+        hwmon:  'Read from the drive\'s temperature sensor (kernel hwmon, or smartctl), not by fio',
     };
     function srcBadge(metric) {
         const b = document.createElement('span');
@@ -363,11 +368,11 @@ __NAVBAR_HTML__
         }
 
         // Flush latency has no read/write split: it is always drawn.
-        const isFlush = metric.key === 'flush';
-        const doRead  = isFlush ? false : document.getElementById('dir-read').checked;
-        const doWrite = isFlush ? true  : document.getElementById('dir-write').checked;
+        const own = !!metric.own; // Flush, temperature: one series, no Read/Write sides
+        const doRead  = own ? false : document.getElementById('dir-read').checked;
+        const doWrite = own ? true  : document.getElementById('dir-write').checked;
 
-        if (!isFlush && !doRead && !doWrite) {
+        if (!own && !doRead && !doWrite) {
             main.innerHTML = '<div class="cmp-placeholder">Select at least one direction (Read / Write).</div>';
             return;
         }
@@ -410,7 +415,7 @@ __NAVBAR_HTML__
                 const ts = d[metric.tsKey];
                 const [solid, fill] = PALETTE[i % PALETTE.length];
                 const lbl = seriesLabel(d, nDisks, nPhases);
-                const shift = metric.key === 'flush' ? 0 : fioShift(d);
+                const shift = metric.own ? 0 : fioShift(d);
                 rampMax = Math.max(rampMax, rampOf(d));
                 if (ts && ts.length > 0) {
                     if (doRead) {
@@ -462,7 +467,7 @@ __NAVBAR_HTML__
                         tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: items => 'at ' + items[0].raw.x + ' s',
                             label: ctx => ctx.dataset.label + ': ' +
-                                         (metric.key === 'flush' ? ctx.raw.y.toFixed(1) : fmtTick(ctx.raw.y)) + ' ' + metric.unit,
+                                         (metric.own ? ctx.raw.y.toFixed(1) : fmtTick(ctx.raw.y)) + ' ' + metric.unit,
                         }}
                     },
                     scales: {
@@ -490,7 +495,7 @@ __NAVBAR_HTML__
             // ── Summary grouped bar chart ──
             const dirLabels = [];
             if (doRead)  dirLabels.push('Read');
-            if (doWrite) dirLabels.push(isFlush ? 'Flush' : 'Write');
+            if (doWrite) dirLabels.push(own ? metric.short : 'Write');
 
             const datasets = entries.map((d, i) => {
                 const [solid, , barBg] = PALETTE[i % PALETTE.length];
