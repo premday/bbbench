@@ -52,10 +52,10 @@ Each matching combination of disk × phase is rendered as its own graph card. Cl
 
 **Time axis.** All time-series graphs use one x axis, in seconds from the start of the phase, from 0 to the longest series shown, so cards line up. fio's `ramp_time` is shaded as **ramp-up**: fio logs nothing during it, so the fio curves start where it ends. A point is the average over one polling window (`--log-avg-msec`) and is drawn at the start of its window; hover it to see the window. fio stamps the end of a window, so its points are moved back by one window, which keeps the first point at the end of the ramp-up instead of one interval later.
 
-**Flush latency** is not measured by fio. It carries a different tag (`ftrace`) and has its own clock from the start of the phase: the mean over each window, with no points during the ramp-up. A drive that never received a Flush shows why instead of an empty chart (see [flush-latency.md](flush-latency.md)).
+**Flush latency and temperature** are not measured by fio. They carry a different tag (`ftrace`, `hwmon`) and have their own clock from the start of the phase. Flush latency is the mean over each window, with no points during the ramp-up; a drive that never received a Flush shows why instead of an empty chart (see [flush-latency.md](flush-latency.md)). Temperature is sampled every `--temp-interval`, and the drive's own warning and critical limits are drawn when they are near the curve.
 
 ## Comparing Disks on the Same Graph
 
 The **Compare** view overlays multiple disks on a single chart, making it easy to spot performance differences.
 
-Select two or more drives in the sidebar, choose a phase, then click **Compare**. Each drive is drawn in a distinct color with a legend. Metric, phase, and time axis are shared so curves are directly comparable. Flush latency is a metric there too; it has no read and write sides, so the direction checkboxes do not apply to it.
+Select two or more drives in the sidebar, choose a phase, then click **Compare**. Each drive is drawn in a distinct color with a legend. Metric, phase, and time axis are shared so curves are directly comparable. Flush latency and temperature are metrics there too; they have no read and write sides, so the direction checkboxes do not apply to them.

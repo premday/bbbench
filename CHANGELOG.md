@@ -20,7 +20,7 @@
 - Run summary shows the mean fsync latency for phases that issue fsyncs
 - Workloads can override `ioengine`, `iodepth`, `direct` and `fsync` per job in `bbbench.workloadsdb`
 - Release archives ship a `VERSION` file (version, commit, date, arch) and a generated `RELEASE_NOTES.md`; the GitHub release notes are generated from the commits since the previous tag (`scripts/changelog.sh`)
-- Web UI: "Flush latency" graph type (graphs and compare pages) drawn from the stored log and averaged over fio's polling interval (`--log-avg-msec`), so it lines up with the fio series; every graph type shows a `fio` / `ftrace` source tag
+- Web UI: "Flush latency" graph type (graphs and compare pages) drawn from the stored log and averaged over fio's polling interval (`--log-avg-msec`), so it lines up with the fio series; every graph type shows a `fio` / `ftrace` / `hwmon` source tag
 - Docs and the write-through warning state that bbbench never configures the drive: it only reads the write cache mode, and the user applies any fix
 - `documentation/flush-latency.md` explains what the Flush latency measures, with a diagram of the kernel stack
 - Phases that fsync on a write-through device (the kernel sends no Flush) still run, with a warning on the console, the status page and the run details (`warnings` in the run JSON); `--skip-write-through` skips them instead, with the reason shown in the web UI

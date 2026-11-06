@@ -168,10 +168,10 @@ Flags:
 
 Pages available:
 - `/` — home
-- `/status` — live benchmark status while the orchestrator runs: progress, and per drive its configuration (interface, link speed, power, write cache policy, SMART), and its phases with the fio config, real and expected time and an ETA (details in [documentation/web-ui.md](documentation/web-ui.md))
+- `/status` — live benchmark status while the orchestrator runs: progress, and per drive its configuration (interface, link speed, power, write cache policy, SMART), temperature, and its phases with the fio config, real and expected time and an ETA (details in [documentation/web-ui.md](documentation/web-ui.md))
 - `/results` — browse and search past runs
 - `/summary?id=<id>` — statistics table (min/avg/max/σ) per phase, broken down by disk
-- `/graphs?id=<id>` — time-series charts per phase: IOPS, bandwidth and latency (from fio) and Flush latency (from kernel traces), on one shared time axis with the ramp-up shaded
+- `/graphs?id=<id>` — time-series charts per phase: IOPS, bandwidth and latency (from fio), Flush latency (from kernel traces) and temperature (from the drive's sensor), on one shared time axis with the ramp-up shaded
 - `/compare?id=<id>` — overlay several disks and/or phases on one chart
 - `/result?id=<id>` — details of one run: drives, phases, and any skipped phase or warning (e.g. a write-through drive)
 - `/export?id=<id>` — download self-contained HTML report
