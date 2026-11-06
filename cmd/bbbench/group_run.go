@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"bbbench/internal/diskinfo"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 )
@@ -51,9 +50,9 @@ type groupConfig struct {
 	OnSave func(*rungroup.GroupFile)
 }
 
-// driveRefs describes the drives for planning; Firmware is the controller
-// firmware from infos, empty when unknown.
-func driveRefs(drives []DriveInfo, infos map[string]diskinfo.Info) []rungroup.DriveRef {
+// driveRefs describes the drives for planning; Firmware is the drive's own
+// firmware from firmware (device -> revision), empty when unknown.
+func driveRefs(drives []DriveInfo, firmware map[string]string) []rungroup.DriveRef {
 	refs := make([]rungroup.DriveRef, 0, len(drives))
 	for _, d := range drives {
 		ref := rungroup.DriveRef{
@@ -62,9 +61,7 @@ func driveRefs(drives []DriveInfo, infos map[string]diskinfo.Info) []rungroup.Dr
 			Model:         d.Device.Model,
 			Vendor:        d.Device.Vendor,
 			CapacityBytes: d.Device.CapacityBytes,
-		}
-		if info, ok := infos[d.Device.Name]; ok && info.Controller != nil {
-			ref.Firmware = info.Controller.Firmware
+			Firmware:      firmware[d.Device.Name],
 		}
 		refs = append(refs, ref)
 	}

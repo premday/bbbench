@@ -47,6 +47,7 @@ import (
 
 	"bbbench/internal/blockdev"
 	"bbbench/internal/config"
+	"bbbench/internal/diskinfo"
 	"bbbench/internal/dmi"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
@@ -191,8 +192,7 @@ func runOrchestrator(args []string) error {
 	// A drive setting left changed by an earlier setting test is offered for
 	// restoring before anything else; all discovered drives are candidates.
 	available := settings.All(settings.Env{})
-	infos := infoFor(allDrives)
-	targets := targetsFor(allDrives, infos)
+	targets := targetsFor(allDrives, diskinfo.Options{})
 	if err := offerRecovery(context.Background(), os.Stdin, os.Stdout, groupRecoveryPath, available, allDrives, targets); err != nil {
 		return err
 	}
@@ -203,15 +203,18 @@ func runOrchestrator(args []string) error {
 	var selectedDrives []DriveInfo
 	if *resume {
 		if g := findResumableGroup(outDir); g != nil {
-			if *dryRun {
-				return errors.New("a dry run cannot be combined with a setting test")
+			if resumesGroup(g, stateIfAny(getStateFilePath(outDir))) {
+				if *dryRun {
+					return errors.New("a dry run cannot be combined with a setting test")
+				}
+				c, err := prepareGroupResume(os.Stdin, os.Stdout, g, available, allDrives)
+				if err != nil {
+					return err
+				}
+				group, resumeGroup, selectedDrives = c, g, c.Drives
+			} else {
+				fmt.Printf("Note: setting test %s is left unfinished (%s); resuming the single run instead.\n", g.ID, groupFileName(g))
 			}
-			c, err := resumeChoice(g, available, allDrives)
-			if err != nil {
-				return err
-			}
-			group, resumeGroup, selectedDrives = c, g, c.Drives
-			fmt.Printf("Resuming setting test %s (%s, %s)\n", g.ID, g.Setting, g.Strategy)
 		}
 	}
 	if group == nil {
@@ -234,7 +237,7 @@ func runOrchestrator(args []string) error {
 		}
 
 		if choice.Setting != nil {
-			group, err = runGroupSetupTUI(choice.Setting, selectedDrives, targets, infos)
+			group, err = runGroupSetupTUI(choice.Setting, selectedDrives, targets)
 			if err != nil {
 				return err
 			}

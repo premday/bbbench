@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,27 +14,9 @@ import (
 	"bbbench/internal/settings"
 )
 
-// infoFor collects the disk information of every drive, in parallel.
-func infoFor(drives []DriveInfo) map[string]diskinfo.Info {
-	infos := make(map[string]diskinfo.Info, len(drives))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for _, d := range drives {
-		wg.Add(1)
-		go func(name string) {
-			defer wg.Done()
-			info := diskinfo.Collect(name, diskinfo.Options{})
-			mu.Lock()
-			infos[name] = info
-			mu.Unlock()
-		}(d.Device.Name)
-	}
-	wg.Wait()
-	return infos
-}
-
-// targetsFor describes the drives as targets of a setting.
-func targetsFor(drives []DriveInfo, infos map[string]diskinfo.Info) map[string]settings.Target {
+// targetsFor describes the drives as targets of a setting. The interface is
+// read from sysfs only: no command runs and no drive is touched.
+func targetsFor(drives []DriveInfo, opts diskinfo.Options) map[string]settings.Target {
 	targets := make(map[string]settings.Target, len(drives))
 	for _, d := range drives {
 		targets[d.Device.Name] = settings.Target{
@@ -44,10 +25,21 @@ func targetsFor(drives []DriveInfo, infos map[string]diskinfo.Info) map[string]s
 			Serial:    d.Device.Serial,
 			Model:     d.Device.Model,
 			Vendor:    d.Device.Vendor,
-			Interface: infos[d.Device.Name].Interface,
+			Interface: diskinfo.InterfaceOf(d.Device.Name, opts),
 		}
 	}
 	return targets
+}
+
+// firmwareFor reads the firmware of each drive itself, from sysfs only.
+func firmwareFor(drives []DriveInfo, opts diskinfo.Options) map[string]string {
+	fw := make(map[string]string, len(drives))
+	for _, d := range drives {
+		if v := diskinfo.DriveFirmware(d.Device.Name, opts); v != "" {
+			fw[d.Device.Name] = v
+		}
+	}
+	return fw
 }
 
 func plural(n int, one, many string) string {
@@ -225,7 +217,7 @@ const (
 
 type setupModel struct {
 	setting  settings.Setting
-	infos    map[string]diskinfo.Info
+	firmware map[string]string
 	drives   []DriveInfo
 	excluded map[string]string
 	exOrder  []string // excluded device names in selection order
@@ -247,8 +239,8 @@ type setupModel struct {
 	result    *groupChoice
 }
 
-func newSetupModel(s settings.Setting, selected []DriveInfo, targets map[string]settings.Target, infos map[string]diskinfo.Info) setupModel {
-	m := setupModel{setting: s, infos: infos, excluded: map[string]string{}, values: s.Values(), strategy: rungroup.Sequential}
+func newSetupModel(s settings.Setting, selected []DriveInfo, targets map[string]settings.Target, firmware map[string]string) setupModel {
+	m := setupModel{setting: s, firmware: firmware, excluded: map[string]string{}, values: s.Values(), strategy: rungroup.Sequential}
 	for _, d := range selected {
 		name := d.Device.Name
 		if ok, why := s.Applicable(targets[name]); ok {
@@ -263,7 +255,7 @@ func newSetupModel(s settings.Setting, selected []DriveInfo, targets map[string]
 		m.ticked[i] = true
 	}
 	m.stopped = len(m.drives) == 0
-	m.firmwares = firmwareWarnings(driveRefs(m.drives, infos))
+	m.firmwares = firmwareWarnings(driveRefs(m.drives, firmware))
 	return m
 }
 
@@ -326,14 +318,14 @@ func (m setupModel) valueIDs() []string {
 
 // plans returns the runs of the chosen strategy.
 func (m setupModel) plans() ([]rungroup.RunPlan, error) {
-	return rungroup.PlanRuns(driveRefs(m.drives, m.infos), m.valueIDs(), m.strategy)
+	return rungroup.PlanRuns(driveRefs(m.drives, m.firmware), m.valueIDs(), m.strategy)
 }
 
 // enterStrategy works out which strategies are offered for the ticked values.
 func (m *setupModel) enterStrategy() {
 	m.options = []rungroup.Strategy{rungroup.Sequential}
 	m.notOffer = ""
-	if ok, why := rungroup.ParallelPossible(driveRefs(m.drives, m.infos), len(m.valueIDs())); ok {
+	if ok, why := rungroup.ParallelPossible(driveRefs(m.drives, m.firmware), len(m.valueIDs())); ok {
 		m.options = append(m.options, rungroup.Parallel, rungroup.ParallelSwap)
 	} else {
 		m.notOffer = why
@@ -513,6 +505,18 @@ func (m setupModel) confirmView(b *strings.Builder) {
 		fmt.Fprintf(b, "\n  Cannot plan the runs: %v\n", err)
 		return
 	}
+	label := map[string]string{}
+	for _, v := range m.chosenValues() {
+		label[v.ID] = v.Label
+	}
+	b.WriteString("\n  Which value goes to which drive:\n")
+	for i, p := range plans {
+		var parts []string
+		for _, v := range p.Variants {
+			parts = append(parts, fmt.Sprintf("%s -> %s", label[v.Value], strings.Join(v.Drives, ", ")))
+		}
+		fmt.Fprintf(b, "    Run %d: %s\n", i+1, strings.Join(parts, "; "))
+	}
 	per, unknown, missing := estimateRun(m.drives)
 	fmt.Fprintf(b, "\n  %d %s of the full test plan", len(plans), plural(len(plans), "run", "runs"))
 	switch {
@@ -559,8 +563,8 @@ func estimateRun(drives []DriveInfo) (per time.Duration, unknown, missing int) {
 
 // runGroupSetupTUI asks, after the drive selection, which values to test and
 // how to spread them, and the confirmation. Nothing is applied here.
-func runGroupSetupTUI(setting settings.Setting, selected []DriveInfo, targets map[string]settings.Target, infos map[string]diskinfo.Info) (*groupChoice, error) {
-	m := newSetupModel(setting, selected, targets, infos)
+func runGroupSetupTUI(setting settings.Setting, selected []DriveInfo, targets map[string]settings.Target) (*groupChoice, error) {
+	m := newSetupModel(setting, selected, targets, firmwareFor(selected, diskinfo.Options{}))
 	final, err := runTea(m)
 	if err != nil {
 		return nil, err

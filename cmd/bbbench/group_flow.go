@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -176,4 +177,59 @@ func printGroupSummary(w io.Writer, g *rungroup.GroupFile) {
 	case "failed":
 		fmt.Fprintf(w, "  RESTORE FAILED on: %s\n", strings.Join(g.Restore.Failed, ", "))
 	}
+}
+
+// groupFileName is the file name of group g in the output directory.
+func groupFileName(g *rungroup.GroupFile) string { return "group_" + g.ID + "_group.json" }
+
+// resumesGroup decides what --resume continues when group g is unfinished:
+// a state file tagged with a group (or none at all) belongs to the group; an
+// untagged one is a single run's. state is nil when there is no state file.
+func resumesGroup(g *rungroup.GroupFile, state *ExecutionState) bool {
+	if g == nil {
+		return false
+	}
+	return state == nil || state.Group != ""
+}
+
+// stateIfAny loads the state file; nil when there is none or it cannot be
+// read (the single-run resume then reports the problem itself).
+func stateIfAny(path string) *ExecutionState {
+	st, err := loadState(path)
+	if err != nil {
+		return nil
+	}
+	return st
+}
+
+// prepareGroupResume rebuilds the choice for the unfinished group g and asks
+// the user to confirm it: resuming applies settings. An error stops the
+// run; nothing has been applied then.
+func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo) (*groupChoice, error) {
+	c, err := resumeChoice(g, available, drives)
+	if err != nil {
+		return nil, fmt.Errorf("%w\nThe unfinished group is %s in the output directory; removing or renaming it unblocks --resume", err, groupFileName(g))
+	}
+	todo := 0
+	for _, r := range g.Runs {
+		if r.Status != rungroup.RunDone && r.Status != rungroup.RunInvalid {
+			todo++
+		}
+	}
+	fmt.Fprintf(out, "\nResume setting test %s (%s, %s)\n", g.ID, g.Setting, g.Strategy)
+	var labels []string
+	for _, v := range c.Values {
+		labels = append(labels, v.Label)
+	}
+	fmt.Fprintf(out, "  Values: %s\n  Will be changed on:\n", strings.Join(labels, ", "))
+	for _, d := range c.Drives {
+		fmt.Fprintf(out, "    %s  %s %s (S/N %s)\n", d.Device.Name, d.Device.Vendor, d.Device.Model, d.Device.Serial)
+	}
+	fmt.Fprintf(out, "  Runs still to do: %d of %d\n", todo, len(g.Runs))
+	fmt.Fprint(out, "  The original values are read first and restored when the group ends.\nContinue and change these drives? [y/n] ")
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+		return nil, errors.New("setting test not resumed; nothing was changed")
+	}
+	return c, nil
 }

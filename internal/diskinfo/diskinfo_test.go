@@ -294,3 +294,60 @@ func TestCollect_NVMeWithoutLinkAttributes(t *testing.T) {
 		t.Error("gts")
 	}
 }
+
+// sysOnly fails the test if a command is run.
+func sysOnly(t *testing.T, sys string) Options {
+	return Options{Sys: sys, Run: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		t.Errorf("command run: %s", name)
+		return nil, errors.New("no commands")
+	}, DriveWCE: func(string) (bool, error) {
+		t.Error("device queried")
+		return false, errors.New("no")
+	}}
+}
+
+func TestInterfaceOf_EqualsCollectAndRunsNothing(t *testing.T) {
+	sys := t.TempDir()
+	put(t, sys, map[string]string{
+		"block/nvme0n1/queue/write_cache": "write back",
+		"class/nvme/nvme0/transport":      "pcie",
+		"block/nvme1n1/queue/write_cache": "write back",
+		"class/nvme/nvme1/transport":      "tcp",
+	})
+	sata := "devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda"
+	sas := "devices/pci0000:00/0000:00:02.0/host2/port-2:0/end_device-2:0/target2:0:0/2:0:0:0/block/sdb"
+	usb := "devices/pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0/host6/target6:0:0/6:0:0:0/block/sdc"
+	for name, real := range map[string]string{"sda": sata, "sdb": sas, "sdc": usb} {
+		put(t, sys, map[string]string{real + "/queue/write_cache": "write back"})
+		link(t, sys, filepath.Join(sys, real), "block/"+name)
+	}
+	want := map[string]string{"nvme0n1": "NVMe (PCIe)", "nvme1n1": "NVMe (tcp)", "sda": "SATA", "sdb": "SAS", "sdc": "USB", "missing": ""}
+	for name, w := range want {
+		got := InterfaceOf(name, sysOnly(t, sys))
+		if got != w {
+			t.Errorf("InterfaceOf(%s) = %q, want %q", name, got, w)
+		}
+		if c := Collect(name, Options{Sys: sys, Run: fakeRun(nil), DriveWCE: func(string) (bool, error) { return false, errors.New("x") }}).Interface; c != got {
+			t.Errorf("%s: Collect says %q, InterfaceOf %q", name, c, got)
+		}
+	}
+}
+
+func TestDriveFirmware(t *testing.T) {
+	sys := t.TempDir()
+	put(t, sys, map[string]string{
+		"class/nvme/nvme0/firmware_rev":    "FW9",
+		"block/sda/device/rev":             "1B6Q",
+		"class/scsi_host/host0/version_fw": "HBA-1",
+	})
+	o := sysOnly(t, sys)
+	if got := DriveFirmware("nvme0n1", o); got != "FW9" {
+		t.Errorf("nvme = %q", got)
+	}
+	if got := DriveFirmware("sda", o); got != "1B6Q" {
+		t.Errorf("sata = %q", got)
+	}
+	if got := DriveFirmware("sdz", o); got != "" {
+		t.Errorf("unknown = %q", got)
+	}
+}

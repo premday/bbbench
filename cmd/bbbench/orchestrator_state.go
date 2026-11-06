@@ -18,6 +18,9 @@ type ExecutionState struct {
 	Drives        []string         `json:"drives"`         // drive names
 	CompletedWork map[string][]int `json:"completed_work"` // drive -> completed phase indices
 	Interrupted   bool             `json:"interrupted"`
+	// Group is the id of the run group the state belongs to; empty for a
+	// single run (and for state files written before run groups).
+	Group string `json:"group,omitempty"`
 }
 
 const stateFileVersion = "1"
@@ -40,6 +43,7 @@ func (ec *ExecutionCoordinator) saveState() error {
 		Drives:        make([]string, len(ec.drives)),
 		CompletedWork: make(map[string][]int),
 		Interrupted:   ec.interrupted,
+		Group:         ec.groupID,
 	}
 
 	for i, drive := range ec.drives {

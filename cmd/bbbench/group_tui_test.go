@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -234,11 +235,8 @@ func TestSetup_ConfirmShowsRunCountAndEstimate(t *testing.T) {
 
 func TestSetup_FirmwareMismatchWarns(t *testing.T) {
 	drives, targets := testDrives("sda", "sdb")
-	infos := map[string]diskinfo.Info{
-		"sda": {Controller: &diskinfo.Controller{Firmware: "FW1"}},
-		"sdb": {Controller: &diskinfo.Controller{Firmware: "FW2"}},
-	}
-	m := newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, infos)
+	fw := map[string]string{"sda": "FW1", "sdb": "FW2"}
+	m := newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, fw)
 	strat := press(m, "enter").(setupModel)
 	if v := strat.View(); !strings.Contains(v, "different firmware") {
 		t.Fatalf("strategy view lacks the firmware warning:\n%s", v)
@@ -248,6 +246,71 @@ func TestSetup_FirmwareMismatchWarns(t *testing.T) {
 	}
 	if v := press(strat, "enter").View(); !strings.Contains(v, "different firmware") {
 		t.Fatalf("confirm view lacks the firmware warning:\n%s", v)
+	}
+}
+
+// fwTree writes a fake sysfs with per-disk rev and per-host HBA firmware.
+func fwTree(t *testing.T, revs map[string]string, hosts map[string]string) diskinfo.Options {
+	t.Helper()
+	sys := t.TempDir()
+	put := func(rel, v string) {
+		p := filepath.Join(sys, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for d, r := range revs {
+		put("block/"+d+"/device/rev", r)
+	}
+	for h, v := range hosts {
+		put("class/scsi_host/"+h+"/version_fw", v)
+	}
+	return diskinfo.Options{Sys: sys, Run: func(context.Context, string, ...string) ([]byte, error) {
+		t.Error("command run")
+		return nil, errors.New("no")
+	}}
+}
+
+func TestSetup_FirmwareWarningUsesTheDrivesOwnRevision(t *testing.T) {
+	drives, targets := testDrives("sda", "sdb")
+	// Different disk revisions on the same HBA: warn.
+	o := fwTree(t, map[string]string{"sda": "1B6Q", "sdb": "1B7Q"}, map[string]string{"host0": "HBA"})
+	m := newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, firmwareFor(drives, o))
+	if v := press(m, "enter").View(); !strings.Contains(v, "different firmware") {
+		t.Fatalf("different rev must warn:\n%s", v)
+	}
+	// Same disk revision behind two HBAs with different firmware: no warning.
+	o = fwTree(t, map[string]string{"sda": "1B6Q", "sdb": "1B6Q"}, map[string]string{"host0": "HBA-1", "host1": "HBA-2"})
+	m = newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, firmwareFor(drives, o))
+	if v := press(m, "enter").View(); strings.Contains(v, "different firmware") {
+		t.Fatalf("same rev must not warn:\n%s", v)
+	}
+}
+
+func TestMode_TargetsNeedNoCommand(t *testing.T) {
+	drives, _ := testDrives("sda", "nvme0n1")
+	o := fwTree(t, nil, nil) // its Run fails the test when called
+	targets := targetsFor(drives, o)
+	if len(targets) != 2 || targets["sda"].Serial != "SN-sda" {
+		t.Fatalf("targets = %+v", targets)
+	}
+}
+
+func TestSetup_ConfirmShowsValueToDrivesPerRun(t *testing.T) {
+	drives, targets := testDrives("sda", "sdb", "sdc", "sdd")
+	m := newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, nil)
+	par := press(m, "enter", "down", "enter").View()
+	if !strings.Contains(par, "Run 1: on -> sda, sdb; off -> sdc, sdd") {
+		t.Fatalf("parallel confirm lacks the mapping:\n%s", par)
+	}
+	swap := press(m, "enter", "down", "down", "enter").View()
+	for _, w := range []string{"Run 1: on -> sda, sdb; off -> sdc, sdd", "Run 2: off -> sda, sdb; on -> sdc, sdd"} {
+		if !strings.Contains(swap, w) {
+			t.Fatalf("swap confirm lacks %q:\n%s", w, swap)
+		}
 	}
 }
 
@@ -395,5 +458,83 @@ func TestNewGroupConfig_Defaults(t *testing.T) {
 	cfg := newGroupConfig(c, nil, opts, "h", nil)
 	if cfg.Execute == nil || cfg.OnSave != nil || cfg.RecoveryPath != groupRecoveryPath || cfg.Settle != groupSettle {
 		t.Fatalf("cfg = %+v", cfg)
+	}
+}
+
+func TestResume_DecisionTable(t *testing.T) {
+	g := &rungroup.GroupFile{ID: "7"}
+	cases := []struct {
+		name  string
+		g     *rungroup.GroupFile
+		state *ExecutionState
+		want  bool
+	}{
+		{"tagged state resumes the group", g, &ExecutionState{Group: "7"}, true},
+		{"untagged state is a single run", g, &ExecutionState{}, false},
+		{"no state resumes the group", g, nil, true},
+		{"no group file is a single run", nil, &ExecutionState{Group: "7"}, false},
+		{"no group file and no state is a single run", nil, nil, false},
+	}
+	for _, c := range cases {
+		if got := resumesGroup(c.g, c.state); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestState_GroupTagRoundTrip(t *testing.T) {
+	quietLogger(t)
+	drives, _ := testDrives("sda")
+	path := filepath.Join(t.TempDir(), "state.json")
+	ec := &ExecutionCoordinator{stateFile: path, mode: "sequential", drives: drives, results: map[string][]*FioResult{}, groupID: "42"}
+	if err := ec.saveState(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := loadState(path)
+	if err != nil || st.Group != "42" {
+		t.Fatalf("state = %+v, err %v; want group 42", st, err)
+	}
+	ec.groupID = ""
+	if err := ec.saveState(); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := loadState(path); st.Group != "" {
+		t.Fatalf("a single run's state must carry no group, got %q", st.Group)
+	}
+}
+
+func unfinishedGroup() *rungroup.GroupFile {
+	return &rungroup.GroupFile{
+		ID: "9", Created: time.Now(), Setting: "fake cache", Strategy: rungroup.Sequential, Values: []string{"enabled", "disabled"},
+		Runs: []rungroup.GroupRun{
+			{Status: rungroup.RunDone, Drives: []rungroup.GroupDrive{{Device: "sda", Serial: "SN-sda", Model: "M1"}}},
+			{Status: rungroup.RunPlanned},
+		},
+	}
+}
+
+func TestResume_AnsweringNoAppliesNothing(t *testing.T) {
+	drives, _ := testDrives("sda")
+	fs := newFakeSetting(map[string]string{"sda": "enabled"})
+	var out strings.Builder
+	c, err := prepareGroupResume(strings.NewReader("n\n"), &out, unfinishedGroup(), []settings.Setting{fs}, drives)
+	if err == nil || c != nil {
+		t.Fatalf("choice %v err %v, want a refusal", c, err)
+	}
+	if len(fs.calls) != 0 {
+		t.Fatalf("setting called: %v", fs.calls)
+	}
+	if !strings.Contains(out.String(), "Runs still to do: 1 of 2") || !strings.Contains(out.String(), "restored") {
+		t.Fatalf("confirmation text incomplete:\n%s", out.String())
+	}
+	if c, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{fs}, drives); err != nil || len(c.Drives) != 1 {
+		t.Fatalf("yes: %v %v", c, err)
+	}
+}
+
+func TestResume_UnresumableGroupNamesTheFile(t *testing.T) {
+	_, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{newFakeSetting(nil)}, nil)
+	if err == nil || !strings.Contains(err.Error(), "group_9_group.json") || !strings.Contains(err.Error(), "--resume") {
+		t.Fatalf("err = %v, want the file name and the way out", err)
 	}
 }

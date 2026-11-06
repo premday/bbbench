@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"bbbench/internal/blockdev"
-	"bbbench/internal/diskinfo"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 )
@@ -671,11 +670,7 @@ func TestRunGroup_OnSaveCalled(t *testing.T) {
 
 func TestDriveRefs(t *testing.T) {
 	drives, _ := testDrives("sda", "sdb", "sdc")
-	infos := map[string]diskinfo.Info{
-		"sda": {Controller: &diskinfo.Controller{Firmware: "FW1"}},
-		"sdb": {},
-	}
-	refs := driveRefs(drives, infos)
+	refs := driveRefs(drives, map[string]string{"sda": "FW1"})
 	want := []rungroup.DriveRef{
 		{Name: "sda", Serial: "SN-sda", Model: "M1", Vendor: "V", Firmware: "FW1", CapacityBytes: 1 << 40},
 		{Name: "sdb", Serial: "SN-sdb", Model: "M1", Vendor: "V", CapacityBytes: 1 << 40},

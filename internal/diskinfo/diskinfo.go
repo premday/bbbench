@@ -241,6 +241,60 @@ func (c *collector) runtimePM(devDir string) string {
 	return ctl
 }
 
+// nvmeInterface names the interface of an NVMe controller by its transport
+// ("" means pcie, as on kernels without the attribute).
+func nvmeInterface(transport string) string {
+	switch transport {
+	case "", "pcie":
+		return "NVMe (PCIe)"
+	}
+	return "NVMe (" + transport + ")"
+}
+
+// scsiInterface names the interface of a SCSI-layer disk from where it sits
+// in the device tree (the resolved /sys/block/<name> path); "" when unknown.
+func scsiInterface(real string) string {
+	switch {
+	case ataRe.MatchString(real):
+		return "SATA"
+	case sasPortRe.MatchString(real) || strings.Contains(real, "/end_device-"):
+		return "SAS"
+	case strings.Contains(real, "/usb"):
+		return "USB"
+	case strings.Contains(real, "/virtio"):
+		return "virtio"
+	}
+	return ""
+}
+
+// InterfaceOf is Collect(name, opts).Interface, read from sysfs only: no
+// command runs and no device is touched.
+func InterfaceOf(name string, opts Options) string {
+	opts.fill()
+	c := &collector{opts: opts, name: name}
+	c.sys = func(parts ...string) string { return filepath.Join(append([]string{opts.Sys}, parts...)...) }
+	if m := nvmeNameRe.FindStringSubmatch(name); m != nil {
+		return nvmeInterface(c.read(c.sys("class", "nvme", m[1], "transport")))
+	}
+	real, err := filepath.EvalSymlinks(c.sys("block", name))
+	if err != nil {
+		real = ""
+	}
+	return scsiInterface(real)
+}
+
+// DriveFirmware is the firmware revision of the drive itself, from sysfs only
+// (an NVMe controller's firmware_rev, a SCSI/SATA disk's rev); "" when unknown.
+func DriveFirmware(name string, opts Options) string {
+	opts.fill()
+	c := &collector{opts: opts, name: name}
+	c.sys = func(parts ...string) string { return filepath.Join(append([]string{opts.Sys}, parts...)...) }
+	if m := nvmeNameRe.FindStringSubmatch(name); m != nil {
+		return c.read(c.sys("class", "nvme", m[1], "firmware_rev"))
+	}
+	return c.read(c.sys("block", name, "device", "rev"))
+}
+
 // nvme fills an NVMe namespace's info from its controller nvmeN.
 func (c *collector) nvme(info *Info, ctrl string) {
 	ctrlDir := c.sys("class", "nvme", ctrl)
@@ -248,12 +302,7 @@ func (c *collector) nvme(info *Info, ctrl string) {
 	if transport == "" {
 		transport = "pcie"
 	}
-	switch transport {
-	case "pcie":
-		info.Interface = "NVMe (PCIe)"
-	default:
-		info.Interface = "NVMe (" + transport + ")"
-	}
+	info.Interface = nvmeInterface(transport)
 	if transport == "pcie" {
 		if pci, err := filepath.EvalSymlinks(filepath.Join(ctrlDir, "device")); err == nil {
 			speed := c.read(filepath.Join(pci, "current_link_speed"))
@@ -330,16 +379,15 @@ func (c *collector) aspm(pci string) string {
 // scsi fills a SCSI-layer disk (SATA, SAS, USB, virtio) from where it sits in
 // the device tree (the resolved /sys/block/<name> path).
 func (c *collector) scsi(info *Info, real string) {
-	switch {
-	case ataRe.MatchString(real):
-		info.Interface = "SATA"
+	info.Interface = scsiInterface(real)
+	switch info.Interface {
+	case "SATA":
 		n := ataRe.FindStringSubmatch(real)[1]
 		spd := c.read(c.sys("class", "ata_link", "link"+n, "sata_spd"))
 		if spd != "" && spd != "<unknown>" {
 			info.LinkSpeed = spd
 		}
-	case sasPortRe.MatchString(real) || strings.Contains(real, "/end_device-"):
-		info.Interface = "SAS"
+	case "SAS":
 		if m := sasPortRe.FindStringSubmatch(real); m != nil {
 			phys, _ := filepath.Glob(c.sys("class", "sas_phy", "phy-"+m[1]+":*"))
 			for _, p := range phys {
@@ -353,16 +401,13 @@ func (c *collector) scsi(info *Info, real string) {
 				}
 			}
 		}
-	case strings.Contains(real, "/usb"):
-		info.Interface = "USB"
+	case "USB":
 		for d := filepath.Dir(real); d != "/" && d != "." && strings.Contains(d, "/usb"); d = filepath.Dir(d) {
 			if s := c.read(filepath.Join(d, "speed")); s != "" {
 				info.LinkSpeed = s + " Mb/s"
 				break
 			}
 		}
-	case strings.Contains(real, "/virtio"):
-		info.Interface = "virtio"
 	}
 	devDir := c.sys("block", c.name, "device")
 	info.Power.RuntimePM = c.runtimePM(devDir)
