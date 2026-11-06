@@ -77,6 +77,8 @@ func (w *writeCache) Read(ctx context.Context, t Target) (Reading, error) {
 			return r, err
 		}
 		out, err := w.env.Run(ctx, "nvme", "get-feature", ctl, "-f", "6")
+		// A non-zero exit with output is accepted (hdparm can exit non-zero
+		// while still printing); the parse below decides. No output is an error.
 		if err != nil && len(out) == 0 {
 			return r, fmt.Errorf("nvme get-feature %s: %w", ctl, err)
 		}
@@ -91,6 +93,8 @@ func (w *writeCache) Read(ctx context.Context, t Target) (Reading, error) {
 		r.Value = onOff(v&1 == 1)
 	case "sata":
 		out, err := w.env.Run(ctx, "hdparm", "-W", t.Path)
+		// A non-zero exit with output is accepted (hdparm can exit non-zero
+		// while still printing); the parse below decides. No output is an error.
 		if err != nil && len(out) == 0 {
 			return r, fmt.Errorf("hdparm -W %s: %w", t.Path, err)
 		}
@@ -158,6 +162,9 @@ func (w *writeCache) Apply(ctx context.Context, t Target, v Value) error {
 }
 
 func (w *writeCache) Restore(ctx context.Context, t Target, original Reading) error {
+	if original.Value == "" {
+		return fmt.Errorf("no original write cache value was recorded for %s; not restoring", t.Name)
+	}
 	cur, err := w.Read(ctx, t)
 	if err == nil && cur.Value == original.Value {
 		return nil

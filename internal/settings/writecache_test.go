@@ -213,3 +213,31 @@ func TestWriteCache_RestoreWritesOnlyWhenDifferent(t *testing.T) {
 		t.Errorf("%v", got)
 	}
 }
+
+func TestWriteCache_RestoreWithoutOriginalDoesNothing(t *testing.T) {
+	f := &fake{answers: map[string]string{"hdparm -W /dev/sdb": " write-caching =  1 (on)"}}
+	s := NewWriteCache(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
+	err := s.Restore(context.Background(), Target{Name: "sdb", Path: "/dev/sdb", Interface: "SATA"}, Reading{})
+	if err == nil || !strings.Contains(err.Error(), "sdb") {
+		t.Errorf("err = %v", err)
+	}
+	if len(f.sets()) != 0 {
+		t.Errorf("ran: %v", f.sets())
+	}
+}
+
+func TestWriteCache_ReadToleratesExitStatusWithOutput(t *testing.T) {
+	tg := Target{Name: "sdb", Path: "/dev/sdb", Interface: "SATA"}
+	withOut := func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(" write-caching =  0 (off)"), errors.New("exit status 25")
+	}
+	s := NewWriteCache(Env{Run: withOut, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
+	if r, err := s.Read(context.Background(), tg); err != nil || r.Value != "disabled" {
+		t.Errorf("%+v %v", r, err)
+	}
+	noOut := func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("exit status 1") }
+	s = NewWriteCache(Env{Run: noOut, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
+	if _, err := s.Read(context.Background(), tg); err == nil {
+		t.Error("want an error without output")
+	}
+}
