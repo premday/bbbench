@@ -124,10 +124,21 @@ settings only, never "save"):
 
 The kernel's `queue/write_cache` is read back too and stored next to the drive
 reading. It is informational for the verification **(call)**: the drive-level
-value decides validity, but if the kernel does not follow (a stock kernel does
-not flip it), the run carries a warning, because the Flush-latency phases depend
-on it. Applying waits a bounded time for the reading to settle before declaring
-a failure.
+value decides validity. bbbench does **not** force the kernel value (it never
+writes `/sys/block/*/queue/write_cache`): a kernel that follows the drive
+(the patched one) reports `write through` for a disabled cache, a stock kernel
+keeps `write back`, and the existing Flush-phase rules (warning by default,
+`--skip-write-through` to skip, see `orchestrator_skip.go`) apply to each run
+as they do today, reading the kernel value at run time. The group page shows the
+kernel value per run, with a note when Flush phases traced nothing for that
+reason, so a run is never silently missing Flush data. Applying waits a bounded
+time for the reading to settle before declaring a failure.
+
+Tools: `nvme`, `hdparm` and `sdparm` are optional dependencies, added to the
+dependency table with their purpose; a drive whose tool is missing is "not
+applicable" with the reason, and `doctor` reports them. SAS/SCSI apply uses
+`sdparm` in the first version **(call)**; a native SG_IO MODE SELECT would avoid
+the dependency but is hardware-specific code that cannot be tested here.
 
 This reverses the documented rule that bbbench never changes a drive's
 configuration. After this change the rule is: it changes it only in setting-test
@@ -173,19 +184,36 @@ Each run's summary (`run_<unix>_summary.json`) gains `group_id` and a per-drive
 group file is lost. Runs without these fields are groups of one, computed when
 loading (no migration).
 
-A **recovery file** (`.bbbench-group-recovery.json`) records the original value of
-every drive **before the first apply** and is removed after a successful
-restore. If it exists at startup, the orchestrator offers to restore before
-doing anything else **(call)**.
+A **recovery file** records the original value of every drive **before the first
+apply** and is removed after a successful restore. It lives at a fixed path
+independent of `--output` and the working directory, `/var/lib/bbbench/group-recovery.json`
+(root only, like the rest) **(call)**, so the next start always finds it. Drives
+are keyed by **serial and model**, with the device name kept as a hint, because
+names change across reboots; a drive that is no longer present is skipped and
+reported. Restore **reads the current value first** and writes only if it differs
+from the original (a power cycle may already have reset a volatile setting).
+If the file exists at startup, the orchestrator offers to restore before doing
+anything else **(call)**.
 
-`--resume` of a group continues at the first run that is not done, reusing the
-per-run state file for the partial run.
+`--resume` of a group continues at the first run that is not done. An interrupted
+run is **restarted from its first phase** **(call)**, not continued: after a
+crash the drives were restored, so phases measured before it may not have
+run under the value, and the value is applied and verified again. Its earlier
+files are kept and marked interrupted, and excluded from comparisons. If a
+recovery file is present, restore happens first, then the group resumes
+(apply, verify, run).
 
 ## Orchestrator control flow
 
-One orchestrator process owns the whole group. A loop is added above the
-existing per-run machinery; the run itself (coordinator, phases, fio, summary)
-is reused unchanged:
+One orchestrator process owns the whole group, with **one coordinator per run**
+(a parallel run is one coordinator whose drives carry different labels, not one
+coordinator per value). A loop is added above the existing per-run machinery.
+The run (phases, fio, summary, the per-run state file) is reused, with these
+changes: the coordinator receives a `labels` map (device -> setting value) and
+stores it in the run summary; the status singleton gains group fields (group,
+run i of n, per drive value and verification); the web store gains groups.
+Doing those three first is the first step of the plan, because the rest builds
+on them.
 
 ```
 confirm -> write recovery file
@@ -217,15 +245,33 @@ path except a hard kill restores; a hard kill leaves the recovery file.
   value**, so cards and overlays contrast the variants. Invalid results are
   hidden by default with a toggle to show them, flagged **(call)**.
 - **Run details**: shows its group and each drive's value and verification.
+- **Repeated measurements** **(call)**: with swap rounds one value is measured on
+  several drives and in several runs. Graphs and compare show each (drive, run)
+  as its own series, labelled with value and round; the group page's metric
+  matrix aggregates, per value, over the valid (drive, run) results: mean, min-max
+  and the count n. A value with no valid result is shown as incomplete and
+  compare still renders the others.
 - **API**: `/api/groups`, `/api/groups/detail?id=`, `/api/groups/graphs?id=`.
 
 ## Safety
 
 - Nothing is applied before the confirmation screen.
-- Only drives the user selected are touched. Drives in use (mounted, swap, md/dm
-  holders) are refused once the in-use protection of `raid_testing` is merged;
-  until then the confirmation screen shows them.
+- Only drives the user selected are touched. This version adds no in-use check of
+  its own **(call)**: changing the volatile write cache does not touch data, and
+  the benchmark itself writes to the selected drives as it does today. The
+  in-use protection of `raid_testing` applies to the drive selection once that is
+  merged, and so to groups.
 - Restore is verified, not assumed.
+
+## Order of work
+
+Each step is working and tested on its own, so the branch can stop after any of
+them with single runs unaffected: (1) coordinator `labels`, status and run-summary
+fields, group file and store; (2) the setting abstraction and the write cache
+setting with fake runners; (3) apply / verify / restore with the recovery file and
+signal handling; (4) the TUI flow and the group loop; (5) status tab and group
+page; (6) graphs, compare, results list and run details; (7) docs. Whether and
+when this becomes a PR is the user's decision.
 
 ## Testing
 
@@ -241,12 +287,14 @@ path except a hard kill restores; a hard kill leaves the recovery file.
 
 ## Open points
 
-1. Failure policy (above) is a default; the user has not confirmed it.
-2. Crash recovery: offering to restore at the next start vs. a separate command.
-3. "Identical" = vendor, model, capacity; firmware only warned about.
-4. Swap rounds for more than two values use cyclic rotation.
-5. Invalid results hidden by default in graphs.
-6. Whether a non-interactive way to define a group is wanted soon.
+Defaults chosen while writing, all marked **(call)** above, for the user to
+overrule: the failure policy (not run on a failed *before*, invalid on a failed
+*after*); the drive value decides validity and the kernel value is not forced;
+`sdparm` for SAS; the recovery file at `/var/lib/bbbench/` keyed by serial and
+model; restart (not continue) of an interrupted run; per-(drive, run) series with
+an aggregated matrix; invalid results hidden by default; "identical" = vendor,
+model, capacity; cyclic rotation for more than two values; no new in-use check;
+a non-interactive way to define a group is left for later.
 
 ## Left to the builder
 
