@@ -470,9 +470,7 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 	go func() {
 		select {
 		case <-ctx.Done():
-			coordinator.mu.Lock()
-			coordinator.interrupted = true
-			coordinator.mu.Unlock()
+			coordinator.setInterrupted()
 			coordinator.cancel()
 		case <-done:
 		}

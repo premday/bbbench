@@ -33,7 +33,7 @@ type ExecutionCoordinator struct {
 	mu          sync.Mutex
 	ctx         context.Context
 	cancel      context.CancelFunc
-	interrupted bool
+	interrupted bool // guarded by mu: setInterrupted, isInterrupted
 	tempFiles   []string
 	tempFilesMu sync.Mutex
 	stateFile   string
@@ -185,6 +185,21 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (_ *Exe
 	return ec, nil
 }
 
+// setInterrupted records that the run was stopped (signal or cancelled
+// context). interrupted is only read through isInterrupted, or under mu.
+func (ec *ExecutionCoordinator) setInterrupted() {
+	ec.mu.Lock()
+	ec.interrupted = true
+	ec.mu.Unlock()
+}
+
+// isInterrupted says whether the run was stopped.
+func (ec *ExecutionCoordinator) isInterrupted() bool {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	return ec.interrupted
+}
+
 // errRunInterrupted is returned by the executors when the run was stopped
 // (signal or cancelled context) before all phases ran.
 var errRunInterrupted = errors.New("execution interrupted by user")
@@ -214,10 +229,7 @@ func (ec *ExecutionCoordinator) handleSignals() {
 		fmt.Println("The drives' original settings are restored afterwards; do not interrupt again.")
 	}
 
-	ec.mu.Lock()
-	ec.interrupted = true
-	ec.mu.Unlock()
-
+	ec.setInterrupted()
 	ec.cancel()
 
 	// Further signals: force quit, except in a run group (see onSecondSignal).

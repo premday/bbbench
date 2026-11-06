@@ -3,7 +3,9 @@ package main
 import (
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -379,5 +381,29 @@ func TestSecondSignal_GroupDoesNotExit(t *testing.T) {
 	plain.onSecondSignal(exit)
 	if exits != 1 {
 		t.Errorf("plain coordinator exits = %d, want 1", exits)
+	}
+}
+
+// interrupted is written under mu by the signal handler and by the context
+// watcher of executeRun while the run goroutine reads it (go test -race).
+func TestInterruptedFlag_NoRace(t *testing.T) {
+	quietLogger(t)
+	ec := &ExecutionCoordinator{results: map[string][]*FioResult{}, stateFile: filepath.Join(t.TempDir(), "state.json")}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ec.setInterrupted()
+	}()
+	stdout := os.Stdout
+	devnull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	os.Stdout = devnull
+	displayResults(ec)
+	ec.cleanupStateFile()
+	os.Stdout = stdout
+	devnull.Close()
+	wg.Wait()
+	if !ec.isInterrupted() {
+		t.Error("isInterrupted false after setInterrupted")
 	}
 }

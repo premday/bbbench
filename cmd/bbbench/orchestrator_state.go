@@ -42,7 +42,7 @@ func (ec *ExecutionCoordinator) saveState() error {
 		LastUpdate:    time.Now(),
 		Drives:        make([]string, len(ec.drives)),
 		CompletedWork: make(map[string][]int),
-		Interrupted:   ec.interrupted,
+		Interrupted:   ec.interrupted, // mu is held
 		Group:         ec.groupID,
 	}
 
@@ -128,7 +128,7 @@ func getStateFilePath(outputDir string) string {
 
 // cleanupStateFile removes the state file after successful completion.
 func (ec *ExecutionCoordinator) cleanupStateFile() {
-	if ec.stateFile != "" && !ec.interrupted {
+	if ec.stateFile != "" && !ec.isInterrupted() {
 		if err := os.Remove(ec.stateFile); err != nil {
 			logger.Debug("cleanup state file", "err", err)
 		} else {
