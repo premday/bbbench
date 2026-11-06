@@ -376,8 +376,12 @@ func belowMax(speed, maxSpeed, width, maxWidth string) bool {
 
 // gts is the number of a "16.0 GT/s PCIe" speed (0 if unreadable).
 func gts(s string) float64 {
-	f, _ := strconv.ParseFloat(strings.Fields(s + " ")[0], 64)
-	return f
+	f := strings.Fields(s)
+	if len(f) == 0 {
+		return 0
+	}
+	n, _ := strconv.ParseFloat(f[0], 64)
+	return n
 }
 
 func atoi(s string) int { n, _ := strconv.Atoi(s); return n }

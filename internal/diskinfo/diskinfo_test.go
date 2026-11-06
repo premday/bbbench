@@ -274,3 +274,23 @@ func TestFormat_NoStatusHasNoBareSource(t *testing.T) {
 		t.Errorf("empty = %q", got)
 	}
 }
+
+// A PCI device without link attributes (no current_link_speed) used to panic
+// in the speed comparison, which would have taken the orchestrator down.
+func TestCollect_NVMeWithoutLinkAttributes(t *testing.T) {
+	sys := t.TempDir()
+	pci := "devices/pci0000:00/0000:01:00.0"
+	put(t, sys, map[string]string{
+		"block/nvme0n1/queue/write_cache": "write back",
+		"class/nvme/nvme0/transport":      "pcie",
+		pci + "/vendor":                   "0x144d",
+	})
+	link(t, sys, filepath.Join(sys, pci), "class/nvme/nvme0/device")
+	got := Collect("nvme0n1", Options{Sys: sys, Run: fakeRun(nil)})
+	if got.Interface != "NVMe (PCIe)" || got.LinkSpeed != "" || got.LinkBelowMax {
+		t.Errorf("%+v", got)
+	}
+	if gts("") != 0 || gts("  ") != 0 || gts("8.0 GT/s PCIe") != 8 {
+		t.Error("gts")
+	}
+}
