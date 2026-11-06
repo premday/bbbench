@@ -58,6 +58,10 @@ type DriveStatus struct {
 	ErrorMessage string    `json:"error,omitempty"`
 	// Skipped is why the drive sits out the current phase (Status "skipped").
 	Skipped string `json:"skipped,omitempty"`
+	// PhaseSeconds is how long each finished phase really took on this drive,
+	// by phase index (0-based). The map is replaced, never mutated, on every
+	// update, so snapshots can be encoded without the lock.
+	PhaseSeconds map[int]float64 `json:"phase_seconds,omitempty"`
 	// Config is how the disk is connected and configured (interface, link,
 	// power, write cache, SMART); nil until it has been read.
 	Config *diskinfo.Info `json:"config,omitempty"`
@@ -255,6 +259,7 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
         .phase.done .pname { text-decoration: line-through; color: #999; }
         .plen { color: #888; font-size: 12px; margin-left: 6px; }
         .plen.unk { color: #b26a00; }
+        .plen.real { color: #2e7d32; font-weight: 600; }
         .phase.current > summary { color: #2e7d32; font-weight: 600; }
         .phase-sum { color: #888; font-family: monospace; font-size: 12px; display: block; margin-left: 14px; }
         .phase pre { background: #263238; color: #eceff1; padding: 8px 10px; border-radius: 4px;
@@ -369,32 +374,78 @@ __NAVBAR_HTML__
             return drive.status === 'running' && i === drive.current_phase - 1;
         }
 
-        // Remaining time of the phases still to run: known lengths are summed
-        // (the running phase minus its elapsed time); phases without a known
-        // length are counted apart.
+        // The real time a phase took on this drive, once it has finished there
+        // (a drive can finish before the others have finished the phase).
+        function realOf(drive, i) {
+            const r = drive.phase_seconds && drive.phase_seconds[i];
+            return r == null ? null : r;
+        }
+
+        // How the finished phases really ran against their expected length
+        // (fio's setup and ramp-up, the drive being slower, ...): the expected
+        // length of what remains is scaled by it, so the ETA adjusts as phases
+        // finish. 1 until a phase with a known length has finished.
+        function paceOf(drive, phases) {
+            let actual = 0, expected = 0;
+            phases.forEach(p => {
+                const r = realOf(drive, p.index);
+                if (r != null && p.deterministic && p.duration_sec > 0) { actual += r; expected += p.duration_sec; }
+            });
+            return expected > 0 ? Math.min(4, Math.max(0.25, actual / expected)) : 1;
+        }
+
+        // Total real time of the finished phases.
+        function spentOf(drive, phases) {
+            return phases.reduce((t, p) => t + (realOf(drive, p.index) || 0), 0);
+        }
+
+        // Remaining time of the phases still to run: known lengths are summed,
+        // scaled by the pace so far (the running phase minus its elapsed time);
+        // phases without a known length are counted apart.
         function etaOf(drive, phases) {
+            const pace = paceOf(drive, phases);
             let sec = 0, unknown = 0, left = 0;
             phases.forEach(p => {
-                if (phaseDone(drive, p.index)) return;
+                if (phaseDone(drive, p.index) || realOf(drive, p.index) != null) return;
                 left++;
                 if (!p.deterministic) { unknown++; return; }
-                let d = p.duration_sec;
+                let d = p.duration_sec * pace;
                 if (phaseRunning(drive, p.index) && drive.phase_start) {
                     d -= (Date.now() + clockSkew - Date.parse(drive.phase_start)) / 1000;
                 }
                 sec += Math.max(0, d);
             });
-            return { sec: sec, unknown: unknown, left: left };
+            return { sec: sec, unknown: unknown, left: left, pace: pace };
         }
 
         function etaText(e) {
             if (e.left === 0) return 'all done';
             let t = e.sec > 0 ? 'ETA ~' + fmtDur(e.sec) + ' (about ' +
                 new Date(Date.now() + e.sec * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) + ')' : '';
+            if (!t && e.unknown === 0) return 'past its expected length, ETA unknown';
             if (e.unknown > 0) {
                 t += (t ? ' + ' : 'ETA unknown: ') + e.unknown + ' phase' + (e.unknown > 1 ? 's' : '') + ' of unknown length';
             }
             return t;
+        }
+
+        // What a phase row says about its time: the real time when finished
+        // (with the expected one beside it), elapsed against expected while
+        // running, the expected length before.
+        function phaseTimeHTML(drive, p) {
+            const real = realOf(drive, p.index);
+            const exp = p.deterministic ? fmtDur(p.duration_sec) : null;
+            if (real != null) {
+                return '<span class="plen real">took ' + fmtDur(real) + '</span>' +
+                    (exp ? ' <span class="plen">expected ~' + exp + '</span>' : '');
+            }
+            if (phaseRunning(drive, p.index)) {
+                const el = drive.phase_start ? (Date.now() + clockSkew - Date.parse(drive.phase_start)) / 1000 : 0;
+                const base = fmtDur(el) + ' elapsed';
+                if (!exp) return '<span class="plen unk">' + base + ', length unknown</span>';
+                return '<span class="plen">' + base + ' of ~' + exp + (el > p.duration_sec ? ' (over)' : '') + '</span>';
+            }
+            return '<span class="plen' + (p.deterministic ? '' : ' unk') + '">' + (exp ? '~' + exp : 'length unknown') + '</span>';
         }
 
         // The disk configuration read at the start of the run: interface, link,
@@ -443,18 +494,19 @@ __NAVBAR_HTML__
             if (!phases || phases.length === 0) return '';
             const k = 'p:' + drive.name;
             const done = phases.filter(p => phaseDone(drive, p.index)).length;
+            const spent = spentOf(drive, phases);
             let h = '<details class="phases" data-key="' + esc(k) + '"' + (openKeys.has(k) ? ' open' : '') + '>' +
-                '<summary>Phases (' + phases.length + ') &middot; ' + done + ' done &middot; ' +
+                '<summary>Phases (' + phases.length + ') &middot; ' + done + ' done' +
+                (spent > 0 ? ' in ' + esc(fmtDur(spent)) : '') + ' &middot; ' +
                 esc(etaText(etaOf(drive, phases))) + '</summary>';
             phases.forEach(p => {
                 const key = 'c:' + drive.name + ':' + p.index;
                 const isDone = phaseDone(drive, p.index);
                 const cur = phaseRunning(drive, p.index);
-                const len = p.deterministic ? '~' + fmtDur(p.duration_sec) : 'length unknown';
                 h += '<details class="phase' + (cur ? ' current' : '') + (isDone ? ' done' : '') +
                     '" data-key="' + esc(key) + '"' + (openKeys.has(key) ? ' open' : '') + '>' +
                     '<summary><span class="pname">' + (p.index + 1) + '. ' + esc(p.name) + '</span>' +
-                    (cur ? ' (running)' : '') + ' <span class="plen' + (p.deterministic ? '' : ' unk') + '">' + len + '</span></summary>' +
+                    (cur ? ' (running)' : '') + ' ' + phaseTimeHTML(drive, p) + '</summary>' +
                     '<span class="phase-sum">' + esc(p.summary) + '</span>' +
                     (p.open ? '<span class="phase-sum">' + esc(p.open) + '</span>' : '') +
                     '<pre>' + highlight(p.config) + '</pre></details>';

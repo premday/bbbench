@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -388,6 +389,38 @@ func TestCollectDiskConfig_LandsOnStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got.Drives) != 2 || got.Drives[0].Config == nil || got.Drives[0].Config.Smart.Status != "PASSED" {
+		t.Errorf("/api/status = %s", w.Body.String())
+	}
+}
+
+// The real time of a finished phase lands on the drive's status entry, per
+// phase; skipped phases ran nothing and get none. Snapshots keep their own
+// map, so encoding one cannot race with a later update.
+func TestRecordPhaseTime(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	UpdateStatus(func(s *BenchmarkStatus) { s.Drives = []DriveStatus{{Name: "nvme0n1"}, {Name: "sda"}} })
+	t0 := time.Unix(1000, 0)
+
+	recordPhaseTime("nvme0n1", 0, &FioResult{StartTime: t0, EndTime: t0.Add(61500 * time.Millisecond)})
+	before := GetStatus().Drives[0].PhaseSeconds
+	recordPhaseTime("nvme0n1", 2, &FioResult{StartTime: t0, EndTime: t0.Add(5 * time.Minute)})
+	recordPhaseTime("nvme0n1", 1, &FioResult{StartTime: t0, EndTime: t0, Skipped: "write through"})
+	recordPhaseTime("sda", 0, &FioResult{}) // never ran
+
+	got := GetStatus().Drives
+	if m := got[0].PhaseSeconds; len(m) != 2 || m[0] != 61.5 || m[2] != 300 {
+		t.Errorf("nvme0n1 = %v, want phases 0 and 2 only", m)
+	}
+	if len(before) != 1 {
+		t.Errorf("an earlier snapshot changed: %v", before)
+	}
+	if got[1].PhaseSeconds != nil {
+		t.Errorf("sda = %v, want none", got[1].PhaseSeconds)
+	}
+	w := httptest.NewRecorder()
+	handleStatus(w, httptest.NewRequest("GET", "/api/status", nil))
+	if !strings.Contains(w.Body.String(), `"phase_seconds":{"0":61.5,"2":300}`) {
 		t.Errorf("/api/status = %s", w.Body.String())
 	}
 }

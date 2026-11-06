@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -632,6 +633,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 				ec.mu.Lock()
 				ec.results[drv.Device.Name] = append(ec.results[drv.Device.Name], result)
 				ec.mu.Unlock()
+				recordPhaseTime(drv.Device.Name, idx, result)
 
 				if result.Error != nil {
 					mu.Lock()
@@ -819,6 +821,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			ec.mu.Lock()
 			ec.results[drive.Device.Name] = append(ec.results[drive.Device.Name], result)
 			ec.mu.Unlock()
+			recordPhaseTime(drive.Device.Name, phaseIdx, result)
 
 			elapsed := time.Since(phaseStart)
 			if result.Error != nil {
@@ -1056,5 +1059,23 @@ func markDrive(device string, f func(*DriveStatus)) {
 				return
 			}
 		}
+	})
+}
+
+// recordPhaseTime puts how long a drive's phase really took (fio launch to
+// fio exit) on the status page, next to the expected length. Skipped phases
+// ran nothing, so they have no time.
+func recordPhaseTime(device string, phaseIdx int, r *FioResult) {
+	if r.Skipped != "" || r.StartTime.IsZero() || r.EndTime.IsZero() {
+		return
+	}
+	sec := r.EndTime.Sub(r.StartTime).Seconds()
+	markDrive(device, func(d *DriveStatus) {
+		m := maps.Clone(d.PhaseSeconds)
+		if m == nil {
+			m = make(map[int]float64)
+		}
+		m[phaseIdx] = sec
+		d.PhaseSeconds = m
 	})
 }

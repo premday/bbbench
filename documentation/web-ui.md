@@ -25,6 +25,8 @@ Some of these need root, and SMART needs `smartctl` (smartmontools) or, for NVMe
 
 The same information, in full, is written to a text file per disk in the run's output directory, `<device>_diskinfo_<start time>.txt` (one per run, so a resumed run keeps what the first one saw). It holds the summary, every sysfs value read, and the complete output of each command, including the reports the summary is drawn from: `smartctl -x`, and `nvme id-ctrl`, `nvme id-ns` and `nvme smart-log` for NVMe or `hdparm -I` for SATA. A command that failed (no root, tool not installed) is listed with its error, so the file shows what could not be read.
 
+Each drive's **Phases** list shows its time as it goes: before a phase runs, its expected length (`~5m`, or `length unknown` for a full-disk write); while it runs, the time elapsed against the expected one; once it has finished on that drive, the real time (`took 5m 2s`, with the expected one beside it, finished phases struck through). The header sums the real time spent so far and gives an ETA for what remains. The ETA adjusts as phases finish: the expected length of the remaining phases is scaled by how the finished ones really compared with theirs (fio's setup and ramp-up, a slower drive, ...), and the running phase counts down from that. Phases of unknown length are counted apart, not guessed.
+
 The page auto-refreshes so you can monitor a long run without manually reloading.
 
 ## Graphs and Navigation
