@@ -49,7 +49,7 @@ const fioStampSlackMs = 10
 // defaultLogAvgMsec is fio's log averaging interval when none is set (the
 // --log-avg-msec default); also the Flush series window for logs that do not
 // record one.
-const defaultLogAvgMsec = 1000
+const defaultLogAvgMsec = flushtrace.DefaultWindowMs
 
 // avgMsec is the fio log averaging interval of the run.
 func (ec *ExecutionCoordinator) avgMsec() int {

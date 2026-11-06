@@ -15,9 +15,9 @@ func LogName(prefix string) string { return prefix + "_flush.1.log" }
 
 const logMagic = "# bbbench-flush-log v2"
 
-// defaultWindowMs is the averaging window when the summary does not record
-// fio's polling interval.
-const defaultWindowMs = 1000
+// DefaultWindowMs is the averaging window (fio's --log-avg-msec default) when
+// none is recorded.
+const DefaultWindowMs = 1000
 
 // WriteLog stores a phase's Flush latency like fio stores its logs: one line
 // per averaging window (fio's --log-avg-msec), stamped at the END of the
@@ -50,7 +50,7 @@ func WriteLog(w io.Writer, sum Summary, all []Sample) error {
 	fmt.Fprint(bw, "# end_ms, mean_latency_ns, dir, bs, offset, count, min_ns, max_ns\n")
 	windowMs := sum.AvgMsec
 	if windowMs <= 0 {
-		windowMs = defaultWindowMs
+		windowMs = DefaultWindowMs
 	}
 	for _, x := range Windows(all, windowMs) {
 		fmt.Fprintf(bw, "%d, %d, 3, 0, 0, %d, %d, %d\n", x.EndMs, x.MeanNs, x.Count, x.MinNs, x.MaxNs)
@@ -120,22 +120,9 @@ func ReadLog(r io.Reader) (Summary, []Window, error) {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		f := strings.Split(line, ",")
-		if len(f) < 8 {
+		x, ok := parseWindow(line)
+		if !ok {
 			return Summary{}, nil, fmt.Errorf("bad flush log line %q", line)
-		}
-		var x Window
-		var err [5]error
-		x.EndMs, err[0] = strconv.ParseInt(strings.TrimSpace(f[0]), 10, 64)
-		x.MeanNs, err[1] = strconv.ParseInt(strings.TrimSpace(f[1]), 10, 64)
-		cnt, e2 := strconv.Atoi(strings.TrimSpace(f[5]))
-		x.Count, err[2] = cnt, e2
-		x.MinNs, err[3] = strconv.ParseInt(strings.TrimSpace(f[6]), 10, 64)
-		x.MaxNs, err[4] = strconv.ParseInt(strings.TrimSpace(f[7]), 10, 64)
-		for _, e := range err {
-			if e != nil {
-				return Summary{}, nil, fmt.Errorf("bad flush log line %q", line)
-			}
 		}
 		win = append(win, x)
 	}
@@ -148,18 +135,37 @@ func ReadLog(r io.Reader) (Summary, []Window, error) {
 	return sum, win, nil
 }
 
+// parseWindow reads one data line: end_ms, mean_ns, dir, bs, offset, count,
+// min_ns, max_ns (the middle fio columns are ignored).
+func parseWindow(line string) (w Window, ok bool) {
+	f := strings.Split(line, ",")
+	if len(f) < 8 {
+		return w, false
+	}
+	var err error
+	num := func(i int) int64 {
+		n, e := strconv.ParseInt(strings.TrimSpace(f[i]), 10, 64)
+		if e != nil {
+			err = e
+		}
+		return n
+	}
+	w = Window{EndMs: num(0), MeanNs: num(1), Count: int(num(5)), MinNs: num(6), MaxNs: num(7)}
+	return w, err == nil
+}
+
 // Finish is the one place a traced phase's Summary is built, live and when a
 // stored log is loaded: Summarize over the samples that completed after the
 // ramp (like fio's statistics), plus the metadata of meta (Source, Exact, Lost,
 // WriteCache, AvgMsec, OffsetMs).
 func Finish(meta Summary, all []Sample) Summary {
-	sum := Summarize(meta.Source, meta.Exact, meta.Lost, AfterMs(all, meta.OffsetMs))
+	sum := Summarize(meta.Source, meta.Exact, meta.Lost, afterMs(all, meta.OffsetMs))
 	sum.WriteCache, sum.AvgMsec, sum.OffsetMs = meta.WriteCache, meta.AvgMsec, meta.OffsetMs
 	return sum
 }
 
-// AfterMs returns the samples that completed at or after ms milliseconds.
-func AfterMs(all []Sample, ms int) []Sample {
+// afterMs returns the samples that completed at or after ms milliseconds.
+func afterMs(all []Sample, ms int) []Sample {
 	if ms <= 0 {
 		return all
 	}
@@ -185,7 +191,7 @@ type Window struct {
 // time), in time order. Empty windows are omitted.
 func Windows(all []Sample, windowMs int) []Window {
 	if windowMs <= 0 {
-		windowMs = defaultWindowMs
+		windowMs = DefaultWindowMs
 	}
 	windowNs := int64(windowMs) * 1_000_000
 	type acc struct {
