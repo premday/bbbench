@@ -4,6 +4,7 @@
 
 ### Added
 
+- README lists the files an orchestrator run writes to its output directory
 - Status page and disk dump: where each disk physically sits (SES enclosure slot or SAS bay; SMBIOS system slot for NVMe, with the kernel's PCI slot table as the fallback without root; SMBIOS onboard device for SATA) and what controller it hangs off (NVMe, SATA/AHCI, SAS HBA, RAID, USB, virtio) with its name, driver, PCI address and IDs, firmware, BIOS and SAS address, flagging RAID virtual drives (new `internal/smbios` package; `lspci` is an optional dependency)
 - `orchestrator` checks its external programs when it starts: a missing `fio`, or an I/O engine a selected workload needs that fio lacks (e.g. `io_uring`), stops the run with what to install; missing `smartctl`, `nvme` or `hdparm` and an unavailable tracefs are warnings saying what is lost. `doctor` runs the same checks
 - Status page: the phase list shows the real time of each finished phase (`took 5m 2s`, with the expected length beside it) and the time spent so far, and the ETA adjusts as phases finish: the remaining expected lengths are scaled by how the finished phases really ran against theirs
