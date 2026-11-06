@@ -20,8 +20,13 @@ type GroupStore struct {
 
 var globalGroupStore = &GroupStore{groups: make(map[string]*rungroup.GroupFile)}
 
-// AddGroup adds or replaces a group. The group is copied, so the caller (the
-// group loop, which keeps changing its own copy) never races the handlers.
+// AddGroup adds or replaces a group. The copy is shallow: only Runs and each
+// run's Drives get their own slices, since those are what the group loop
+// changes in place. Everything else (Values, Plan, Originals, Restore.Failed,
+// the labels' Before/After readings) is shared with the caller, which is safe
+// only because the group loop never changes them in place after the first
+// save: it assigns new values (a new Restore, new readings, a new Drives
+// slice per record). Changing them in place would race the handlers.
 func (s *GroupStore) AddGroup(g *rungroup.GroupFile) {
 	if g == nil {
 		return
