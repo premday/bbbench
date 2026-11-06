@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bbbench/internal/diskinfo"
 )
 
 // BenchmarkStatus represents the current state of benchmark execution.
@@ -56,6 +58,13 @@ type DriveStatus struct {
 	ErrorMessage string    `json:"error,omitempty"`
 	// Skipped is why the drive sits out the current phase (Status "skipped").
 	Skipped string `json:"skipped,omitempty"`
+	// PhaseSeconds is how long each finished phase really took on this drive,
+	// by phase index (0-based). The map is replaced, never mutated, on every
+	// update, so snapshots can be encoded without the lock.
+	PhaseSeconds map[int]float64 `json:"phase_seconds,omitempty"`
+	// Config is how the disk is connected and configured (interface, link,
+	// power, write cache, SMART); nil until it has been read.
+	Config *diskinfo.Info `json:"config,omitempty"`
 	// Warning is a caveat about the phase the drive is running.
 	Warning       string `json:"warning,omitempty"`
 	LastCompleted string `json:"last_completed,omitempty"`
@@ -235,6 +244,14 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
             color: #666;
             margin-top: 5px;
         }
+        .cfg { text-align: left; margin-top: 8px; font-size: 13px; color: #444; }
+        .cfg .row { display: flex; gap: 8px; margin-top: 2px; }
+        .cfg .k { flex: 0 0 82px; color: #888; }
+        .cfg .v { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .cfg .ok { color: #2e7d32; font-weight: 600; }
+        .cfg .bad { color: #c62828; font-weight: 600; }
+        .cfg .warn { color: #b26a00; }
+        .cfg .dim { color: #888; }
         .phases { text-align: left; margin-top: 10px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
         .phases > summary { cursor: pointer; font-size: 13px; color: #555; font-weight: 600; }
         .phase { margin: 6px 0 0 4px; font-size: 13px; }
@@ -242,6 +259,7 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
         .phase.done .pname { text-decoration: line-through; color: #999; }
         .plen { color: #888; font-size: 12px; margin-left: 6px; }
         .plen.unk { color: #b26a00; }
+        .plen.real { color: #2e7d32; font-weight: 600; }
         .phase.current > summary { color: #2e7d32; font-weight: 600; }
         .phase-sum { color: #888; font-family: monospace; font-size: 12px; display: block; margin-left: 14px; }
         .phase pre { background: #263238; color: #eceff1; padding: 8px 10px; border-radius: 4px;
@@ -356,32 +374,119 @@ __NAVBAR_HTML__
             return drive.status === 'running' && i === drive.current_phase - 1;
         }
 
-        // Remaining time of the phases still to run: known lengths are summed
-        // (the running phase minus its elapsed time); phases without a known
-        // length are counted apart.
+        // The real time a phase took on this drive, once it has finished there
+        // (a drive can finish before the others have finished the phase).
+        function realOf(drive, i) {
+            const r = drive.phase_seconds && drive.phase_seconds[i];
+            return r == null ? null : r;
+        }
+
+        // How the finished phases really ran against their expected length
+        // (fio's setup and ramp-up, the drive being slower, ...): the expected
+        // length of what remains is scaled by it, so the ETA adjusts as phases
+        // finish. 1 until a phase with a known length has finished.
+        function paceOf(drive, phases) {
+            let actual = 0, expected = 0;
+            phases.forEach(p => {
+                const r = realOf(drive, p.index);
+                if (r != null && p.deterministic && p.duration_sec > 0) { actual += r; expected += p.duration_sec; }
+            });
+            return expected > 0 ? Math.min(4, Math.max(0.25, actual / expected)) : 1;
+        }
+
+        // Total real time of the finished phases.
+        function spentOf(drive, phases) {
+            return phases.reduce((t, p) => t + (realOf(drive, p.index) || 0), 0);
+        }
+
+        // Remaining time of the phases still to run: known lengths are summed,
+        // scaled by the pace so far (the running phase minus its elapsed time);
+        // phases without a known length are counted apart.
         function etaOf(drive, phases) {
+            const pace = paceOf(drive, phases);
             let sec = 0, unknown = 0, left = 0;
             phases.forEach(p => {
-                if (phaseDone(drive, p.index)) return;
+                if (phaseDone(drive, p.index) || realOf(drive, p.index) != null) return;
                 left++;
                 if (!p.deterministic) { unknown++; return; }
-                let d = p.duration_sec;
+                let d = p.duration_sec * pace;
                 if (phaseRunning(drive, p.index) && drive.phase_start) {
                     d -= (Date.now() + clockSkew - Date.parse(drive.phase_start)) / 1000;
                 }
                 sec += Math.max(0, d);
             });
-            return { sec: sec, unknown: unknown, left: left };
+            return { sec: sec, unknown: unknown, left: left, pace: pace };
         }
 
         function etaText(e) {
             if (e.left === 0) return 'all done';
             let t = e.sec > 0 ? 'ETA ~' + fmtDur(e.sec) + ' (about ' +
                 new Date(Date.now() + e.sec * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) + ')' : '';
+            if (!t && e.unknown === 0) return 'past its expected length, ETA unknown';
             if (e.unknown > 0) {
                 t += (t ? ' + ' : 'ETA unknown: ') + e.unknown + ' phase' + (e.unknown > 1 ? 's' : '') + ' of unknown length';
             }
             return t;
+        }
+
+        // What a phase row says about its time: the real time when finished
+        // (with the expected one beside it), elapsed against expected while
+        // running, the expected length before.
+        function phaseTimeHTML(drive, p) {
+            const real = realOf(drive, p.index);
+            const exp = p.deterministic ? fmtDur(p.duration_sec) : null;
+            if (real != null) {
+                return '<span class="plen real">took ' + fmtDur(real) + '</span>' +
+                    (exp ? ' <span class="plen">expected ~' + exp + '</span>' : '');
+            }
+            if (phaseRunning(drive, p.index)) {
+                const el = drive.phase_start ? (Date.now() + clockSkew - Date.parse(drive.phase_start)) / 1000 : 0;
+                const base = fmtDur(el) + ' elapsed';
+                if (!exp) return '<span class="plen unk">' + base + ', length unknown</span>';
+                return '<span class="plen">' + base + ' of ~' + exp + (el > p.duration_sec ? ' (over)' : '') + '</span>';
+            }
+            return '<span class="plen' + (p.deterministic ? '' : ' unk') + '">' + (exp ? '~' + exp : 'length unknown') + '</span>';
+        }
+
+        // The disk configuration read at the start of the run: interface, link,
+        // power, write cache and SMART health. Anything unreadable is left out.
+        function configHTML(c) {
+            if (!c) return '<div class="cfg"><span class="dim">Reading configuration&hellip;</span></div>';
+            const row = (k, v) => v ? '<div class="row"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>' : '';
+            const sp = (cls, t) => '<span class="' + cls + '">' + esc(t) + '</span>';
+            let link = c.link_speed ? esc(c.link_speed) : '';
+            if (c.link_max) link += ' <span class="dim">(max ' + esc(c.link_max) + ')</span>';
+            if (c.link_below_max) link += ' ' + sp('warn', 'below max');
+            const p = c.power || {};
+            const power = [
+                p.nvme_state ? 'state ' + p.nvme_state : '',
+                p.apst ? 'APST ' + p.apst : '',
+                p.runtime_pm ? 'runtime PM ' + p.runtime_pm : '',
+                p.aspm ? 'ASPM ' + p.aspm : '',
+                p.link_policy ? 'link policy ' + p.link_policy : ''
+            ].filter(Boolean).map(esc).join('<br>');
+            const w = c.write_cache || {};
+            let wc = '';
+            if (w.kernel) wc += 'kernel ' + (w.kernel === 'write through' ? sp('warn', w.kernel) : esc(w.kernel));
+            if (w.drive) wc += (wc ? ' &middot; ' : '') + 'drive cache ' + esc(w.drive);
+            const s = c.smart || {};
+            let smart = '';
+            if (s.status) {
+                smart = sp(s.status === 'PASSED' ? 'ok' : 'bad', s.status);
+                const bits = [];
+                if (s.temp_c != null) bits.push(s.temp_c + ' \u00b0C');
+                if (s.percent_used != null) bits.push('wear ' + s.percent_used + '%');
+                if (s.power_on_hours != null) bits.push(s.power_on_hours + ' h');
+                if (s.media_errors) bits.push(s.media_errors + ' media errors');
+                if (s.reallocated) bits.push(s.reallocated + ' reallocated');
+                if (s.pending) bits.push(s.pending + ' pending');
+                if (bits.length) smart += ' <span class="dim">' + esc(bits.join(' \u00b7 ')) + '</span>';
+                if (s.source) smart += ' <span class="dim">(' + esc(s.source) + ')</span>';
+            } else if (s.detail) {
+                smart = sp('dim', 'unknown: ' + s.detail);
+            }
+            return '<div class="cfg">' + row('Interface', esc(c.interface || 'unknown')) + row('Link', link) +
+                row('Power', power) + row('Write cache', wc) + row('SMART', smart) + '</div>';
         }
 
         function phasesHTML(drive) {
@@ -389,18 +494,19 @@ __NAVBAR_HTML__
             if (!phases || phases.length === 0) return '';
             const k = 'p:' + drive.name;
             const done = phases.filter(p => phaseDone(drive, p.index)).length;
+            const spent = spentOf(drive, phases);
             let h = '<details class="phases" data-key="' + esc(k) + '"' + (openKeys.has(k) ? ' open' : '') + '>' +
-                '<summary>Phases (' + phases.length + ') &middot; ' + done + ' done &middot; ' +
+                '<summary>Phases (' + phases.length + ') &middot; ' + done + ' done' +
+                (spent > 0 ? ' in ' + esc(fmtDur(spent)) : '') + ' &middot; ' +
                 esc(etaText(etaOf(drive, phases))) + '</summary>';
             phases.forEach(p => {
                 const key = 'c:' + drive.name + ':' + p.index;
                 const isDone = phaseDone(drive, p.index);
                 const cur = phaseRunning(drive, p.index);
-                const len = p.deterministic ? '~' + fmtDur(p.duration_sec) : 'length unknown';
                 h += '<details class="phase' + (cur ? ' current' : '') + (isDone ? ' done' : '') +
                     '" data-key="' + esc(key) + '"' + (openKeys.has(key) ? ' open' : '') + '>' +
                     '<summary><span class="pname">' + (p.index + 1) + '. ' + esc(p.name) + '</span>' +
-                    (cur ? ' (running)' : '') + ' <span class="plen' + (p.deterministic ? '' : ' unk') + '">' + len + '</span></summary>' +
+                    (cur ? ' (running)' : '') + ' ' + phaseTimeHTML(drive, p) + '</summary>' +
                     '<span class="phase-sum">' + esc(p.summary) + '</span>' +
                     (p.open ? '<span class="phase-sum">' + esc(p.open) + '</span>' : '') +
                     '<pre>' + highlight(p.config) + '</pre></details>';
@@ -487,6 +593,7 @@ __NAVBAR_HTML__
                     if (drive.capacity_gb) {
                         html += '<div class="drive-detail">Capacity: ' + drive.capacity_gb + ' GB</div>';
                     }
+                    html += configHTML(drive.config);
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
                         html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';

@@ -4,8 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"bbbench/internal/blockdev"
+	"bbbench/internal/diskinfo"
 )
 
 func TestGetStatus(t *testing.T) {
@@ -315,5 +321,106 @@ func TestMarkDrive(t *testing.T) {
 	}
 	if got[1].Status != "skipped" || got[1].Skipped != "write through" {
 		t.Errorf("skipped drive = %+v", got[1])
+	}
+}
+
+// The disk configuration is read in the background and lands on the status
+// page's drive entries as it arrives; /api/status carries it.
+func TestCollectDiskConfig_LandsOnStatus(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Drives = []DriveStatus{{Name: "nvme0n1"}, {Name: "sda"}}
+	})
+	ec := &ExecutionCoordinator{
+		drives:    []DriveInfo{{Device: blockdev.Device{Name: "nvme0n1"}}, {Device: blockdev.Device{Name: "sda"}}},
+		outputDir: t.TempDir(),
+		startTime: time.Unix(1793969936, 0),
+		collectDisk: func(d DriveInfo) (diskinfo.Info, string) {
+			return diskinfo.Info{Interface: "iface-" + d.Device.Name, Smart: diskinfo.Smart{Status: "PASSED"}}, "dump of " + d.Device.Name + "\n"
+		},
+	}
+	ec.collectDiskConfig()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		d := GetStatus().Drives
+		if d[0].Config != nil && d[1].Config != nil {
+			if d[0].Config.Interface != "iface-nvme0n1" || d[1].Config.Interface != "iface-sda" {
+				t.Fatalf("configs mixed up: %+v %+v", d[0].Config, d[1].Config)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("config never arrived: %+v", d)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// One text dump per disk lands in the output directory.
+	for _, dev := range []string{"nvme0n1", "sda"} {
+		path := filepath.Join(ec.outputDir, dev+"_diskinfo_1793969936.txt")
+		var b []byte
+		for time.Now().Before(deadline) { // the file is written right after the status update
+			if b, _ = os.ReadFile(path); len(b) > 0 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if string(b) != "dump of "+dev+"\n" {
+			t.Errorf("%s: dump file = %q", path, b)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	handleStatus(w, httptest.NewRequest("GET", "/api/status", nil))
+	var got struct {
+		Drives []struct {
+			Name   string `json:"name"`
+			Config *struct {
+				Interface string `json:"interface"`
+				Smart     struct {
+					Status string `json:"status"`
+				} `json:"smart"`
+			} `json:"config"`
+		} `json:"drives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Drives) != 2 || got.Drives[0].Config == nil || got.Drives[0].Config.Smart.Status != "PASSED" {
+		t.Errorf("/api/status = %s", w.Body.String())
+	}
+}
+
+// The real time of a finished phase lands on the drive's status entry, per
+// phase; skipped phases ran nothing and get none. Snapshots keep their own
+// map, so encoding one cannot race with a later update.
+func TestRecordPhaseTime(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	UpdateStatus(func(s *BenchmarkStatus) { s.Drives = []DriveStatus{{Name: "nvme0n1"}, {Name: "sda"}} })
+	t0 := time.Unix(1000, 0)
+
+	recordPhaseTime("nvme0n1", 0, &FioResult{StartTime: t0, EndTime: t0.Add(61500 * time.Millisecond)})
+	before := GetStatus().Drives[0].PhaseSeconds
+	recordPhaseTime("nvme0n1", 2, &FioResult{StartTime: t0, EndTime: t0.Add(5 * time.Minute)})
+	recordPhaseTime("nvme0n1", 1, &FioResult{StartTime: t0, EndTime: t0, Skipped: "write through"})
+	recordPhaseTime("sda", 0, &FioResult{}) // never ran
+
+	got := GetStatus().Drives
+	if m := got[0].PhaseSeconds; len(m) != 2 || m[0] != 61.5 || m[2] != 300 {
+		t.Errorf("nvme0n1 = %v, want phases 0 and 2 only", m)
+	}
+	if len(before) != 1 {
+		t.Errorf("an earlier snapshot changed: %v", before)
+	}
+	if got[1].PhaseSeconds != nil {
+		t.Errorf("sda = %v, want none", got[1].PhaseSeconds)
+	}
+	w := httptest.NewRecorder()
+	handleStatus(w, httptest.NewRequest("GET", "/api/status", nil))
+	if !strings.Contains(w.Body.String(), `"phase_seconds":{"0":61.5,"2":300}`) {
+		t.Errorf("/api/status = %s", w.Body.String())
 	}
 }

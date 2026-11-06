@@ -4,7 +4,9 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 
 	"bbbench/internal/blockdev"
 )
@@ -53,6 +55,27 @@ func runDoctor(args []string) error {
 		}
 		return nil
 	}())
+
+	deps := checkDependencies(exec.LookPath, programVersion)
+	check("external programs", func() error {
+		for _, n := range deps.notes {
+			logger.Warn("optional program missing", "detail", n)
+		}
+		if len(deps.missing) > 0 {
+			return errors.New(strings.Join(deps.missing, "; "))
+		}
+		return nil
+	}())
+	if len(deps.missing) == 0 {
+		// The default workloads use these; a missing one only matters if a
+		// selected workload does, which the orchestrator checks at its start.
+		avail := fioEngineList()
+		for _, e := range []string{"libaio", "psync", "io_uring"} {
+			if len(avail) > 0 && !avail[e] {
+				logger.Warn("fio lacks an I/O engine the default workloads use", "engine", e)
+			}
+		}
+	}
 
 	resolvedDist := resolveDistDir(*distDir)
 	check("config lookup", func() error {
