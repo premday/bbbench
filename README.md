@@ -146,6 +146,17 @@ sudo ./bbbench orchestrator --filter-type ssd
 sudo ./bbbench orchestrator --filter-vendor samsung --filter-min-capacity 1000
 ```
 
+**What a run writes** to the output directory (`--output`), for each drive `<device>` and phase `<N>` (counted from 0, so the first phase is `phase0`), with `<ts>` the Unix time the phase started:
+
+| File | Content |
+|---|---|
+| `<device>_phase<N>_<ts>.json` | fio's JSON output for the phase |
+| `<device>_phase<N>_<ts>_log_{iops,bw,lat,clat,slat}.1.log` | fio's time-series logs, one point per `--log-avg-msec` |
+| `<device>_phase<N>_<ts>_log_flush.1.log` | the device Flush latency, for phases that fsync (see [Flush tracing](#flush-tracing)) |
+| `<device>_diskinfo_<start>.txt` | the drive's configuration (interface, link, power, write cache, SMART) and the raw reports it is drawn from, one per run |
+| `run_<unix time>_summary.json` | the run's summary, which `bbbench serve` lists and graphs |
+| `.bbbench-orchestrator-state.json` | what is done, for `--resume`; removed when the run completes |
+
 Results are written to `~/.bbbench/output/` by default (one JSON file per run).
 
 ---
@@ -167,7 +178,7 @@ Flags:
 
 Pages available:
 - `/` — home
-- `/status` — live benchmark status while the orchestrator runs: progress, and per drive its configuration (interface, link speed, power, write cache policy, SMART), and its phases with the fio config, real and expected time and an ETA (details in [documentation/web-ui.md](documentation/web-ui.md))
+- `/status` — live benchmark status while the orchestrator runs: progress, and per drive its configuration (interface, physical slot, controller, link speed, power, write cache policy, SMART), and its phases with the fio config, real and expected time and an ETA (details in [documentation/web-ui.md](documentation/web-ui.md))
 - `/results` — browse and search past runs
 - `/summary?id=<id>` — statistics table (min/avg/max/σ) per phase, broken down by disk
 - `/graphs?id=<id>` — time-series charts per phase: IOPS, bandwidth and latency (from fio) and Flush latency (from kernel traces), on one shared time axis with the ramp-up shaded
