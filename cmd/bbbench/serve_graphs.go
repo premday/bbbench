@@ -19,6 +19,11 @@ type DiskPhaseData struct {
 	Technology string `json:"technology"` // "hdd" or "ssd"
 	PhaseNum   int    `json:"phase_num"`
 	PhaseName  string `json:"phase_name"`
+	// Run-group label of the disk (empty for an unlabelled drive).
+	Setting      string `json:"setting,omitempty"`
+	SettingValue string `json:"setting_value,omitempty"`
+	RunID        string `json:"run_id,omitempty"`
+	Invalid      bool   `json:"invalid,omitempty"`
 	// Summary stats (averages for the full phase)
 	ReadIOPS    float64 `json:"read_iops"`
 	WriteIOPS   float64 `json:"write_iops"`
@@ -164,6 +169,12 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 				dp.RampSec = phase.RampSec
 				dp.LogAvgMsec = phase.LogAvgMsec
 				dp.Flush = phase.FlushTrace[name]
+				if l, ok := result.Labels[name]; ok {
+					dp.Setting = l.Setting
+					dp.SettingValue = l.Value
+					dp.RunID = result.ID
+					dp.Invalid = l.Value != "" && !l.Valid
+				}
 				out = append(out, *dp)
 			}
 		}

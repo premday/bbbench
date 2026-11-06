@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"bbbench/internal/blockdev"
+	"bbbench/internal/rungroup"
 )
 
 func makeTestResult() *BenchmarkResult {
@@ -226,5 +227,36 @@ func TestHandleGraphsPage_MissingID(t *testing.T) {
 	handleGraphsPage(w, req)
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("want 400, got %d", w.Result().StatusCode)
+	}
+}
+
+func TestGenerateDiskPhaseData_Labels(t *testing.T) {
+	r := makeTestResult()
+	r.Labels = map[string]rungroup.Label{
+		"sdb": {Setting: "write-cache", Value: "write through", Valid: false},
+	}
+	var sda, sdb int
+	for _, d := range generateDiskPhaseData(r) {
+		switch d.Disk {
+		case "sdb":
+			sdb++
+			if d.Setting != "write-cache" || d.SettingValue != "write through" || d.RunID != "test-123" || !d.Invalid {
+				t.Errorf("sdb entry = %+v", d)
+			}
+		case "sda":
+			sda++
+			if d.Setting != "" || d.SettingValue != "" || d.RunID != "" || d.Invalid {
+				t.Errorf("unlabelled sda carries label data: %+v", d)
+			}
+		}
+	}
+	if sda == 0 || sdb == 0 {
+		t.Fatalf("entries: sda=%d sdb=%d", sda, sdb)
+	}
+	r.Labels["sdb"] = rungroup.Label{Setting: "write-cache", Value: "write back", Valid: true}
+	for _, d := range generateDiskPhaseData(r) {
+		if d.Disk == "sdb" && d.Invalid {
+			t.Errorf("valid label marked invalid: %+v", d)
+		}
 	}
 }

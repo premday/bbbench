@@ -47,6 +47,7 @@ import (
 	"bbbench/internal/blockdev"
 	"bbbench/internal/config"
 	"bbbench/internal/dmi"
+	"bbbench/internal/rungroup"
 	"bbbench/internal/util"
 )
 
@@ -262,58 +263,132 @@ func runOrchestrator(args []string) error {
 	}
 	fmt.Printf("Output directory: %s\n\n", outDir)
 
-	// Parse fio files
-	coordinator, err := newExecutionCoordinator(selectedDrives, *mode, outDir)
-	if err != nil {
-		return err
+	opts := runOptions{
+		Mode:             *mode,
+		OutDir:           outDir,
+		Resume:           resumeState,
+		DryRun:           *dryRun,
+		Verbose:          *verbose,
+		FlushTrace:       !*noFlushTrace,
+		SkipWriteThrough: *skipWriteThrough,
+		LogAvgMsec:       *logAvgMsec,
 	}
-	coordinator.dryRun = *dryRun
-	coordinator.stateFile = stateFile
-	coordinator.resumeState = resumeState
-	coordinator.verbose = *verbose
-	coordinator.logAvgMsec = *logAvgMsec
-	coordinator.flushTrace = !*noFlushTrace
-	if err := coordinator.checkEnvironment(); err != nil {
-		return err
-	}
-	coordinator.skipWriteThrough = *skipWriteThrough
+	spec := runSpec{Drives: selectedDrives}
 
-	if *dryRun {
-		// In dry-run mode, just show what would be executed
-		return displayDryRun(coordinator)
+	// Start web server in background (not for a dry run, which executes nothing)
+	if !*dryRun {
+		srv := newWebServer("0.0.0.0:12345")
+		go func() {
+			logger.Info("starting web server from orchestrator", "addr", srv.Addr)
+			fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("web server error", "err", err)
+			}
+		}()
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			srv.Shutdown(ctx)
+		}()
 	}
+
+	result, runErr := executeRun(context.Background(), opts, spec)
+	if result == nil {
+		// Setup failed, or a dry run: nothing was executed, nothing to wait for.
+		return runErr
+	}
+
+	// Keep web server running until user interrupts
+	fmt.Printf("\nWeb server still running at http://0.0.0.0:12345\n")
+	fmt.Printf("Results available at: %s\n", outDir)
+	fmt.Printf("\nPress Ctrl+C to stop...\n\n")
+
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	<-sigChan
+	fmt.Println("\n\nShutting down gracefully...")
+	logger.Info("received interrupt signal")
+
+	return runErr
+}
+
+// runOptions are the settings shared by every run of an orchestrator process.
+type runOptions struct {
+	Mode, OutDir     string
+	Resume           *ExecutionState
+	DryRun, Verbose  bool
+	FlushTrace       bool
+	SkipWriteThrough bool
+	LogAvgMsec       int
+}
+
+// runSpec describes one run: its drives and, for a run group, its labels.
+type runSpec struct {
+	Drives  []DriveInfo
+	Labels  map[string]rungroup.Label // device -> label; nil for a plain run
+	GroupID string
+}
+
+// executeRun runs the whole test plan once on spec.Drives: it builds the
+// coordinator, executes, displays the results and saves the summary. It
+// returns the saved result. The result is nil (with a nil error) for a dry
+// run, and nil with an error when setup failed before anything ran; once
+// execution started the result is non-nil and the error joins any execution
+// and display errors.
+func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkResult, error) {
+	coordinator, err := newExecutionCoordinator(spec.Drives, opts.Mode, opts.OutDir)
+	if err != nil {
+		return nil, err
+	}
+	coordinator.dryRun = opts.DryRun
+	coordinator.stateFile = getStateFilePath(opts.OutDir)
+	coordinator.resumeState = opts.Resume
+	coordinator.verbose = opts.Verbose
+	coordinator.logAvgMsec = opts.LogAvgMsec
+	coordinator.flushTrace = opts.FlushTrace
+	coordinator.labels = spec.Labels
+	coordinator.groupID = spec.GroupID
+	if err := coordinator.checkEnvironment(); err != nil {
+		return nil, err
+	}
+	coordinator.skipWriteThrough = opts.SkipWriteThrough
+
+	if opts.DryRun {
+		// In dry-run mode, just show what would be executed
+		return nil, displayDryRun(coordinator)
+	}
+
+	// Stop the coordinator when the caller cancels ctx.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			coordinator.cancel()
+		case <-done:
+		}
+	}()
 
 	// Create live result for web view (updated incrementally as phases complete)
 	runID := fmt.Sprintf("run_%d", time.Now().Unix())
 	liveResult := &BenchmarkResult{
 		ID:        runID,
 		Timestamp: time.Now(),
-		Mode:      *mode,
-		Drives:    selectedDrives,
+		Mode:      opts.Mode,
+		Drives:    spec.Drives,
 		Phases:    make([]PhaseResult, 0),
-		OutputDir: outDir,
+		OutputDir: opts.OutDir,
+		GroupID:   spec.GroupID,
+		Labels:    spec.Labels,
 	}
 	globalResultsStore.AddResult(liveResult)
 	coordinator.liveResult = liveResult
 
-	// Start web server in background
-	srv := newWebServer("0.0.0.0:12345")
-	go func() {
-		logger.Info("starting web server from orchestrator", "addr", srv.Addr)
-		fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("web server error", "err", err)
-		}
-	}()
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
-	}()
-
 	// Execute based on mode
 	var execErr error
-	if *mode == "parallel-sync" {
+	if opts.Mode == "parallel-sync" {
 		execErr = coordinator.executeParallelSync()
 	} else {
 		execErr = coordinator.executeSequential()
@@ -335,25 +410,12 @@ func runOrchestrator(args []string) error {
 	}
 
 	// Save benchmark summary to output directory
-	if err := saveBenchmarkSummary(coordinator, selectedDrives, *mode, outDir); err != nil {
+	if err := saveBenchmarkSummary(coordinator, spec.Drives, opts.Mode, opts.OutDir); err != nil {
 		logger.Error("save benchmark summary", "err", err)
 		fmt.Printf("Warning: failed to save benchmark summary: %v\n", err)
 	}
 
-	// Keep web server running until user interrupts
-	fmt.Printf("\nWeb server still running at http://0.0.0.0:12345\n")
-	fmt.Printf("Results available at: %s\n", outDir)
-	fmt.Printf("\nPress Ctrl+C to stop...\n\n")
-
-	// Wait for interrupt signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	<-sigChan
-	fmt.Println("\n\nShutting down gracefully...")
-	logger.Info("received interrupt signal")
-
-	return errors.Join(execErr, displayErr)
+	return liveResult, errors.Join(execErr, displayErr)
 }
 
 // DriveFilter contains criteria for filtering drives.

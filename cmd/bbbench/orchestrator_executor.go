@@ -17,6 +17,7 @@ import (
 
 	"bbbench/internal/diskinfo"
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/rungroup"
 )
 
 // ExecutionCoordinator manages benchmark execution across multiple drives.
@@ -40,6 +41,9 @@ type ExecutionCoordinator struct {
 	liveResult  *BenchmarkResult // updated after each phase for live web view
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
 	flushTrace  bool             // trace device Flush latency during phases that fsync
+
+	labels  map[string]rungroup.Label // device -> setting label (run groups; nil otherwise)
+	groupID string
 
 	skipWriteThrough bool   // do not run fsync phases on write-through devices (default: warn)
 	sysBlock         string // sysfs block dir override for tests ("" = /sys/block)
