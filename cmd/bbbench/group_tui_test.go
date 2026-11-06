@@ -450,6 +450,15 @@ func TestResume_FindsUnfinishedGroupAndRebuildsChoice(t *testing.T) {
 	if findResumableGroup(dir) != nil {
 		t.Fatal("a finished group must not be offered")
 	}
+	// A run that was not run (the setting did not take) is finished too:
+	// otherwise --resume would offer the group forever.
+	g.Runs[1].Status = rungroup.RunNotRun
+	if err := g.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	if findResumableGroup(dir) != nil {
+		t.Fatal("a group whose only open runs are not_run must not be offered")
+	}
 }
 
 func TestNewGroupConfig_Defaults(t *testing.T) {

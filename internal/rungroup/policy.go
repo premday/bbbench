@@ -12,6 +12,14 @@ const (
 	RunInterrupted RunStatus = "interrupted"
 )
 
+// Finished says whether a run is over for good: done, invalid, or not run
+// (its setting did not take before the run). --resume executes the other
+// runs (planned, running, interrupted) again and offers a group only while it
+// has one of them.
+func (s RunStatus) Finished() bool {
+	return s == RunDone || s == RunInvalid || s == RunNotRun
+}
+
 // Policy applies the failure policy to the per-drive verification results
 // taken before and after a run. Any false in before means the run did not
 // happen. Otherwise a false or missing entry in after makes the run invalid,

@@ -42,8 +42,9 @@ type groupConfig struct {
 	Host         string
 	// Settle is how long a read-back may take to show an applied value.
 	Settle time.Duration
-	// Resume is a group file to continue: runs already done or invalid are
-	// skipped, every other run is executed again from its first phase.
+	// Resume is a group file to continue: finished runs (done, invalid, not
+	// run) are skipped, every other run is executed again from its first
+	// phase.
 	Resume *rungroup.GroupFile
 	// Precheck, when non-nil, checks what a run needs (fio, the fio files,
 	// the engines) before any drive is read or changed.
@@ -199,7 +200,7 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 
 	for i, plan := range plans {
 		run := &g.Runs[i]
-		if run.Status == rungroup.RunDone || run.Status == rungroup.RunInvalid {
+		if run.Status.Finished() {
 			continue
 		}
 		if cerr := ctx.Err(); cerr != nil {

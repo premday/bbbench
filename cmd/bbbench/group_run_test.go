@@ -1065,3 +1065,26 @@ func TestResumeIgnoredNote(t *testing.T) {
 		t.Errorf("note = %q", n)
 	}
 }
+
+// A resumed group does not retry a run that was not run.
+func TestRunGroup_ResumeSkipsNotRun(t *testing.T) {
+	cfg, fs, ex := testGroup(t, rungroup.Sequential, "sdb")
+	cfg.Resume = &rungroup.GroupFile{
+		ID: "1700000000", Host: "host1", Setting: fs.Name(), Strategy: rungroup.Sequential,
+		Values: []string{"enabled", "disabled"},
+		Runs: []rungroup.GroupRun{
+			{Round: 0, Status: rungroup.RunNotRun, Drives: []rungroup.GroupDrive{{Device: "sdb", Serial: "SN-sdb", Model: "M1", Value: "enabled"}}},
+			{Round: 1, Status: rungroup.RunInterrupted},
+		},
+	}
+	g, err := runGroup(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ex.specs) != 1 || ex.specs[0].Labels["sdb"].Value != "disabled" {
+		t.Errorf("runs %+v, want only run 2", ex.specs)
+	}
+	if g.Runs[0].Status != rungroup.RunNotRun {
+		t.Errorf("run 1 = %q", g.Runs[0].Status)
+	}
+}

@@ -69,7 +69,7 @@ func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string
 }
 
 // findResumableGroup returns the newest group file in dir with a run that is
-// neither done nor invalid, or nil.
+// not finished (RunStatus.Finished: done, invalid and not run are), or nil.
 func findResumableGroup(dir string) *rungroup.GroupFile {
 	groups, err := rungroup.LoadGroups(dir)
 	if err != nil {
@@ -78,7 +78,7 @@ func findResumableGroup(dir string) *rungroup.GroupFile {
 	sort.Slice(groups, func(i, j int) bool { return groups[i].Created.After(groups[j].Created) })
 	for _, g := range groups {
 		for _, r := range g.Runs {
-			if r.Status != rungroup.RunDone && r.Status != rungroup.RunInvalid {
+			if !r.Status.Finished() {
 				return g
 			}
 		}
@@ -238,7 +238,7 @@ func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, avai
 	}
 	todo := 0
 	for _, r := range g.Runs {
-		if r.Status != rungroup.RunDone && r.Status != rungroup.RunInvalid {
+		if !r.Status.Finished() {
 			todo++
 		}
 	}

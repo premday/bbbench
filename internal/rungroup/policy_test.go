@@ -26,3 +26,14 @@ func TestPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestRunStatusFinished(t *testing.T) {
+	for s, want := range map[RunStatus]bool{
+		RunPlanned: false, RunRunning: false, RunInterrupted: false,
+		RunDone: true, RunInvalid: true, RunNotRun: true,
+	} {
+		if got := s.Finished(); got != want {
+			t.Errorf("%s.Finished() = %v, want %v", s, got, want)
+		}
+	}
+}
