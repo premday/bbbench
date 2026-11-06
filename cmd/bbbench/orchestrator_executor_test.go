@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -345,5 +346,38 @@ func TestParseFioSingleLog_EarlyStampsKeepTheirWindow(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("points at %v, want %v", got, want)
 		}
+	}
+}
+
+// A second signal never exits during a run group (the drives' settings are
+// being restored); a plain run still force-quits.
+func TestSecondSignal_GroupDoesNotExit(t *testing.T) {
+	quietLogger(t)
+	exits := 0
+	exit := func(code int) {
+		if code != exitCodeSIGINT {
+			t.Errorf("exit code %d", code)
+		}
+		exits++
+	}
+	grp := &ExecutionCoordinator{groupID: "1700000000"}
+	if forceQuitAllowed(grp) {
+		t.Error("force quit allowed in a group")
+	}
+	grp.onSecondSignal(exit)
+	grp.onSecondSignal(exit)
+	if exits != 0 {
+		t.Errorf("group coordinator exited %d times", exits)
+	}
+	if !strings.Contains(groupSignalMessage, "recovery file") || !strings.Contains(groupSignalMessage, "restor") {
+		t.Errorf("group message %q", groupSignalMessage)
+	}
+	plain := &ExecutionCoordinator{}
+	if !forceQuitAllowed(plain) {
+		t.Error("force quit not allowed in a plain run")
+	}
+	plain.onSecondSignal(exit)
+	if exits != 1 {
+		t.Errorf("plain coordinator exits = %d, want 1", exits)
 	}
 }

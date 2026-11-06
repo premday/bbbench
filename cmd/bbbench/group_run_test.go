@@ -821,3 +821,80 @@ func TestRunGroup_RestorePanicOnOneDrive(t *testing.T) {
 		t.Error("recovery file removed although sdb was not restored")
 	}
 }
+
+// hinterSetting adds a manual restore command to the fake setting.
+type hinterSetting struct {
+	*fakeSetting
+	cmd func(t settings.Target, original settings.Reading) string
+}
+
+func (h hinterSetting) RestoreCommand(t settings.Target, original settings.Reading) string {
+	return h.cmd(t, original)
+}
+
+// captureReport sends restore failure reports to a buffer.
+func captureReport(t *testing.T) *strings.Builder {
+	t.Helper()
+	var b strings.Builder
+	old := restoreReportOut
+	restoreReportOut = &b
+	t.Cleanup(func() { restoreReportOut = old })
+	return &b
+}
+
+func TestRunGroup_RestoreFailureReportsCommand(t *testing.T) {
+	cfg, fs, _ := testGroup(t, rungroup.Sequential, "sdb", "sdc")
+	out := captureReport(t)
+	fs.restoreErr["sdb"] = true
+	cfg.Setting = hinterSetting{fs, func(tg settings.Target, o settings.Reading) string {
+		return "fixit --value=" + o.Value + " " + tg.Path
+	}}
+	runGroup(context.Background(), cfg)
+	rep := out.String()
+	for _, want := range []string{"RESTORE FAILED", "sdb", "SN-sdb", `"enabled"`, "to set it back by hand: fixit --value=enabled /dev/sdb"} {
+		if !strings.Contains(rep, want) {
+			t.Errorf("report lacks %q:\n%s", want, rep)
+		}
+	}
+	if strings.Contains(rep, "sdc") {
+		t.Errorf("sdc reported although restored:\n%s", rep)
+	}
+}
+
+func TestRunGroup_RestoreFailureReportsWithoutHinter(t *testing.T) {
+	cfg, fs, _ := testGroup(t, rungroup.Sequential, "sdb", "sdc")
+	out := captureReport(t)
+	fs.restoreErr["sdb"] = true
+	runGroup(context.Background(), cfg)
+	rep := out.String()
+	for _, want := range []string{"RESTORE FAILED", "sdb", "SN-sdb", `"enabled"`} {
+		if !strings.Contains(rep, want) {
+			t.Errorf("report lacks %q:\n%s", want, rep)
+		}
+	}
+	if strings.Contains(rep, "by hand:") {
+		t.Errorf("command line printed without a hinter:\n%s", rep)
+	}
+}
+
+func TestRunGroup_ReportPanicDoesNotStopRestore(t *testing.T) {
+	cfg, fs, _ := testGroup(t, rungroup.Sequential, "sdb", "sdc", "sdd")
+	captureReport(t)
+	fs.restoreErr["sdb"] = true
+	cfg.Setting = hinterSetting{fs, func(tg settings.Target, o settings.Reading) string { panic("report bug") }}
+	g, err := runGroup(context.Background(), cfg)
+	if err == nil {
+		t.Error("no error")
+	}
+	for _, dev := range []string{"sdc", "sdd"} {
+		if fs.get(dev) != "enabled" {
+			t.Errorf("%s = %q, want restored", dev, fs.get(dev))
+		}
+	}
+	if g.Restore.Status != "failed" || !reflect.DeepEqual(g.Restore.Failed, []string{"sdb"}) {
+		t.Errorf("restore %+v", g.Restore)
+	}
+	if !recoveryExists(t, cfg.RecoveryPath) {
+		t.Error("recovery file removed")
+	}
+}

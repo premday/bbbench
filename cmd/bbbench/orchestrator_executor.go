@@ -208,7 +208,11 @@ func (ec *ExecutionCoordinator) handleSignals() {
 	}
 	fmt.Println("\n\nReceived interrupt signal. Gracefully shutting down...")
 	fmt.Println("Waiting for current phase to complete...")
-	fmt.Println("Press Ctrl+C again to force quit (may leave temporary files)")
+	if forceQuitAllowed(ec) {
+		fmt.Println("Press Ctrl+C again to force quit (may leave temporary files)")
+	} else {
+		fmt.Println("The drives' original settings are restored afterwards; do not interrupt again.")
+	}
 
 	ec.mu.Lock()
 	ec.interrupted = true
@@ -216,13 +220,34 @@ func (ec *ExecutionCoordinator) handleSignals() {
 
 	ec.cancel()
 
-	// Set up second signal handler for force quit
+	// Further signals: force quit, except in a run group (see onSecondSignal).
 	go func() {
-		<-sigChan
-		fmt.Println("\nForce quitting...")
-		ec.cleanup()
-		os.Exit(exitCodeSIGINT)
+		for range sigChan {
+			ec.onSecondSignal(os.Exit)
+		}
 	}()
+}
+
+// groupSignalMessage answers a further signal during a run group.
+const groupSignalMessage = "\nA setting test is restoring the drives' original settings: this signal is ignored.\n" +
+	"If the process is killed anyway, the recovery file restores them at the next start."
+
+// forceQuitAllowed says whether a second signal may end the process. Not
+// during a run group: exiting would leave the drives with the setting under
+// test applied.
+func forceQuitAllowed(ec *ExecutionCoordinator) bool { return ec.groupID == "" }
+
+// onSecondSignal handles a signal after the first: force quit through exit
+// for a plain run, a message and nothing else for a run group.
+func (ec *ExecutionCoordinator) onSecondSignal(exit func(int)) {
+	if !forceQuitAllowed(ec) {
+		logger.Warn("signal ignored during a run group: restoring the original settings", "group", ec.groupID)
+		fmt.Println(groupSignalMessage)
+		return
+	}
+	fmt.Println("\nForce quitting...")
+	ec.cleanup()
+	exit(exitCodeSIGINT)
 }
 
 // cleanup removes temporary files.

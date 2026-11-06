@@ -132,8 +132,29 @@ func nvmeController(t Target) (string, error) {
 }
 
 func (w *writeCache) Apply(ctx context.Context, t Target, v Value) error {
+	name, args, err := setCommand(t, v)
+	if err != nil {
+		return err
+	}
+	if out, err := w.env.Run(ctx, name, args...); err != nil {
+		return fmt.Errorf("%s %s: %w %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RestoreCommand is the command Apply would run to set original.
+func (w *writeCache) RestoreCommand(t Target, original Reading) string {
+	name, args, err := setCommand(t, Value{ID: original.Value})
+	if err != nil {
+		return ""
+	}
+	return name + " " + strings.Join(args, " ")
+}
+
+// setCommand is the command that sets the write cache of t to v (volatile).
+func setCommand(t Target, v Value) (string, []string, error) {
 	if v.ID != enabled && v.ID != disabled {
-		return fmt.Errorf("unknown write cache value %q", v.ID)
+		return "", nil, fmt.Errorf("unknown write cache value %q", v.ID)
 	}
 	on := v.ID == enabled
 	bit := map[bool]string{true: "1", false: "0"}[on]
@@ -143,7 +164,7 @@ func (w *writeCache) Apply(ctx context.Context, t Target, v Value) error {
 	case "nvme":
 		ctl, err := nvmeController(t)
 		if err != nil {
-			return err
+			return "", nil, err
 		}
 		name, args = "nvme", []string{"set-feature", ctl, "-f", "6", "-V", bit}
 	case "sata":
@@ -153,12 +174,9 @@ func (w *writeCache) Apply(ctx context.Context, t Target, v Value) error {
 		// checked against sdparm(8) on a real SAS host before release.
 		name, args = "sdparm", []string{"--set=WCE=" + bit, t.Path}
 	default:
-		return fmt.Errorf("no controllable write cache on %q", t.Interface)
+		return "", nil, fmt.Errorf("no controllable write cache on %q", t.Interface)
 	}
-	if out, err := w.env.Run(ctx, name, args...); err != nil {
-		return fmt.Errorf("%s %s: %w %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return name, args, nil
 }
 
 func (w *writeCache) Restore(ctx context.Context, t Target, original Reading) error {

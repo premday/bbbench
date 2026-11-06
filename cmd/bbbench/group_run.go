@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -428,10 +429,9 @@ func finishGroup(cfg groupConfig, g *rungroup.GroupFile, rec *rungroup.Recovery,
 	var failed []string
 	var kept []rungroup.RecoveryDrive
 	for _, e := range rec.Drives {
-		if err := restoreDrive(context.Background(), cfg.Setting, cfg.Targets[e.Name], e.Original, cfg.Settle); err != nil {
+		if err := restoreOne(context.Background(), cfg.Setting, cfg.Targets, e.Name, e, cfg.Settle); err != nil {
 			failed = append(failed, e.Name)
 			kept = append(kept, e)
-			reportRestoreFailure(cfg.Setting, e, err)
 		}
 	}
 	var errs []error
@@ -478,11 +478,42 @@ func restoreDrive(parent context.Context, s settings.Setting, t settings.Target,
 	return nil
 }
 
-// reportRestoreFailure makes a failed restore impossible to miss.
-func reportRestoreFailure(s settings.Setting, e rungroup.RecoveryDrive, err error) {
+// restoreOne restores drive name (entry e) and reports a failure. Restore
+// and report both run under one recover, so a panic in either is returned as
+// an error and the other drives are still restored.
+func restoreOne(parent context.Context, s settings.Setting, targets map[string]settings.Target, name string, e rungroup.RecoveryDrive, settle time.Duration) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = errors.Join(err, fmt.Errorf("panic while restoring or reporting %s: %v", name, p))
+		}
+	}()
+	t, ok := targets[name]
+	if !ok {
+		err = errors.New("no target for the drive")
+	} else {
+		err = restoreDrive(parent, s, t, e.Original, settle)
+	}
+	if err != nil {
+		e.Name = name
+		reportRestoreFailure(s, t, e, err)
+	}
+	return err
+}
+
+// restoreReportOut is where failed restores are reported (tests replace it).
+var restoreReportOut io.Writer = os.Stderr
+
+// reportRestoreFailure makes a failed restore impossible to miss, with the
+// command to run by hand when the setting knows it.
+func reportRestoreFailure(s settings.Setting, t settings.Target, e rungroup.RecoveryDrive, err error) {
 	logger.Error("restore failed", "setting", s.Name(), "device", e.Name, "serial", e.Serial, "original", e.Original.Value, "err", err)
-	fmt.Fprintf(os.Stderr, "\n*** RESTORE FAILED: %s on %s (%s, S/N %s): %v\n", s.Name(), e.Name, e.Model, e.Serial, err)
-	fmt.Fprintf(os.Stderr, "*** Set it back to %q by hand; it is volatile, so a power cycle also resets it.\n", e.Original.Value)
+	fmt.Fprintf(restoreReportOut, "\n*** RESTORE FAILED: %s on %s (%s, S/N %s): %v\n", s.Name(), e.Name, e.Model, e.Serial, err)
+	fmt.Fprintf(restoreReportOut, "*** Set it back to %q by hand; it is volatile, so a power cycle also resets it.\n", e.Original.Value)
+	if h, ok := s.(settings.CommandHinter); ok {
+		if cmd := h.RestoreCommand(t, e.Original); cmd != "" {
+			fmt.Fprintf(restoreReportOut, "*** Command to set it back by hand: %s\n", cmd)
+		}
+	}
 }
 
 // restoreFromRecovery restores the drives of a recovery file left by an
@@ -504,16 +535,8 @@ func restoreFromRecovery(ctx context.Context, s settings.Setting, rec *rungroup.
 			failed = append(failed, e.Name)
 			continue
 		}
-		t, ok := targets[name]
-		if !ok {
+		if err := restoreOne(ctx, s, targets, name, e, recoverySettle); err != nil {
 			failed = append(failed, name)
-			reportRestoreFailure(s, e, errors.New("no target for the drive"))
-			continue
-		}
-		if err := restoreDrive(ctx, s, t, e.Original, recoverySettle); err != nil {
-			failed = append(failed, name)
-			e.Name = name
-			reportRestoreFailure(s, e, err)
 		}
 	}
 	return failed

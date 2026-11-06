@@ -77,6 +77,14 @@ type Setting interface {
 	Restore(ctx context.Context, t Target, original Reading) error
 }
 
+// CommandHinter is implemented by settings that can say which command sets
+// a drive back by hand, for the report of a failed restore.
+type CommandHinter interface {
+	// RestoreCommand is the command that sets t to original, or "" when
+	// there is none (unknown value or interface).
+	RestoreCommand(t Target, original Reading) string
+}
+
 // Runner runs a command and returns its standard output.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 

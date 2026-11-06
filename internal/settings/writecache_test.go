@@ -241,3 +241,36 @@ func TestWriteCache_ReadToleratesExitStatusWithOutput(t *testing.T) {
 		t.Error("want an error without output")
 	}
 }
+
+// The manual restore command is the command Apply runs for the same value,
+// so the two cannot drift apart.
+func TestWriteCache_RestoreCommandMatchesApply(t *testing.T) {
+	targets := []Target{
+		{Name: "nvme0n1", Path: "/dev/nvme0n1", Interface: "NVMe (PCIe)"},
+		{Name: "sdb", Path: "/dev/sdb", Interface: "SATA"},
+		{Name: "sdc", Path: "/dev/sdc", Interface: "SAS"},
+	}
+	for _, tg := range targets {
+		for _, v := range []string{"enabled", "disabled"} {
+			f := &fake{}
+			s := NewWriteCache(Env{Run: f.run, LookPath: lookAll, Sys: t.TempDir()})
+			if err := s.Apply(context.Background(), tg, Value{ID: v}); err != nil {
+				t.Fatalf("%s %s: %v", tg.Name, v, err)
+			}
+			h, ok := s.(CommandHinter)
+			if !ok {
+				t.Fatal("write cache setting is not a CommandHinter")
+			}
+			if got, want := h.RestoreCommand(tg, Reading{Value: v}), f.ran[len(f.ran)-1]; got != want {
+				t.Errorf("%s %s: RestoreCommand %q, Apply ran %q", tg.Name, v, got, want)
+			}
+		}
+	}
+	h := NewWriteCache(Env{LookPath: lookAll}).(CommandHinter)
+	if c := h.RestoreCommand(targets[1], Reading{Value: ""}); c != "" {
+		t.Errorf("unknown value: %q", c)
+	}
+	if c := h.RestoreCommand(Target{Name: "sdz", Path: "/dev/sdz", Interface: "USB"}, Reading{Value: "enabled"}); c != "" {
+		t.Errorf("unknown interface: %q", c)
+	}
+}
