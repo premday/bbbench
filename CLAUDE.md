@@ -99,6 +99,8 @@ Templates are stored in `dist/templates/` with subdirectory `includes/` for reus
 
 **internal/scsi**: Linux-only SCSI SG_IO implementation for MODE SENSE(6) caching page queries. Uses unsafe pointers and syscall for ioctl. Stub implementation exists for non-Linux builds.
 
+**internal/diskinfo**: Read-only description of a disk for the status page (`Collect`): interface and link speed (sysfs: PCIe `current/max_link_speed/width`, `ata_link`, `sas_phy`, USB speed), power (runtime PM, ASPM, NVMe power state/APST via `nvme get-feature`, SATA link policy), write cache (kernel `queue/write_cache`, drive via `nvme get-feature 6` or `scsi.GetWCE`) and SMART (`smartctl -j`, else `nvme smart-log -o json`). `Options` replaces sysfs, `/dev` and command execution for tests. The orchestrator runs it in the background per drive (`collectDiskConfig`) into `DriveStatus.Config`. It must never change the device.
+
 **internal/dmi**: Reads DMI information from sysfs for host identification. Currently only uses `chassis_serial`.
 
 **internal/flushtrace**: Times device Flush commands from kernel trace events (tracefs), isolating the Flush from the rest of an fsync() that fio measures.

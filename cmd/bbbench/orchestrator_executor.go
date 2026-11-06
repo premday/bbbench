@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"bbbench/internal/diskinfo"
 	"bbbench/internal/flushtrace"
 )
 
@@ -41,6 +42,10 @@ type ExecutionCoordinator struct {
 
 	skipWriteThrough bool   // do not run fsync phases on write-through devices (default: warn)
 	sysBlock         string // sysfs block dir override for tests ("" = /sys/block)
+
+	// collectDisk reads a drive's configuration for the status page (nil:
+	// diskinfo.Collect).
+	collectDisk func(name string) diskinfo.Info
 }
 
 // fioStampSlackMs is how early (ms) a fio log stamp can be for its window.
@@ -522,6 +527,8 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		}
 	})
 
+	ec.collectDiskConfig()
+
 	// Execute each phase
 	for phaseIdx := 0; phaseIdx < maxPhases; phaseIdx++ {
 		// Check for interruption
@@ -734,6 +741,8 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			}
 		}
 	})
+
+	ec.collectDiskConfig()
 
 	completedPhases := 0
 
@@ -1048,4 +1057,21 @@ func markDrive(device string, f func(*DriveStatus)) {
 			}
 		}
 	})
+}
+
+// collectDiskConfig reads every drive's interface, link, power, write cache and
+// SMART state in the background (smartctl and nvme-cli can take seconds) and
+// puts it on the status page as it arrives. It only reads.
+func (ec *ExecutionCoordinator) collectDiskConfig() {
+	collect := ec.collectDisk
+	if collect == nil {
+		collect = func(name string) diskinfo.Info { return diskinfo.Collect(name, diskinfo.Options{}) }
+	}
+	for _, drive := range ec.drives {
+		name := drive.Device.Name
+		go func() {
+			info := collect(name)
+			markDrive(name, func(d *DriveStatus) { d.Config = &info })
+		}()
+	}
 }

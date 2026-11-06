@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bbbench/internal/diskinfo"
 )
 
 // BenchmarkStatus represents the current state of benchmark execution.
@@ -56,6 +58,9 @@ type DriveStatus struct {
 	ErrorMessage string    `json:"error,omitempty"`
 	// Skipped is why the drive sits out the current phase (Status "skipped").
 	Skipped string `json:"skipped,omitempty"`
+	// Config is how the disk is connected and configured (interface, link,
+	// power, write cache, SMART); nil until it has been read.
+	Config *diskinfo.Info `json:"config,omitempty"`
 	// Warning is a caveat about the phase the drive is running.
 	Warning       string `json:"warning,omitempty"`
 	LastCompleted string `json:"last_completed,omitempty"`
@@ -235,6 +240,14 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
             color: #666;
             margin-top: 5px;
         }
+        .cfg { text-align: left; margin-top: 8px; font-size: 13px; color: #444; }
+        .cfg .row { display: flex; gap: 8px; margin-top: 2px; }
+        .cfg .k { flex: 0 0 82px; color: #888; }
+        .cfg .v { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .cfg .ok { color: #2e7d32; font-weight: 600; }
+        .cfg .bad { color: #c62828; font-weight: 600; }
+        .cfg .warn { color: #b26a00; }
+        .cfg .dim { color: #888; }
         .phases { text-align: left; margin-top: 10px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
         .phases > summary { cursor: pointer; font-size: 13px; color: #555; font-weight: 600; }
         .phase { margin: 6px 0 0 4px; font-size: 13px; }
@@ -384,6 +397,47 @@ __NAVBAR_HTML__
             return t;
         }
 
+        // The disk configuration read at the start of the run: interface, link,
+        // power, write cache and SMART health. Anything unreadable is left out.
+        function configHTML(c) {
+            if (!c) return '<div class="cfg"><span class="dim">Reading configuration&hellip;</span></div>';
+            const row = (k, v) => v ? '<div class="row"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>' : '';
+            const sp = (cls, t) => '<span class="' + cls + '">' + esc(t) + '</span>';
+            let link = c.link_speed ? esc(c.link_speed) : '';
+            if (c.link_max) link += ' <span class="dim">(max ' + esc(c.link_max) + ')</span>';
+            if (c.link_below_max) link += ' ' + sp('warn', 'below max');
+            const p = c.power || {};
+            const power = [
+                p.nvme_state ? 'state ' + p.nvme_state : '',
+                p.apst ? 'APST ' + p.apst : '',
+                p.runtime_pm ? 'runtime PM ' + p.runtime_pm : '',
+                p.aspm ? 'ASPM ' + p.aspm : '',
+                p.link_policy ? 'link policy ' + p.link_policy : ''
+            ].filter(Boolean).map(esc).join('<br>');
+            const w = c.write_cache || {};
+            let wc = '';
+            if (w.kernel) wc += 'kernel ' + (w.kernel === 'write through' ? sp('warn', w.kernel) : esc(w.kernel));
+            if (w.drive) wc += (wc ? ' &middot; ' : '') + 'drive cache ' + esc(w.drive);
+            const s = c.smart || {};
+            let smart = '';
+            if (s.status) {
+                smart = sp(s.status === 'PASSED' ? 'ok' : 'bad', s.status);
+                const bits = [];
+                if (s.temp_c != null) bits.push(s.temp_c + ' \u00b0C');
+                if (s.percent_used != null) bits.push('wear ' + s.percent_used + '%');
+                if (s.power_on_hours != null) bits.push(s.power_on_hours + ' h');
+                if (s.media_errors) bits.push(s.media_errors + ' media errors');
+                if (s.reallocated) bits.push(s.reallocated + ' reallocated');
+                if (s.pending) bits.push(s.pending + ' pending');
+                if (bits.length) smart += ' <span class="dim">' + esc(bits.join(' \u00b7 ')) + '</span>';
+                if (s.source) smart += ' <span class="dim">(' + esc(s.source) + ')</span>';
+            } else if (s.detail) {
+                smart = sp('dim', 'unknown: ' + s.detail);
+            }
+            return '<div class="cfg">' + row('Interface', esc(c.interface || 'unknown')) + row('Link', link) +
+                row('Power', power) + row('Write cache', wc) + row('SMART', smart) + '</div>';
+        }
+
         function phasesHTML(drive) {
             const phases = phasesByDrive[drive.name];
             if (!phases || phases.length === 0) return '';
@@ -487,6 +541,7 @@ __NAVBAR_HTML__
                     if (drive.capacity_gb) {
                         html += '<div class="drive-detail">Capacity: ' + drive.capacity_gb + ' GB</div>';
                     }
+                    html += configHTML(drive.config);
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
                         html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';

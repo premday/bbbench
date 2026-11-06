@@ -163,7 +163,7 @@ Flags:
 
 Pages available:
 - `/` — home
-- `/status` — live benchmark status (when orchestrator is running); each drive lists its phases, with a one-line summary of the fio options and the fio job file the phase runs (click a phase to expand); finished phases are struck through and an ETA is computed from the phases with a fixed duration, with phases of unknown length (full-disk writes, trims) reported separately
+- `/status` — live benchmark status (when orchestrator is running), with each drive's interface, link speed, power configuration, write cache policy and SMART health (see [documentation/web-ui.md](documentation/web-ui.md)); each drive lists its phases, with a one-line summary of the fio options and the fio job file the phase runs (click a phase to expand); finished phases are struck through and an ETA is computed from the phases with a fixed duration, with phases of unknown length (full-disk writes, trims) reported separately
 - `/results` — browse and search past runs
 - `/summary?id=<id>` — statistics table (min/avg/max/σ) per phase, broken down by disk
 - `/graphs?id=<id>` — time-series charts (IOPS, bandwidth, latency) per phase
