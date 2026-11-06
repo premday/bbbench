@@ -9,6 +9,8 @@ The **Status** page shows live progress while `orchestrator` is running.
 - **Current Status** — running/idle indicator, overall progress bar, current phase number, and completed phase count.
 - **Drives** — one card per benchmarked drive showing model, serial, capacity, current status, and active phase name, then its configuration (below) and its phases.
 
+- **Run group** — during a setting test a banner above the drives reads `Setting test: <setting>, run <i> of <n>, <step>` with the strategy and an ETA that covers the runs still to do (`ETA unknown` when a phase has no known length). Each drive card shows its value and `before`/`after` badges (`pending`, `ok`, `failed`; the reading and the kernel's value are in the tooltip), `invalid` when the drive did not hold the value, and `restoring` while the group restores. Nothing changes outside a run group; the restore outcome is on the group page.
+
 Each drive card also shows how the disk is configured, read once when the run starts (read-only: bbbench never changes it):
 
 | Line | Meaning | Source |
