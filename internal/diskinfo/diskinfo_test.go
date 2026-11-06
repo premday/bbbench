@@ -221,7 +221,7 @@ func TestCollectDump_NVMe(t *testing.T) {
 	})})
 	dump = spaces.ReplaceAllString(dump, " ") // the summary aligns its columns
 	for _, want := range []string{
-		"bbbench disk configuration: nvme0n1 - Acme X1, S/N 42", "never changes the drive",
+		"bbbench disk configuration: nvme0n1 - Acme X1, S/N 42", "does not change the drive",
 		"== Summary ==", "Interface: NVMe (PCIe)", "Kernel cache: write back", "Drive cache: enabled", "SMART: PASSED (smartctl)", "Temperature: 41 C",
 		"== sysfs ==", "block/nvme0n1/queue/write_cache = write back",
 		"== smartctl -x /dev/nvme0n1 ==\nFULL SMARTCTL REPORT", "== nvme id-ctrl /dev/nvme0 ==\nvwc : 0x1",

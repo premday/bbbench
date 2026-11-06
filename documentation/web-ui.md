@@ -11,7 +11,7 @@ The **Status** page shows live progress while `orchestrator` is running.
 
 - **Run group** — during a setting test a banner above the drives reads `Setting test: <setting>, run <i> of <n>, <step>` with the strategy and an ETA that covers the runs still to do (`ETA unknown` when a phase has no known length). Each drive card shows its value and `before`/`after` badges (`pending`, `ok`, `failed`; the reading and the kernel's value are in the tooltip), `invalid` when the drive did not hold the value, and `restoring` while the group restores. Nothing changes outside a run group; the restore outcome is on the group page.
 
-Each drive card also shows how the disk is configured, read once when the run starts (read-only: bbbench never changes it):
+Each drive card also shows how the disk is configured, read once when the run starts (read-only: reading it changes nothing; bbbench changes a drive's setting only in a setting test, see [Run Groups](#run-groups)):
 
 | Line | Meaning | Source |
 |---|---|---|
@@ -62,7 +62,7 @@ The left sidebar provides filters that update the displayed graphs in real time:
 | **Setting value** | Run groups only (`/graphs?group=<group id>`): the values of the setting (e.g. write cache `enabled`/`disabled`), to show or contrast the variants. |
 | **Hide invalid results** | Run groups only, on by default: results whose drive did not hold its value are left out. Unchecked, they are shown and their cards say `(invalid)`. |
 
-`/graphs?group=<group id>` shows the member runs of a group together (`/api/groups/graphs`); `/graphs?id=<run id>` shows one run, without the group filters. In a group, a card is titled `disk · value`, and `disk · value · round N` when a value was measured in several runs (parallel-swap), since the same disk appears in each run.
+`/graphs?group=<group id>` shows the member runs of a group together (`/api/groups/graphs`); `/graphs?id=<run id>` shows one run; a member run of a group viewed by its own id still carries its label, so it gets the **Setting value** filter and hides invalid results by default, while a plain run shows neither. In a group, a card is titled `disk · value`, and `disk · value · round N` when a value was measured in several runs (parallel-swap), since the same disk appears in each run.
 
 Each matching combination of disk × phase is rendered as its own graph card. Click a card to maximize it; press **Esc** to return to the grid.
 

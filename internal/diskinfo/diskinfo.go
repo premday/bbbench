@@ -1,7 +1,7 @@
 // Package diskinfo reads how a disk is connected and configured: interface,
 // link speed, power settings, write cache policy and SMART health. It only
-// reads (sysfs, and smartctl / nvme-cli when installed); it never changes the
-// drive's configuration.
+// reads (sysfs, and smartctl / nvme-cli when installed); this package never changes
+// the drive's configuration (setting tests change it through internal/settings).
 package diskinfo
 
 import (
