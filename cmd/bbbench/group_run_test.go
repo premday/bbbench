@@ -1053,3 +1053,15 @@ func TestWatchGroupSignals(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestResumeIgnoredNote(t *testing.T) {
+	if n := resumeIgnoredNote(false, newFakeSetting(nil)); n != "" {
+		t.Errorf("note without --resume: %q", n)
+	}
+	if n := resumeIgnoredNote(true, nil); n != "" {
+		t.Errorf("note for a single run: %q", n)
+	}
+	if n := resumeIgnoredNote(true, newFakeSetting(nil)); !strings.Contains(n, "--resume") || !strings.Contains(n, "state file") {
+		t.Errorf("note = %q", n)
+	}
+}

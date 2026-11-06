@@ -171,6 +171,16 @@ func precheckRun(opts runOptions, drives []DriveInfo) error {
 	return checkFioEngines(fioEngineList(), ec.workloads)
 }
 
+// resumeIgnoredNote warns that --resume does not apply when a new setting
+// test was chosen (there was no group to resume): the single-run state file
+// is not used. Empty otherwise.
+func resumeIgnoredNote(resume bool, s settings.Setting) string {
+	if !resume || s == nil {
+		return ""
+	}
+	return "Note: --resume is ignored: a new setting test starts from its first run; the single-run state file is not used."
+}
+
 // printGroupSummary prints one line per run and drive.
 func printGroupSummary(w io.Writer, g *rungroup.GroupFile) {
 	fmt.Fprintf(w, "\nSetting test %s: %s (%s)\n", g.ID, g.Setting, g.Strategy)

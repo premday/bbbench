@@ -225,6 +225,9 @@ func runOrchestrator(args []string) error {
 		if choice.Setting != nil && *dryRun {
 			return errors.New("a dry run cannot be combined with a setting test")
 		}
+		if note := resumeIgnoredNote(*resume, choice.Setting); note != "" {
+			fmt.Println(note)
+		}
 
 		// Launch TUI for drive selection
 		selectedDrives, err = runDriveSelectionTUI(drives)
