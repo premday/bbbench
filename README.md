@@ -126,6 +126,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--verbose` — show fio commands and debug output
 - `--skip-write-through` — do not run fsync (Flush-latency) phases on write-through devices (by default they run, with a warning)
 - `--log-avg-msec` — fio's polling interval in ms (default 1000): one point per interval on every graph, and the first point of a series appears one interval after the ramp-up ends. It overrides the `log_avg_msec` of the generated job files
+- `--dmi-path`, `--sys-block` — override `/sys/class/dmi/id` and `/sys/block` (for tests)
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--config` — path to config file
 - `--dist` — override dist path
@@ -166,11 +167,14 @@ Flags:
 
 Pages available:
 - `/` — home
-- `/status` — live benchmark status (when orchestrator is running), with each drive's interface, link speed, power configuration, write cache policy and SMART health (see [documentation/web-ui.md](documentation/web-ui.md)); the same information in full is written to `<output>/<device>_diskinfo_<start>.txt`, one text file per disk; each drive lists its phases, with a one-line summary of the fio options and the fio job file the phase runs (click a phase to expand); finished phases are struck through and an ETA is computed from the phases with a fixed duration, with phases of unknown length (full-disk writes, trims) reported separately
+- `/status` — live benchmark status while the orchestrator runs: progress, and per drive its configuration (interface, link speed, power, write cache policy, SMART), and its phases with the fio config, real and expected time and an ETA (details in [documentation/web-ui.md](documentation/web-ui.md))
 - `/results` — browse and search past runs
 - `/summary?id=<id>` — statistics table (min/avg/max/σ) per phase, broken down by disk
-- `/graphs?id=<id>` — time-series charts (IOPS, bandwidth, latency) per phase
+- `/graphs?id=<id>` — time-series charts per phase: IOPS, bandwidth and latency (from fio) and Flush latency (from kernel traces), on one shared time axis with the ramp-up shaded
+- `/compare?id=<id>` — overlay several disks and/or phases on one chart
+- `/result?id=<id>` — details of one run: drives, phases, and any skipped phase or warning (e.g. a write-through drive)
 - `/export?id=<id>` — download self-contained HTML report
+- `/health`, `/api/status`, `/api/status/phases`, `/api/results`, `/api/results/detail`, `/api/results/graphs`, `/api/results/summary` — JSON behind the pages
 
 The web UI is also started automatically by `orchestrator` on `0.0.0.0:12345` during a run.
 
@@ -178,7 +182,7 @@ The web UI is also started automatically by `orchestrator` on `0.0.0.0:12345` du
 
 ### `bbbench doctor`
 
-Checks host readiness: Linux, root access, sysfs, and block device discovery.
+Checks host readiness: Linux, root access, sysfs, block device discovery, and the external programs (`fio` is required; `smartctl`, `nvme` and `hdparm` are optional and a warning says what is lost without them).
 
 ```bash
 sudo ./bbbench doctor
