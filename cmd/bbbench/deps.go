@@ -23,6 +23,7 @@ var dependencies = []dependency{
 	{"smartctl", []string{"--version"}, false, "SMART health on the status page and in the disk dump", "smartmontools"},
 	{"nvme", []string{"--version"}, false, "NVMe power state, APST, drive write cache and the SMART fallback on the status page", "nvme-cli"},
 	{"hdparm", []string{"-V"}, false, "the SATA identify report in the disk dump", "hdparm"},
+	{"lspci", []string{"--version"}, false, "the storage controller's name on the status page", "pciutils"},
 }
 
 // depReport is the outcome of checking the external programs.

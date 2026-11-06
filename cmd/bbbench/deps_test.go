@@ -20,8 +20,8 @@ func lookIn(present ...string) func(string) (string, error) {
 func fakeVersion(bin string, _ ...string) string { return bin + "-1.0" }
 
 func TestCheckDependencies_AllPresent(t *testing.T) {
-	r := checkDependencies(lookIn("fio", "smartctl", "nvme", "hdparm"), fakeVersion)
-	if len(r.missing) != 0 || len(r.notes) != 0 || len(r.found) != 4 || r.found[0] != "fio-1.0" {
+	r := checkDependencies(lookIn("fio", "smartctl", "nvme", "hdparm", "lspci"), fakeVersion)
+	if len(r.missing) != 0 || len(r.notes) != 0 || len(r.found) != 5 || r.found[0] != "fio-1.0" {
 		t.Errorf("%+v", r)
 	}
 	if err := printDependencies(r); err != nil {
@@ -33,11 +33,11 @@ func TestCheckDependencies_AllPresent(t *testing.T) {
 // install; a missing fio stops the run.
 func TestCheckDependencies_MissingOptionalAndRequired(t *testing.T) {
 	r := checkDependencies(lookIn("fio", "nvme"), fakeVersion)
-	if len(r.missing) != 0 || len(r.notes) != 2 {
+	if len(r.missing) != 0 || len(r.notes) != 3 {
 		t.Fatalf("%+v", r)
 	}
 	all := strings.Join(r.notes, "\n")
-	for _, want := range []string{"smartctl not found (install: smartmontools)", "SMART health", "hdparm not found (install: hdparm)"} {
+	for _, want := range []string{"smartctl not found (install: smartmontools)", "SMART health", "hdparm not found (install: hdparm)", "lspci not found (install: pciutils)"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("notes lack %q:\n%s", want, all)
 		}

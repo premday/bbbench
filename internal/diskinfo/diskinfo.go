@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"bbbench/internal/scsi"
+	"bbbench/internal/smbios"
 )
 
 // Info is what is known about one disk. Fields that could not be read are
@@ -29,10 +30,13 @@ type Info struct {
 	LinkMax string `json:"link_max,omitempty"`
 	// LinkBelowMax is true when the link runs below its maximum (a bad slot or
 	// cable, or the link saving power while idle).
-	LinkBelowMax bool       `json:"link_below_max,omitempty"`
-	Power        PowerInfo  `json:"power"`
-	WriteCache   WriteCache `json:"write_cache"`
-	Smart        Smart      `json:"smart"`
+	LinkBelowMax bool `json:"link_below_max,omitempty"`
+	// Slot is where the disk sits and Controller what it hangs off; nil when unknown.
+	Slot       *Slot       `json:"slot,omitempty"`
+	Controller *Controller `json:"controller,omitempty"`
+	Power      PowerInfo   `json:"power"`
+	WriteCache WriteCache  `json:"write_cache"`
+	Smart      Smart       `json:"smart"`
 }
 
 // PowerInfo is the power management configuration.
@@ -81,6 +85,9 @@ type Options struct {
 	DriveWCE func(devPath string) (bool, error)
 	// Timeout bounds each external command; default 10 s.
 	Timeout time.Duration
+	// SMBIOS reads the DMI table below the sysfs root; default smbios.Load.
+	// It fails without root.
+	SMBIOS func(sys string) (*smbios.Table, error)
 	// Label heads a dump ("nvme0n1 - model, serial"); only used by CollectDump.
 	Label string
 }
@@ -138,14 +145,17 @@ func collect(name string, opts Options, extras bool) (Info, *collector) {
 	if err != nil {
 		real = ""
 	}
+	nvmeCtrl := ""
 	if m := nvmeNameRe.FindStringSubmatch(name); m != nil {
+		nvmeCtrl = m[1]
 		c.nvme(&info, m[1])
 	} else {
 		c.scsi(&info, real)
 	}
+	c.topology(&info, real, nvmeCtrl)
 	info.Smart = c.smart(name, nvmeNameRe.MatchString(name))
 	if extras {
-		c.extraReports()
+		c.extraReports(info)
 	}
 	return info, c
 }
@@ -154,11 +164,14 @@ func collect(name string, opts Options, extras bool) (Info, *collector) {
 type logged struct{ label, body string }
 
 type collector struct {
-	opts  Options
-	name  string
-	sys   func(parts ...string) string
-	sysfs []logged // sysfs files read: path -> value
-	cmds  []logged // commands run: command line -> output
+	opts        Options
+	name        string
+	sys         func(parts ...string) string
+	smbios      *smbios.Table
+	smbiosErr   error
+	smbiosTried bool
+	sysfs       []logged // sysfs files read: path -> value
+	cmds        []logged // commands run: command line -> output
 }
 
 func (c *collector) read(path string) string {
@@ -191,7 +204,10 @@ func (c *collector) run(name string, args ...string) (out []byte, ok bool) {
 
 // extraReports runs the full identify / SMART reports for the dump only; the
 // summary does not need them.
-func (c *collector) extraReports() {
+func (c *collector) extraReports(info Info) {
+	if info.Controller != nil && info.Controller.PCI != "" {
+		c.run("lspci", "-vv", "-s", info.Controller.PCI)
+	}
 	dev := filepath.Join(c.opts.Dev, c.name)
 	if m := nvmeNameRe.FindStringSubmatch(c.name); m != nil {
 		ctrl := filepath.Join(c.opts.Dev, m[1])
