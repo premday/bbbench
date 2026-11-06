@@ -639,12 +639,12 @@ __NAVBAR_HTML__
             const after = group.step === 'verifying-after' || group.step === 'restoring' || group.step === 'done';
             const runsLeft = Math.max(0, group.runs - group.run);
             let sec = 0, unknownPhases = 0, anyLeft = runsLeft > 0;
-            let runKnown = runsLeft === 0;
             drives.forEach(d => {
                 const phases = phasesMap[d.name] || [];
                 const full = runLengthOf(phases);
+                // The runs still to do repeat the unknown-length phases too.
+                if (full == null) unknownPhases += runsLeft * phases.filter(p => !p.deterministic).length;
                 if (full != null) {
-                    if (runsLeft > 0) runKnown = true;
                     sec = Math.max(sec, runsLeft * full);
                 }
                 if (after) return;
@@ -660,7 +660,6 @@ __NAVBAR_HTML__
                 if (full != null) sec = Math.max(sec, runsLeft * full + e.sec);
                 else sec = Math.max(sec, e.sec);
             });
-            if (runsLeft > 0 && !runKnown) return 'ETA unknown: the length of a full run is unknown';
             if (!anyLeft) return 'all done';
             if (unknownPhases > 0) {
                 return (sec > 0 ? 'ETA ~' + fmtDur(sec) + ' + ' : 'ETA unknown: ') + unknownPhases + ' phase' +

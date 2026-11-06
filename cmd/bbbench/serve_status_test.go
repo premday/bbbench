@@ -574,7 +574,19 @@ assert(b.includes('ETA ~3m'), b);
 // unknown-length phase makes the total unknown, said like the existing text
 const phasesU = '{sda:[{index:0,deterministic:true,duration_sec:60},{index:1,deterministic:false}]}';
 b = run('groupBannerHTML(' + group + ',' + drv + ',' + phasesU + ')');
-assert(b.includes('ETA unknown'), b);
+assert(b.includes('of unknown length') && !/ETA ~[^+]*\(about/.test(b), b);
+
+// mixed drives: A fully known, B past its unknown phase (phase 2 of 2 running)
+// but with an unknown phase in its future runs: no confident plain number.
+const mixPh = '{sda:[{index:0,deterministic:true,duration_sec:60}],sdb:[{index:0,deterministic:false},{index:1,deterministic:true,duration_sec:40}]}';
+const mixDr = '[{name:"sda",status:"running",current_phase:1,phase_start:new Date().toISOString()},{name:"sdb",status:"running",current_phase:2,phase_start:new Date().toISOString()}]';
+b = run('groupBannerHTML(' + group + ',' + mixDr + ',' + mixPh + ')');
+assert(b.includes('1 phase of unknown length'), b);
+assert(!/ETA ~[^+<]*\(about/.test(b), b);
+// every drive fully known: the plain number
+const knownPh = '{sda:[{index:0,deterministic:true,duration_sec:60}],sdb:[{index:0,deterministic:true,duration_sec:80}]}';
+b = run('groupBannerHTML(' + group + ',' + mixDr + ',' + knownPh + ')');
+assert(/ETA ~[^+<]*\(about/.test(b) && !b.includes('unknown'), b);
 
 // last run: no extra runs
 b = run('groupBannerHTML({id:"g",setting:"s",strategy:"sequential",run:3,runs:3,step:"running"},' + drv + ',' + phases + ')');
