@@ -13,26 +13,22 @@
 - GitHub Actions CI on every pull request: gofmt, `go vet`, `go test -race`, template validation, and a build of all release archives
 - Tag-triggered release workflow publishing static linux archives (`amd64`, `arm64`, `386`) with binaries, documentation, `dist/` config and templates, and `SHA256SUMS`
 - `make check` (CI checks) and `make package` (release archives)
-- Flush tracing: phases that fsync also report the device's own Flush latency, measured from kernel trace events (NVMe tracepoints with exact pairing, generic block tracepoints for any other device); saved as `flush_trace` per phase; `--no-flush-trace` disables it
+- Flush tracing: phases that fsync also report the device's own Flush latency, measured from kernel trace events (NVMe tracepoints with exact pairing, generic block tracepoints for any other device), saved per phase; `--no-flush-trace` disables it. The drive's `write_cache` state is recorded, and a write-through drive, which the kernel never sends a Flush, is reported as such ("ftrace saw 0 Flush commands") instead of "no data"
 - The Flush latency is stored next to the fio logs in fio's shape (`<prefix>_flush.1.log`): one line per `--log-avg-msec` window plus the whole-phase summary in the header, a few hundred lines (about 10 KB) per phase instead of one line per Flush; the summary and the series (`flush_series`, `ts_flush`) are read back from it when a run is loaded
-- Flush-latency workloads `ssd_fsync_psync_qd1`, `ssd_fsync_uring_qd1` and `ssd_fsync_uring_qd32` (4k randwrite with fsync after every write), added to the default `ssd` list
+- Flush-latency workloads `ssd_fsync_psync_qd1`, `ssd_fsync_uring_qd1` and `ssd_fsync_uring_qd32` (4k randwrite with fsync after every write, 5 minutes each), added to the default `ssd` list
 - Run summary shows the mean fsync latency for phases that issue fsyncs
 - Workloads can override `ioengine`, `iodepth`, `direct` and `fsync` per job in `bbbench.workloadsdb`
-
 - Release archives ship a `VERSION` file (version, commit, date, arch) and a generated `RELEASE_NOTES.md`; the GitHub release notes are generated from the commits since the previous tag (`scripts/changelog.sh`)
-- Web UI: "Flush latency" graph type (graphs and compare pages) drawn from the stored ftrace samples; every graph type shows a `fio` / `ftrace` source tag
+- Web UI: "Flush latency" graph type (graphs and compare pages) drawn from the stored log and averaged over fio's polling interval (`--log-avg-msec`), so it lines up with the fio series; every graph type shows a `fio` / `ftrace` source tag
 - Docs and the write-through warning state that bbbench never configures the drive: it only reads the write cache mode, and the user applies any fix
 - `documentation/flush-latency.md` explains what the Flush latency measures, with a diagram of the kernel stack
-- Flush tracing records the device's `write_cache` state and says so when no Flush was seen on a write-through device; the UI shows "ftrace saw 0 Flush commands" instead of "no data"
 - Phases that fsync on a write-through device (the kernel sends no Flush) still run, with a warning on the console, the status page and the run details (`warnings` in the run JSON); `--skip-write-through` skips them instead, with the reason shown in the web UI
 - With `--skip-write-through`, a drive that sits out a phase while others run it is shown as "Skipped this phase" with the reason on the status page, and the console names it as soon as the phase starts; a parallel phase that ran elsewhere ends "COMPLETE, skipped on N drive(s)"
-- All time-series graphs share one x axis starting at 0 (the start of the phase) and spanning the longest series shown; fio's ramp-up (`ramp_time`, saved as `ramp_sec`) is shaded and fio's points start after it. The Flush series counts from the same start, stamps points at the start of their window (fio's points are moved back one window, so there is no gap after the ramp-up), and, like fio, has no points and no summary contribution for the ramp-up (`offset_ms` in the flush log header)
-- The Flush latency series uses fio's polling interval (`--log-avg-msec`, stored in the flush log header) as its averaging window, so it lines up with the fio series
+- All time-series graphs share one x axis starting at 0 (the start of the phase) and spanning the longest series shown; fio's ramp-up (`ramp_time`, saved as `ramp_sec`) is shaded and fio's points start after it. Points are drawn at the start of their averaging window (fio stamps the end, so its points are moved back one window and there is no gap after the ramp-up); the Flush series has no points and no summary contribution for the ramp-up, like fio (`offset_ms` in the flush log header)
 
 ### Changed
 
 - The orchestrator drops the template's `log_avg_msec=30000` from the fio files it runs, so `--log-avg-msec` (default 1 s) is the only polling interval. The file's value could override the flag, giving 30 s points and a 30 s blank after the ramp-up on the graphs; hand-run fio on a generated file keeps the 30 s
-- Flush-latency workloads run 5 minutes instead of 30 s, for enough points in the per-second Flush series
 - CI workflows use Node 24 action versions (`checkout@v7`, `setup-go@v7`, `upload-artifact@v7`) and run on `ubuntu-26.04` instead of `ubuntu-latest`
 - `make` builds with `CGO_ENABLED=0` instead of musl-gcc: the code is pure Go, so binaries stay static without a C toolchain
 - Generated fio log names and the fioplot `iodepth` reflect a workload's effective iodepth and `direct`/`buffered` mode (unchanged for existing workloads)
@@ -40,7 +36,6 @@
 ### Fixed
 
 - fio log points stamped a millisecond early (9999 for 10 s) no longer fall into the previous 1 s bucket, which merged two windows and left a gap after them
-- Flush tracing stop no longer waits for an EOF that a live `trace_pipe` never sends (it timed out with "trace reader did not finish"); a stop marker ends the reader
 
 ## [0.1.0] - 2026-03-31
 

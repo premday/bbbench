@@ -6,8 +6,6 @@ The `bbbench serve` command (also started automatically by `orchestrator` during
 
 The **Status** page shows live progress while `orchestrator` is running.
 
-![Benchmark Status](img/overview_benchmark_status.jpg)
-
 - **Current Status** — running/idle indicator, overall progress bar, current phase number, and completed phase count.
 - **Drives** — one card per benchmarked drive showing model, serial, capacity, current status, and active phase name.
 
@@ -29,11 +27,16 @@ Each drive's **Phases** list shows its time as it goes: before a phase runs, its
 
 The page auto-refreshes so you can monitor a long run without manually reloading.
 
+## Browsing Results
+
+The **Results** page lists every run found in the output directory (time, ID, mode, drives, phases) with a search box (ID, mode or drive name). Each row links to its **Details**, **Summary**, **Graphs** and **Compare** pages.
+
+- **Details** shows the run's overview, its drives, and its phases with duration and job count. A phase that did not run on a drive (`--skip-write-through`) shows the reason, and a phase that ran with a caveat, such as a write-through drive that never receives a Flush, shows the warning with how to check and fix it. An **Export HTML** button downloads a standalone report.
+- **Summary** is a table of statistics (min, average, max and standard deviation) per phase, broken down by disk.
+
 ## Graphs and Navigation
 
 The **Results** page lets you explore time-series charts from a completed (or in-progress) run.
-
-![Graphs Navigation](img/overview_graphs_navigation.jpg)
 
 The left sidebar provides filters that update the displayed graphs in real time:
 
@@ -47,10 +50,12 @@ The left sidebar provides filters that update the displayed graphs in real time:
 
 Each matching combination of disk × phase is rendered as its own graph card. Click a card to maximize it; press **Esc** to return to the grid.
 
+**Time axis.** All time-series graphs use one x axis, in seconds from the start of the phase, from 0 to the longest series shown, so cards line up. fio's `ramp_time` is shaded as **ramp-up**: fio logs nothing during it, so the fio curves start where it ends. A point is the average over one polling window (`--log-avg-msec`) and is drawn at the start of its window; hover it to see the window. fio stamps the end of a window, so its points are moved back by one window, which keeps the first point at the end of the ramp-up instead of one interval later.
+
+**Flush latency** is not measured by fio. It carries a different tag (`ftrace`) and has its own clock from the start of the phase: the mean over each window, with no points during the ramp-up. A drive that never received a Flush shows why instead of an empty chart (see [flush-latency.md](flush-latency.md)).
+
 ## Comparing Disks on the Same Graph
 
 The **Compare** view overlays multiple disks on a single chart, making it easy to spot performance differences.
 
-![Disk Compare](img/overview_same_graph_disk_compare.jpg)
-
-Select two or more drives in the sidebar, choose a phase, then click **Compare**. Each drive is drawn in a distinct color with a legend. Metric, phase, and time axis are shared so curves are directly comparable.
+Select two or more drives in the sidebar, choose a phase, then click **Compare**. Each drive is drawn in a distinct color with a legend. Metric, phase, and time axis are shared so curves are directly comparable. Flush latency is a metric there too; it has no read and write sides, so the direction checkboxes do not apply to it.
