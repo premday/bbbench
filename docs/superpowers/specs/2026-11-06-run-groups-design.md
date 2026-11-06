@@ -60,6 +60,7 @@ it ran under, verified, and visible in the web UI.
 - Combining two settings in one group (a matrix); one setting per group.
 - Verification between phases; it is per run.
 - Changing a setting while a run is in progress.
+- Controller modes (above): the design leaves room, nothing is built.
 - Creating groups without the TUI (flags or a file). The mechanism should not
   prevent it; building it is left to the builder if cheap.
 
@@ -104,8 +105,19 @@ one class is shown as a warning, not a blocker.
 
 ## The setting abstraction
 
-A setting provides, per drive:
+A setting has a **scope** (a drive, a controller, or the host) and a **kind**:
 
+- *applied*: bbbench can change it while the system runs and restore it (write
+  cache policy; the RAID layout later).
+- *manual*: bbbench cannot change it (it needs a reboot, a BIOS or a vendor tool),
+  so the user sets it up and bbbench only **reads and verifies** it, then labels
+  the run. A group of manual-setting runs is built as you go: the user changes the
+  setting, runs the orchestrator, and adds the run to the group (see "Creating a
+  group").
+
+A setting provides, per drive (or per controller for a controller-scope setting):
+
+- `Kind()` and `Scope()`; a manual setting has no `Apply` or `Restore`.
 - `Applicable(drive)`: yes, or the reason it is not (for write cache: a RAID
   virtual drive, USB, virtio, a drive with no volatile cache).
 - `Values(drives)`: the values it can offer.
@@ -144,6 +156,29 @@ This reverses the documented rule that bbbench never changes a drive's
 configuration. After this change the rule is: it changes it only in setting-test
 mode, after an explicit confirmation, and always restores it. README,
 `flush-latency.md`, `web-ui.md`, CLAUDE.md and the warning texts must say so.
+
+### Later: controller mode (not built now)
+
+Grouping runs by a hardware controller mode (HBA / IT against RAID, JBOD or
+passthrough against virtual drives, the controller's cache policy) is the
+reason for the scope and kind above. It would be a **manual**, controller-scope
+setting at first: the mode is *read* from what bbbench already collects about the
+controller (`diskinfo.Controller`: kind, driver, and the RAID virtual-drive or
+passthrough guess; optionally the vendor tool, `storcli`, `perccli`, `ssacli`,
+`sas3ircu`, as an optional source for the exact mode and cache policy) and
+*verified* before and after each run exactly like write cache. Applying it with
+the vendor tool would be a later step, only for modes the tool can change online.
+What this asks of the first version:
+
+- **Identity by serial**: a mode change can make the disks reappear under other
+  device names (or as virtual drives), so a run's labels, the group file and the
+  recovery file match drives by serial and model, with the name as a hint. This
+  is already in the recovery file design and must hold for labels too.
+- **A group can span several orchestrator invocations**, since a reboot is in
+  the middle: a run is tagged into an existing group when it starts, or from the
+  run details page afterwards.
+- The label of a controller-scope setting is stored per controller and shown on
+  every drive behind it.
 
 ## Verification and failure policy
 
