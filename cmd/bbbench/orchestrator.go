@@ -443,7 +443,8 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 		return nil, err
 	}
 	// Ending the coordinator's context when the run returns also stops its
-	// signal handler.
+	// signal handler, and finish stops it after a first signal.
+	defer coordinator.finish()
 	defer coordinator.cancel()
 	coordinator.dryRun = opts.DryRun
 	coordinator.stateFile = getStateFilePath(opts.OutDir)

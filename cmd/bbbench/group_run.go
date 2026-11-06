@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -130,8 +131,13 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 	// A signal anywhere in the group (also between runs, when no
 	// coordinator listens) cancels ctx, so the restore below runs. Stopped
 	// only after the restore, so a signal during the restore is not fatal.
-	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer stopSignals()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	ctx, stopWatch := watchGroupSignals(ctx, sigChan, os.Stdout)
+	defer func() {
+		stopWatch()
+		signal.Stop(sigChan)
+	}()
 
 	// The originals, read before anything changes.
 	rec := &rungroup.Recovery{Setting: s.Name()}
@@ -206,6 +212,39 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 		current = nil
 	}
 	return g, nil
+}
+
+// watchGroupSignals returns ctx cancelled by the first signal from sigs;
+// every later signal (or any signal once ctx ended otherwise) is answered on
+// out with groupSignalMessage and otherwise ignored. stop ends the watching
+// (the caller then stops the delivery to sigs), so nothing is printed after
+// the group, during the final wait for Ctrl+C.
+func watchGroupSignals(parent context.Context, sigs <-chan os.Signal, out io.Writer) (ctx context.Context, stop func()) {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-sigs:
+				if ctx.Err() == nil {
+					cancel()
+					continue
+				}
+				logger.Warn("signal ignored during a run group: restoring the original settings")
+				fmt.Fprintln(out, groupSignalMessage)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		wg.Wait()
+		cancel()
+	}
 }
 
 // newGroupFile starts the group file, or continues cfg.Resume when it

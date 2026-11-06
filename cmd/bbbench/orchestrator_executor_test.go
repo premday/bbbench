@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestParseFioSingleLog_IOPS verifies that IOPS values from 10 job files are
@@ -405,5 +407,62 @@ func TestInterruptedFlag_NoRace(t *testing.T) {
 	wg.Wait()
 	if !ec.isInterrupted() {
 		t.Error("isInterrupted false after setInterrupted")
+	}
+}
+
+// After the first signal a plain run force-quits on the next one, but only
+// while the run lasts: once it is over (the final "Press Ctrl+C" wait) the
+// coordinator no longer answers signals. A group's coordinator leaves further
+// signals to runGroup.
+func TestWatchSignals_StopsWhenRunEnds(t *testing.T) {
+	quietLogger(t)
+	for _, group := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		ec := &ExecutionCoordinator{ctx: ctx, cancel: cancel, finished: make(chan struct{})}
+		if group {
+			ec.groupID = "1700000000"
+		}
+		var mu sync.Mutex
+		exits := 0
+		exit := func(int) { mu.Lock(); exits++; mu.Unlock() }
+		sigs := make(chan os.Signal, 1)
+		returned := make(chan struct{})
+		go func() { ec.watchSignals(sigs, exit); close(returned) }()
+		sigs <- os.Interrupt
+		<-ctx.Done()
+		if !ec.isInterrupted() {
+			t.Errorf("group=%v: not marked interrupted", group)
+		}
+		if group {
+			<-returned // the group coordinator stops listening after the first signal
+		} else {
+			sigs <- os.Interrupt
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				mu.Lock()
+				n := exits
+				mu.Unlock()
+				if n == 1 || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			ec.finish()
+			<-returned
+		}
+		select {
+		case sigs <- os.Interrupt:
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+		mu.Lock()
+		want := 1
+		if group {
+			want = 0
+		}
+		if exits != want {
+			t.Errorf("group=%v: %d exits, want %d", group, exits, want)
+		}
+		mu.Unlock()
 	}
 }

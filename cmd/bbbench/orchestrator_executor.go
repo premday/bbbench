@@ -34,6 +34,10 @@ type ExecutionCoordinator struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	interrupted bool // guarded by mu: setInterrupted, isInterrupted
+	// finished is closed (finish) when the run is over: the signal handler
+	// then stops answering further signals.
+	finished    chan struct{}
+	finishOnce  sync.Once
 	tempFiles   []string
 	tempFilesMu sync.Mutex
 	stateFile   string
@@ -147,6 +151,7 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (_ *Exe
 		ctx:       ctx,
 		cancel:    cancel,
 		startTime: time.Now(),
+		finished:  make(chan struct{}),
 	}
 
 	// Set up signal handling for graceful shutdown
@@ -207,18 +212,26 @@ var errRunInterrupted = errors.New("execution interrupted by user")
 // exitCodeSIGINT is the conventional exit code for processes terminated by SIGINT (128 + signal number).
 const exitCodeSIGINT = 128 + int(syscall.SIGINT)
 
-// handleSignals sets up signal handling for graceful shutdown. It stops
-// listening when the coordinator's context ends without a signal, so the
-// handlers of finished runs (a run group has one coordinator per run) do not
-// pile up.
+// handleSignals sets up signal handling for graceful shutdown (see
+// watchSignals) and stops listening when that returns.
 func (ec *ExecutionCoordinator) handleSignals() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigChan)
+	ec.watchSignals(sigChan, os.Exit)
+}
 
+// watchSignals stops the run on the first signal from sigChan. It returns
+// when the coordinator's context ends without a signal, so the handlers of
+// finished runs (a run group has one coordinator per run) do not pile up.
+// After the first signal, a plain run force-quits (exit) on a further one
+// until the run is over (finish), so the final "Press Ctrl+C" wait is left
+// alone; a run group's coordinator returns at once, runGroup answers further
+// signals until its restore is done (watchGroupSignals).
+func (ec *ExecutionCoordinator) watchSignals(sigChan <-chan os.Signal, exit func(int)) {
 	select {
 	case <-sigChan:
 	case <-ec.ctx.Done():
-		signal.Stop(sigChan)
 		return
 	}
 	fmt.Println("\n\nReceived interrupt signal. Gracefully shutting down...")
@@ -232,12 +245,27 @@ func (ec *ExecutionCoordinator) handleSignals() {
 	ec.setInterrupted()
 	ec.cancel()
 
-	// Further signals: force quit, except in a run group (see onSecondSignal).
-	go func() {
-		for range sigChan {
-			ec.onSecondSignal(os.Exit)
+	if !forceQuitAllowed(ec) {
+		return
+	}
+	for {
+		select {
+		case <-sigChan:
+			ec.onSecondSignal(exit)
+		case <-ec.finished:
+			return
 		}
-	}()
+	}
+}
+
+// finish tells the signal handler that the run is over. Safe to call more
+// than once, and on a coordinator built without the channel.
+func (ec *ExecutionCoordinator) finish() {
+	ec.finishOnce.Do(func() {
+		if ec.finished != nil {
+			close(ec.finished)
+		}
+	})
 }
 
 // groupSignalMessage answers a further signal during a run group.

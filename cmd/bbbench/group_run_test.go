@@ -1008,3 +1008,48 @@ func TestRunGroup_PrecheckFailsBeforeApply(t *testing.T) {
 		t.Error("recovery file written")
 	}
 }
+
+// runGroup's own watcher: the first signal cancels, a further one says the
+// drives are being restored, and after stop nothing is printed any more.
+func TestWatchGroupSignals(t *testing.T) {
+	quietLogger(t)
+	sigs := make(chan os.Signal, 1)
+	var mu sync.Mutex
+	var out strings.Builder
+	w := writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return out.Write(p) })
+	ctx, stop := watchGroupSignals(context.Background(), sigs, w)
+	sigs <- syscall.SIGHUP
+	<-ctx.Done()
+	sigs <- os.Interrupt
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		got := out.String()
+		mu.Unlock()
+		if strings.Contains(got, "restoring") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stop()
+	mu.Lock()
+	n := strings.Count(out.String(), "this signal is ignored")
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("message printed %d times, want 1", n)
+	}
+	select {
+	case sigs <- os.Interrupt:
+	default:
+	}
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if c := strings.Count(out.String(), "this signal is ignored"); c != 1 {
+		t.Errorf("message printed after stop (%d times)", c)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
