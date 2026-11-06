@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,8 @@ func fakeRun(answers map[string]string) Runner {
 		return nil, errors.New("not found: " + name)
 	}
 }
+
+var spaces = regexp.MustCompile(` +`)
 
 const smartctlNVMe = `{"smartctl":{"messages":[]},"smart_status":{"passed":true},
 "temperature":{"current":41},"power_on_time":{"hours":1234},
@@ -197,5 +200,77 @@ func TestCollect_NVMeSmartFallback(t *testing.T) {
 	})})
 	if got.Smart.Status != "PASSED" || got.Smart.Source != "nvme smart-log" {
 		t.Errorf("%+v", got.Smart)
+	}
+}
+
+// The dump holds the summary, every sysfs value read and the full output of
+// each command, including the identify and SMART reports only the dump runs.
+func TestCollectDump_NVMe(t *testing.T) {
+	sys := t.TempDir()
+	put(t, sys, map[string]string{
+		"block/nvme0n1/queue/write_cache": "write back",
+		"class/nvme/nvme0/transport":      "pcie",
+	})
+	_, dump := CollectDump("nvme0n1", Options{Sys: sys, Label: "nvme0n1 - Acme X1, S/N 42", Run: fakeRun(map[string]string{
+		"nvme get-feature /dev/nvme0 -f 0x06": "get-feature:0x06 (Volatile Write Cache), Current value:0x000001",
+		"smartctl -j -H -A /dev/nvme0n1":      smartctlNVMe,
+		"smartctl -x /dev/nvme0n1":            "FULL SMARTCTL REPORT",
+		"nvme id-ctrl /dev/nvme0":             "vwc : 0x1",
+		"nvme id-ns /dev/nvme0n1":             "nsze : 0x100",
+		"nvme smart-log /dev/nvme0":           "critical_warning : 0",
+	})})
+	dump = spaces.ReplaceAllString(dump, " ") // the summary aligns its columns
+	for _, want := range []string{
+		"bbbench disk configuration: nvme0n1 - Acme X1, S/N 42", "never changes the drive",
+		"== Summary ==", "Interface: NVMe (PCIe)", "Kernel cache: write back", "Drive cache: enabled", "SMART: PASSED (smartctl)", "Temperature: 41 C",
+		"== sysfs ==", "block/nvme0n1/queue/write_cache = write back",
+		"== smartctl -x /dev/nvme0n1 ==\nFULL SMARTCTL REPORT", "== nvme id-ctrl /dev/nvme0 ==\nvwc : 0x1",
+		"== nvme id-ns /dev/nvme0n1 ==", "== nvme smart-log /dev/nvme0 ==",
+		"== nvme get-feature /dev/nvme0 -f 0x02 ==\n(no output", // a command that failed is still listed
+	} {
+		if !strings.Contains(dump, want) {
+			t.Errorf("dump lacks %q:\n%s", want, dump)
+		}
+	}
+	// The summary-only path does not run the extra reports.
+	if _, d := CollectDump("nvme0n1", Options{Sys: sys, Run: fakeRun(nil)}); !strings.Contains(d, "== Summary ==") {
+		t.Error("a dump is produced even when every command fails")
+	}
+}
+
+func TestCollectDump_SATARunsHdparm(t *testing.T) {
+	sys := t.TempDir()
+	real := "devices/pci0000:00/ata2/host1/target1:0:0/1:0:0:0/block/sdb"
+	put(t, sys, map[string]string{real + "/queue/write_cache": "write back"})
+	link(t, sys, filepath.Join(sys, real), "block/sdb")
+	_, dump := CollectDump("sdb", Options{Sys: sys, DriveWCE: func(string) (bool, error) { return true, nil },
+		Run: fakeRun(map[string]string{"hdparm -I /dev/sdb": "ATA device identify", "smartctl -x /dev/sdb": "ATA smart"})})
+	if !strings.Contains(dump, "== hdparm -I /dev/sdb ==\nATA device identify") || strings.Contains(dump, "nvme id-ctrl") {
+		t.Errorf("dump:\n%s", dump)
+	}
+}
+
+func TestCollect_DoesNotRunExtraReports(t *testing.T) {
+	sys := t.TempDir()
+	put(t, sys, map[string]string{"block/nvme0n1/queue/write_cache": "write back"})
+	var ran []string
+	Collect("nvme0n1", Options{Sys: sys, Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		ran = append(ran, name+" "+strings.Join(args, " "))
+		return nil, errors.New("x")
+	}})
+	for _, r := range ran {
+		if strings.Contains(r, "id-ctrl") || strings.Contains(r, "smartctl -x") {
+			t.Errorf("Collect ran the dump-only command %q", r)
+		}
+	}
+}
+
+func TestFormat_NoStatusHasNoBareSource(t *testing.T) {
+	out := Format(Info{Interface: "SATA", Smart: Smart{Source: "smartctl", Detail: "Permission denied"}})
+	if strings.Contains(out, "SMART:") || !strings.Contains(out, "SMART note:") || strings.Contains(out, "(smartctl)") {
+		t.Errorf("%s", out)
+	}
+	if got := Format(Info{}); got != "(nothing could be read)\n" {
+		t.Errorf("empty = %q", got)
 	}
 }

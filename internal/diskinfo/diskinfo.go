@@ -81,6 +81,8 @@ type Options struct {
 	DriveWCE func(devPath string) (bool, error)
 	// Timeout bounds each external command; default 10 s.
 	Timeout time.Duration
+	// Label heads a dump ("nvme0n1 - model, serial"); only used by CollectDump.
+	Label string
 }
 
 func (o *Options) fill() {
@@ -112,9 +114,23 @@ var (
 
 // Collect gathers the Info of the block device `name` (e.g. "nvme0n1", "sda").
 func Collect(name string, opts Options) Info {
+	info, _ := collect(name, opts, false)
+	return info
+}
+
+// CollectDump is Collect plus a text dump of everything that was read: the
+// summary, the sysfs values and the full output of each command, with the
+// extra identify and SMART reports (`smartctl -x`, `nvme id-ctrl`, ...) that
+// the summary is drawn from.
+func CollectDump(name string, opts Options) (Info, string) {
+	info, c := collect(name, opts, true)
+	return info, c.dump(info)
+}
+
+func collect(name string, opts Options, extras bool) (Info, *collector) {
 	opts.fill()
 	var info Info
-	c := collector{opts: opts, name: name}
+	c := &collector{opts: opts, name: name}
 	c.sys = func(parts ...string) string { return filepath.Join(append([]string{opts.Sys}, parts...)...) }
 
 	info.WriteCache.Kernel = c.read(c.sys("block", name, "queue", "write_cache"))
@@ -128,13 +144,21 @@ func Collect(name string, opts Options) Info {
 		c.scsi(&info, real)
 	}
 	info.Smart = c.smart(name, nvmeNameRe.MatchString(name))
-	return info
+	if extras {
+		c.extraReports()
+	}
+	return info, c
 }
 
+// logged is one thing read, kept for the dump.
+type logged struct{ label, body string }
+
 type collector struct {
-	opts Options
-	name string
-	sys  func(parts ...string) string
+	opts  Options
+	name  string
+	sys   func(parts ...string) string
+	sysfs []logged // sysfs files read: path -> value
+	cmds  []logged // commands run: command line -> output
 }
 
 func (c *collector) read(path string) string {
@@ -142,15 +166,42 @@ func (c *collector) read(path string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	v := strings.TrimSpace(string(b))
+	rel, _ := filepath.Rel(c.opts.Sys, path)
+	c.sysfs = append(c.sysfs, logged{rel, v})
+	return v
 }
 
 // run executes a command with the timeout; ok is false when it produced nothing.
 func (c *collector) run(name string, args ...string) (out []byte, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.opts.Timeout)
 	defer cancel()
-	out, _ = c.opts.Run(ctx, name, args...)
+	out, err := c.opts.Run(ctx, name, args...)
+	body := strings.TrimSpace(string(out))
+	if body == "" {
+		body = "(no output"
+		if err != nil {
+			body += ": " + err.Error()
+		}
+		body += ")"
+	}
+	c.cmds = append(c.cmds, logged{name + " " + strings.Join(args, " "), body})
 	return out, len(out) > 0
+}
+
+// extraReports runs the full identify / SMART reports for the dump only; the
+// summary does not need them.
+func (c *collector) extraReports() {
+	dev := filepath.Join(c.opts.Dev, c.name)
+	if m := nvmeNameRe.FindStringSubmatch(c.name); m != nil {
+		ctrl := filepath.Join(c.opts.Dev, m[1])
+		c.run("nvme", "id-ctrl", ctrl)
+		c.run("nvme", "id-ns", dev)
+		c.run("nvme", "smart-log", ctrl)
+	} else {
+		c.run("hdparm", "-I", dev)
+	}
+	c.run("smartctl", "-x", dev)
 }
 
 // pcieAspmPolicy is the system policy: the bracketed word of

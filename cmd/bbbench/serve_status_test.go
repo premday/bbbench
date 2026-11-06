@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -330,9 +332,11 @@ func TestCollectDiskConfig_LandsOnStatus(t *testing.T) {
 		s.Drives = []DriveStatus{{Name: "nvme0n1"}, {Name: "sda"}}
 	})
 	ec := &ExecutionCoordinator{
-		drives: []DriveInfo{{Device: blockdev.Device{Name: "nvme0n1"}}, {Device: blockdev.Device{Name: "sda"}}},
-		collectDisk: func(name string) diskinfo.Info {
-			return diskinfo.Info{Interface: "iface-" + name, Smart: diskinfo.Smart{Status: "PASSED"}}
+		drives:    []DriveInfo{{Device: blockdev.Device{Name: "nvme0n1"}}, {Device: blockdev.Device{Name: "sda"}}},
+		outputDir: t.TempDir(),
+		startTime: time.Unix(1793969936, 0),
+		collectDisk: func(d DriveInfo) (diskinfo.Info, string) {
+			return diskinfo.Info{Interface: "iface-" + d.Device.Name, Smart: diskinfo.Smart{Status: "PASSED"}}, "dump of " + d.Device.Name + "\n"
 		},
 	}
 	ec.collectDiskConfig()
@@ -350,6 +354,21 @@ func TestCollectDiskConfig_LandsOnStatus(t *testing.T) {
 			t.Fatalf("config never arrived: %+v", d)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+
+	// One text dump per disk lands in the output directory.
+	for _, dev := range []string{"nvme0n1", "sda"} {
+		path := filepath.Join(ec.outputDir, dev+"_diskinfo_1793969936.txt")
+		var b []byte
+		for time.Now().Before(deadline) { // the file is written right after the status update
+			if b, _ = os.ReadFile(path); len(b) > 0 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if string(b) != "dump of "+dev+"\n" {
+			t.Errorf("%s: dump file = %q", path, b)
+		}
 	}
 
 	w := httptest.NewRecorder()

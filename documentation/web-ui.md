@@ -23,6 +23,8 @@ Each drive card also shows how the disk is configured, read once when the run st
 
 Some of these need root, and SMART needs `smartctl` (smartmontools) or, for NVMe, `nvme-cli`. A line that cannot be read is left out, and SMART says why it is unknown.
 
+The same information, in full, is written to a text file per disk in the run's output directory, `<device>_diskinfo_<start time>.txt` (one per run, so a resumed run keeps what the first one saw). It holds the summary, every sysfs value read, and the complete output of each command, including the reports the summary is drawn from: `smartctl -x`, and `nvme id-ctrl`, `nvme id-ns` and `nvme smart-log` for NVMe or `hdparm -I` for SATA. A command that failed (no root, tool not installed) is listed with its error, so the file shows what could not be read.
+
 The page auto-refreshes so you can monitor a long run without manually reloading.
 
 ## Graphs and Navigation
