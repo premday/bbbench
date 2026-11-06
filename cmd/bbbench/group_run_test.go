@@ -893,3 +893,37 @@ func TestRunGroup_ReportPanicDoesNotStopRestore(t *testing.T) {
 		t.Error("recovery file removed")
 	}
 }
+
+// An interrupted run is kept but excluded: its labels say not valid, with a
+// note, in the group file and in the rewritten run summary.
+func TestRunGroup_InterruptedRunLabelsInvalid(t *testing.T) {
+	cfg, _, ex := testGroup(t, rungroup.Sequential, "sdb", "sdc")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex.hook = func(ctx2 context.Context, n int, spec runSpec) error {
+		cancel()
+		<-ctx2.Done()
+		return errRunInterrupted
+	}
+	g, err := runGroup(ctx, cfg)
+	if err == nil {
+		t.Fatal("no error after an interrupt")
+	}
+	saved := loadSavedGroup(t, cfg.OutDir, g.ID)
+	r := saved.Runs[0]
+	if r.Status != rungroup.RunInterrupted || len(r.Drives) != 2 {
+		t.Fatalf("run 1 = %+v", r)
+	}
+	for _, d := range r.Drives {
+		if d.Label.Valid || !strings.Contains(d.Label.Note, "interrupted") {
+			t.Errorf("%s label %+v, want invalid with an interrupted note", d.Device, d.Label)
+		}
+	}
+	sum, err := os.ReadFile(filepath.Join(cfg.OutDir, "run_fake1_summary.json"))
+	if err != nil {
+		t.Fatalf("run summary not rewritten: %v", err)
+	}
+	if strings.Contains(string(sum), `"valid": true`) || !strings.Contains(string(sum), "interrupted") {
+		t.Errorf("summary labels not marked interrupted: %s", sum)
+	}
+}

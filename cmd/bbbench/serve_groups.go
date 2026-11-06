@@ -195,7 +195,9 @@ func runFlushNote(res *BenchmarkResult) bool {
 
 // groupEntries is the union of generateDiskPhaseData over the member runs;
 // runs that did not run contribute nothing. Labelled entries carry the
-// run's round (1-based).
+// run's round (1-based). The entries of an interrupted run are kept but
+// invalid, whatever its stored labels say (the setting was not verified
+// after it), so comparisons leave them out.
 func groupEntries(g *rungroup.GroupFile) []DiskPhaseData {
 	out := []DiskPhaseData{}
 	for _, run := range g.Runs {
@@ -209,6 +211,9 @@ func groupEntries(g *rungroup.GroupFile) []DiskPhaseData {
 		for _, e := range generateDiskPhaseData(res) {
 			if e.SettingValue != "" {
 				e.Round = run.Round + 1
+				if run.Status == rungroup.RunInterrupted {
+					e.Invalid = true
+				}
 			}
 			out = append(out, e)
 		}
@@ -421,7 +426,7 @@ function fmtMeta(g) {
         ['Created', g.created]];
     return rows.map(function (r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
 }
-function runValid(d) { return d.label && d.label.valid; }
+function runValid(run, d) { return run.status !== 'interrupted' && d.label && d.label.valid; }
 function renderRuns(g) {
     var rows = [];
     (g.runs || []).forEach(function (run, i) {
@@ -434,7 +439,7 @@ function renderRuns(g) {
             var l = d.label || {};
             var link = (run.summary && j === 0)
                 ? '<a href="/result?id=' + encodeURIComponent(run.run_id) + '">' + esc(run.run_id) + '</a>' : (j === 0 ? esc(run.run_id) : '');
-            var valid = runValid(d) ? '<span class="ok">valid</span>' : '<span class="bad">invalid</span>';
+            var valid = runValid(run, d) ? '<span class="ok">valid</span>' : '<span class="bad">invalid</span>';
             var kernel = (run.kernel && run.kernel[d.device]) || '';
             var note = '';
             if (l.note) note += '<div class="note">' + esc(l.note) + '</div>';

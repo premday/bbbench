@@ -173,6 +173,9 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 		p := recover()
 		if current != nil && current.Status == rungroup.RunRunning {
 			current.Status = rungroup.RunInterrupted
+			for i := range current.Drives {
+				current.Drives[i].Label = interruptedLabel(current.Drives[i].Label)
+			}
 		}
 		err = errors.Join(err, finishGroup(cfg, g, rec, lastRun, len(plans)))
 		if p != nil {
@@ -264,6 +267,20 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 		}
 	}
 	step := func(st string) { setGroupStatus(g, idx+1, total, st) }
+	// interrupted marks the run interrupted: kept, but never valid (the
+	// setting was not verified after it), also in its run summary.
+	interrupted := func(res *BenchmarkResult) {
+		run.Status = rungroup.RunInterrupted
+		for name, l := range labels {
+			l = interruptedLabel(l)
+			labels[name] = l
+			setDriveSetting(name, l, true)
+		}
+		record()
+		if res != nil {
+			saveRunLabels(res, labels, cfg.OutDir)
+		}
+	}
 
 	run.Status = rungroup.RunRunning
 	record()
@@ -311,7 +328,7 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 		setDriveSetting(name, l, false)
 	}
 	if err := ctx.Err(); err != nil {
-		record()
+		interrupted(nil)
 		return fmt.Errorf("run %d of %d interrupted: %w", idx+1, total, err)
 	}
 	if st, _ := rungroup.Policy(before, nil); st == rungroup.RunNotRun {
@@ -353,8 +370,7 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 		run.RunID = res.ID
 	}
 	if cerr := ctx.Err(); cerr != nil || errors.Is(xerr, errRunInterrupted) || res == nil {
-		run.Status = rungroup.RunInterrupted
-		record()
+		interrupted(res)
 		cause := errors.Join(xerr, cerr)
 		if cause == nil {
 			cause = errors.New("no result (dry run?)")
@@ -380,8 +396,7 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 	}
 	if err := ctx.Err(); err != nil {
 		// Unverified: cannot tell valid from invalid.
-		run.Status = rungroup.RunInterrupted
-		record()
+		interrupted(res)
 		return fmt.Errorf("run %d of %d interrupted while verifying: %w", idx+1, total, err)
 	}
 	status, valid := rungroup.Policy(before, after)
@@ -406,6 +421,22 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 	}
 	fmt.Printf("Run %d of %d: %s\n", idx+1, total, status)
 	return nil
+}
+
+// interruptedNote explains why the results of an interrupted run are excluded.
+const interruptedNote = "run interrupted, setting not verified after the run"
+
+// interruptedLabel is l for an interrupted run: not valid, with the note
+// (any earlier note, such as a failed apply, is kept after it).
+func interruptedLabel(l rungroup.Label) rungroup.Label {
+	l.Valid = false
+	switch {
+	case l.Note == "":
+		l.Note = interruptedNote
+	case !strings.HasPrefix(l.Note, interruptedNote):
+		l.Note = interruptedNote + "; " + l.Note
+	}
+	return l
 }
 
 // describeRun says which value goes on which drives.

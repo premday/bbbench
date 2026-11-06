@@ -260,3 +260,37 @@ func TestNewGroupConfig_OnSaveRegistersGroup(t *testing.T) {
 		t.Error("hook did not register the group")
 	}
 }
+
+// An interrupted run is shown but never counted: its entries are invalid and
+// its value gets n=0, even when its stored labels still say valid (a crash
+// before the labels were rewritten).
+func TestGroupEntries_InterruptedRunIsInvalid(t *testing.T) {
+	globalResultsStore.Clear()
+	t.Cleanup(globalResultsStore.Clear)
+	globalResultsStore.AddResult(groupTestResult("r1", "sda", "enabled", true, 100))
+	globalResultsStore.AddResult(groupTestResult("r2", "sda", "disabled", true, 50))
+	g := &rungroup.GroupFile{ID: "g1", Values: []string{"enabled", "disabled"}, Runs: []rungroup.GroupRun{
+		{RunID: "r1", Status: rungroup.RunDone},
+		{RunID: "r2", Status: rungroup.RunInterrupted},
+	}}
+	entries := groupEntries(g)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %+v", entries)
+	}
+	for _, e := range entries {
+		if want := e.RunID == "r2"; e.Invalid != want {
+			t.Errorf("%s Invalid = %v, want %v", e.RunID, e.Invalid, want)
+		}
+	}
+	for _, row := range groupMatrix(entries) {
+		if row.Value == "disabled" && (row.N != 0 || !row.Incomplete) {
+			t.Errorf("interrupted value row = %+v, want n=0 incomplete", row)
+		}
+	}
+}
+
+func TestGroupPage_InterruptedRunNotValid(t *testing.T) {
+	if !strings.Contains(groupPageHTML, "function runValid(run, d) { return run.status !== 'interrupted' && d.label && d.label.valid; }") {
+		t.Error("the group page must treat an interrupted run as invalid")
+	}
+}
