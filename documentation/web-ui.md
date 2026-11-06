@@ -14,12 +14,14 @@ Each drive card also shows how the disk is configured, read once when the run st
 | Line | Meaning | Source |
 |---|---|---|
 | Interface | `NVMe (PCIe)`, `NVMe (tcp)`, `SATA`, `SAS`, `USB`, `virtio` | sysfs |
+| Slot | where the disk physically sits: the SES enclosure slot or SAS bay for SAS/SATA drives behind an HBA, the SMBIOS system slot (type 9) for NVMe, the kernel's PCI slot table when SMBIOS is unreadable, or the SMBIOS onboard device (type 41) with the SATA port | sysfs, SMBIOS |
+| Controller | what it hangs off: NVMe controller, SATA (AHCI), SAS HBA, RAID controller, USB, virtio, with its name, driver, PCI address and IDs, firmware and BIOS version and SAS address. Behind a RAID controller it says whether the disk looks like a **RAID virtual drive** (the physical disks are hidden: benchmark, SMART, temperature and slot are the volume's) or a passthrough disk. | sysfs, `lspci` |
 | Link | negotiated link, e.g. `8.0 GT/s PCIe x4`, `6.0 Gbps`; the maximum is shown when known, with **below max** when the link runs slower (bad slot or cable, or the link saving power) | sysfs |
 | Power | NVMe power state and APST (`nvme get-feature`), runtime PM, PCIe ASPM policy and link state, SATA link power policy | sysfs, `nvme` |
 | Write cache | the kernel's policy (`write back` or `write through`: only write back drives get Flush commands) and the drive's own cache (enabled or disabled) | sysfs, `nvme`, SG_IO |
 | SMART | health (`PASSED` / `FAILED`) with temperature, wear, power-on hours and error counts | `smartctl`, else `nvme smart-log` |
 
-Some of these need root, and SMART needs `smartctl` (smartmontools) or, for NVMe, `nvme-cli`. A line that cannot be read is left out, and SMART says why it is unknown.
+Some of these need root (the SMBIOS table is readable by root only; without it the slot falls back to the kernel's PCI slot table, which needs no root, and may be empty), and SMART needs `smartctl` (smartmontools) or, for NVMe, `nvme-cli`. A line that cannot be read is left out, and SMART says why it is unknown.
 
 The same information, in full, is written to a text file per disk in the run's output directory, `<device>_diskinfo_<start time>.txt` (one per run, so a resumed run keeps what the first one saw). It holds the summary, every sysfs value read, and the complete output of each command, including the reports the summary is drawn from: `smartctl -x`, and `nvme id-ctrl`, `nvme id-ns` and `nvme smart-log` for NVMe or `hdparm -I` for SATA. A command that failed (no root, tool not installed) is listed with its error, so the file shows what could not be read.
 

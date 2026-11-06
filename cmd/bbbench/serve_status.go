@@ -485,7 +485,23 @@ __NAVBAR_HTML__
             } else if (s.detail) {
                 smart = sp('dim', 'unknown: ' + s.detail);
             }
-            return '<div class="cfg">' + row('Interface', esc(c.interface || 'unknown')) + row('Link', link) +
+            // Where the disk sits and what it hangs off.
+            const sl = c.slot;
+            const slot = sl ? esc(sl.name) + ' <span class="dim">(' + esc([sl.source, sl.detail].filter(Boolean).join(', ')) + ')</span>' : '';
+            const ct = c.controller;
+            let ctrl = '';
+            if (ct) {
+                ctrl = esc(ct.kind) + (ct.name ? ' &middot; ' + esc(ct.name) : '');
+                const bits = [ct.driver, ct.pci, ct.ids, ct.firmware ? 'fw ' + ct.firmware : '', ct.bios ? 'BIOS ' + ct.bios : '',
+                              ct.sas_address ? 'SAS ' + ct.sas_address : ''].filter(Boolean);
+                if (bits.length) ctrl += '<br><span class="dim">' + esc(bits.join(' \u00b7 ')) + '</span>';
+                if (ct.mode === 'RAID virtual drive') {
+                    ctrl += '<br>' + sp('warn', 'RAID virtual drive: the physical disks behind it are hidden');
+                } else if (ct.mode) {
+                    ctrl += ' <span class="dim">(' + esc(ct.mode) + ')</span>';
+                }
+            }
+            return '<div class="cfg">' + row('Interface', esc(c.interface || 'unknown')) + row('Slot', slot) + row('Controller', ctrl) + row('Link', link) +
                 row('Power', power) + row('Write cache', wc) + row('SMART', smart) + '</div>';
         }
 

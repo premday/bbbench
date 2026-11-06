@@ -18,6 +18,7 @@ func (c *collector) dump(info Info) string {
 	b.WriteString("Read-only: bbbench never changes the drive's configuration.\n\n")
 	b.WriteString("== Summary ==\n")
 	b.WriteString(Format(info))
+	c.smbiosDump(&b)
 	if len(c.sysfs) > 0 {
 		b.WriteString("\n== sysfs ==\n")
 		for _, s := range c.sysfs {
@@ -40,6 +41,17 @@ func Format(info Info) string {
 		}
 	}
 	line("Interface", info.Interface)
+	if sl := info.Slot; sl != nil {
+		line("Slot", strings.TrimSpace(sl.Name+" "+bracket(strings.Join(nonEmpty(sl.Source, sl.Detail), ", "))))
+	}
+	if ct := info.Controller; ct != nil {
+		line("Controller", strings.TrimSpace(ct.Kind+" "+bracket(strings.Join(nonEmpty(ct.Name, ct.Driver, ct.PCI), ", "))))
+		line("Ctrl IDs", ct.IDs)
+		line("Ctrl firmware", ct.Firmware)
+		line("Ctrl BIOS", ct.BIOS)
+		line("SAS address", ct.SASAddress)
+		line("Ctrl mode", ct.Mode)
+	}
 	link := info.LinkSpeed
 	if info.LinkMax != "" {
 		link += " (max " + info.LinkMax + ")"
@@ -76,6 +88,40 @@ func Format(info Info) string {
 		return "(nothing could be read)\n"
 	}
 	return b.String()
+}
+
+func nonEmpty(s ...string) []string {
+	var out []string
+	for _, x := range s {
+		if x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// smbiosDump lists what the DMI table says about slots and onboard devices
+// (the whole table, so a missing match can be debugged), or why it is unknown.
+func (c *collector) smbiosDump(b *strings.Builder) {
+	b.WriteString("\n== SMBIOS slots and onboard devices ==\n")
+	t := c.smbiosTable()
+	if t == nil {
+		fmt.Fprintf(b, "(not readable: %v; the table is root-only)\n", c.smbiosErr)
+		return
+	}
+	for _, s := range t.Slots {
+		addr := "no PCI address"
+		if s.HasAddr {
+			addr = s.Addr.String()
+		}
+		fmt.Fprintf(b, "slot %q: %s, %s, ID %d, %s\n", s.Designation, s.Type, s.Usage, s.ID, addr)
+	}
+	for _, o := range t.Onboard {
+		fmt.Fprintf(b, "onboard %q: %s, %s, enabled=%t\n", o.Designation, o.Type, o.Addr, o.Enabled)
+	}
+	if len(t.Slots)+len(t.Onboard) == 0 {
+		b.WriteString("(no slot or onboard device entries)\n")
+	}
 }
 
 func bracket(s string) string {
