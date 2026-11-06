@@ -40,14 +40,18 @@ func loadFlushLog(logPrefix string) (sum *flushtrace.Summary, series []TimePoint
 		return nil, nil, false
 	}
 	// The series counts from the start of tracing (about when fio is
-	// launched, so the ramp-up is included and drawn as such). The log stamps
-	// window ends like fio; the series is stamped at the window START, like
-	// the fio points once the graph page moves them back one window.
+	// launched), but, like fio's own series, has no points for the ramp-up:
+	// windows that ended before it are left out (the log keeps them). The log
+	// stamps window ends like fio; the series is stamped at the window START,
+	// like the fio points once the graph page moves them back one window.
 	windowMs := s.AvgMsec
 	if windowMs <= 0 {
 		windowMs = defaultLogAvgMsec
 	}
 	for _, w := range windows {
+		if w.EndMs <= int64(s.OffsetMs) {
+			continue // entirely in the ramp-up
+		}
 		series = append(series, TimePoint{T: float64(w.EndMs-int64(windowMs)) / 1000, W: float64(w.MeanNs) / 1000})
 	}
 	return &s, series, true

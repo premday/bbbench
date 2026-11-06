@@ -82,8 +82,9 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
   move its points back one window so the first point sits where the ramp-up
   ends, not one polling interval later), and the **ramp-up** (fio's
   `ramp_time`, stored as `offset_ms`) is shaded on the graph. Flushes during the
-  ramp are drawn but left out of the summary, as fio leaves the ramp out of its
-  statistics.
+  ramp are left out of the summary and have no points on the graph, as fio
+  leaves the ramp out of its statistics and its logs (the log file keeps those
+  windows).
 - **Other devices:** non-NVMe devices use `block_rq_issue` / `block_rq_complete`
   for requests that are Flushes. Pairing is first-in first-out, so only the mean
   is exact and no percentiles are reported.
