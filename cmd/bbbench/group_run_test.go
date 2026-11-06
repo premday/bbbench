@@ -948,3 +948,47 @@ func TestRunGroup_SIGHUPRestores(t *testing.T) {
 	}
 	assertRestoredLast(t, fs, map[string]string{"sdb": "enabled", "sdc": "enabled"})
 }
+
+// A resume whose drives now carry other names (sda and sdb swapped after a
+// reboot) would give the recorded values to the wrong drives: refused.
+func TestRunGroup_ResumeRefusesSwappedDrives(t *testing.T) {
+	cfg, fs, ex := testGroup(t, rungroup.Parallel, "sda", "sdb")
+	cfg.Resume = &rungroup.GroupFile{
+		ID: "1700000000", Host: "host1", Setting: fs.Name(), Strategy: rungroup.Parallel,
+		Values:    []string{"enabled", "disabled"},
+		Originals: map[string]settings.Reading{"sda": {Value: "enabled"}, "sdb": {Value: "enabled"}},
+		Runs: []rungroup.GroupRun{{RunID: "run_old", Round: 0, Status: rungroup.RunInterrupted, Drives: []rungroup.GroupDrive{
+			{Device: "sda", Serial: "SN-sdb", Model: "M1", Value: "enabled"},
+			{Device: "sdb", Serial: "SN-sda", Model: "M1", Value: "disabled"},
+		}}},
+	}
+	_, err := runGroup(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "SN-") {
+		t.Fatalf("err = %v, want a refusal naming the drives", err)
+	}
+	if n := len(fs.callsOf("apply")); n != 0 || len(ex.specs) != 0 {
+		t.Errorf("%d applies, %d runs; want none", n, len(ex.specs))
+	}
+	if recoveryExists(t, cfg.RecoveryPath) {
+		t.Error("recovery file written")
+	}
+}
+
+// The same drives under the same names resume.
+func TestRunGroup_ResumeAcceptsSameDrives(t *testing.T) {
+	cfg, fs, ex := testGroup(t, rungroup.Parallel, "sda", "sdb")
+	cfg.Resume = &rungroup.GroupFile{
+		ID: "1700000000", Host: "host1", Setting: fs.Name(), Strategy: rungroup.Parallel,
+		Values: []string{"enabled", "disabled"},
+		Runs: []rungroup.GroupRun{{RunID: "run_old", Round: 0, Status: rungroup.RunInterrupted, Drives: []rungroup.GroupDrive{
+			{Device: "sda", Serial: "SN-sda", Model: "M1", Value: "enabled"},
+			{Device: "sdb", Serial: "SN-sdb", Model: "M1", Value: "disabled"},
+		}}},
+	}
+	if _, err := runGroup(context.Background(), cfg); err != nil {
+		t.Fatalf("runGroup: %v", err)
+	}
+	if len(ex.specs) != 1 {
+		t.Errorf("%d runs, want 1", len(ex.specs))
+	}
+}

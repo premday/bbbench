@@ -207,11 +207,18 @@ func newGroupFile(cfg groupConfig, plans []rungroup.RunPlan, ids []string) (*run
 		if r.Setting != cfg.Setting.Name() || r.Strategy != cfg.Strategy || !slices.Equal(r.Values, ids) || len(r.Runs) != len(plans) {
 			return nil, fmt.Errorf("run group: group %s does not match the setting, values or drives to resume", r.ID)
 		}
+		serialOf := map[string]string{}
+		for _, d := range cfg.Drives {
+			serialOf[d.Device.Name] = d.Device.Serial
+		}
 		g := *r
 		g.Runs = make([]rungroup.GroupRun, len(r.Runs))
 		for i, run := range r.Runs {
 			if run.Round != plans[i].Round {
 				return nil, fmt.Errorf("run group: run %d of group %s does not match the plan", i+1, r.ID)
+			}
+			if err := sameDrivesPerValue(run, plans[i], serialOf); err != nil {
+				return nil, fmt.Errorf("run group: cannot resume group %s: run %d %w (were the drives renamed?)", r.ID, i+1, err)
 			}
 			run.Drives = slices.Clone(run.Drives)
 			g.Runs[i] = run
@@ -234,6 +241,44 @@ func newGroupFile(cfg groupConfig, plans []rungroup.RunPlan, ids []string) (*run
 		g.Runs[i] = rungroup.GroupRun{Round: p.Round, Status: rungroup.RunPlanned}
 	}
 	return g, nil
+}
+
+// sameDrivesPerValue checks that a recorded run gave each value to the drives
+// (by serial) the plan gives it now: the plan works on device names, which
+// can change across reboots. A run that recorded no drives is not checked.
+func sameDrivesPerValue(run rungroup.GroupRun, plan rungroup.RunPlan, serialOf map[string]string) error {
+	if len(run.Drives) == 0 {
+		return nil
+	}
+	recorded := map[string][]string{}
+	for _, d := range run.Drives {
+		recorded[d.Value] = append(recorded[d.Value], d.Serial)
+	}
+	planned := map[string][]string{}
+	for _, v := range plan.Variants {
+		for _, name := range v.Drives {
+			planned[v.Value] = append(planned[v.Value], serialOf[name])
+		}
+	}
+	values := map[string]bool{}
+	for v := range recorded {
+		values[v] = true
+	}
+	for v := range planned {
+		values[v] = true
+	}
+	ids := make([]string, 0, len(values))
+	for v := range values {
+		ids = append(ids, v)
+	}
+	slices.Sort(ids)
+	for _, v := range ids {
+		was, now := slices.Sorted(slices.Values(recorded[v])), slices.Sorted(slices.Values(planned[v]))
+		if !slices.Equal(was, now) {
+			return fmt.Errorf("ran %s on S/N %s, the plan now gives it to S/N %s", v, strings.Join(was, ", "), strings.Join(now, ", "))
+		}
+	}
+	return nil
 }
 
 // runOne applies, verifies, executes and verifies run idx. It returns an
