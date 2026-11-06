@@ -128,7 +128,7 @@ func TestFlushGate(t *testing.T) {
 	if skip != "" || !strings.Contains(warn, "write through") {
 		t.Errorf("default gate: warn=%q skip=%q, want a warning only", warn, skip)
 	}
-	for _, want := range []string{"write_cache", "nvme set-feature /dev/nvme0 -f 6 -V 1", "get-feature /dev/nvme0", "vwc", "_flush.log", "never changes the drive"} {
+	for _, want := range []string{"write_cache", "nvme set-feature /dev/nvme0 -f 6 -V 1", "get-feature /dev/nvme0", "vwc", "_flush.1.log", "never changes the drive"} {
 		if !strings.Contains(warn, want) {
 			t.Errorf("warning lacks %q:\n%s", want, warn)
 		}

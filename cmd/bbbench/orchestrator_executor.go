@@ -962,7 +962,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 				result.FlushTrace = &final
 				// Keep the samples with the fio logs, so the run can be
 				// re-summarized and graphed later.
-				if err := writeFlushLog(logPrefix, sum, samples); err != nil {
+				if err := writeFlushLog(logPrefix, final, samples); err != nil {
 					logger.Warn("storing flush samples", "device", drive.Device.Name, "err", err)
 				}
 				stopTrace = func() {}

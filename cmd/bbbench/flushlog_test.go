@@ -24,12 +24,12 @@ func testFlushSamples() []flushtrace.Sample {
 func TestFlushLog_RoundTrip(t *testing.T) {
 	prefix := filepath.Join(t.TempDir(), "nvme0n1_phase1_1_log")
 	all := testFlushSamples()
-	sum := flushtrace.Summarize("nvme", true, 0, all)
+	sum := flushtrace.Finish(flushtrace.Summary{Source: "nvme", Exact: true}, all)
 	if err := writeFlushLog(prefix, sum, all); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(prefix + "_flush.log"); err != nil {
-		t.Fatalf("log must sit next to the fio logs as <prefix>_flush.log: %v", err)
+	if _, err := os.Stat(prefix + "_flush.1.log"); err != nil {
+		t.Fatalf("log must sit next to the fio logs as <prefix>_flush.1.log: %v", err)
 	}
 	got, series, ok := loadFlushLog(prefix)
 	if !ok || *got != sum {
@@ -63,7 +63,7 @@ func TestLoadBenchmarkSummary_RebuildsFlushFromStoredSamples(t *testing.T) {
 	dir := t.TempDir()
 	fioPath := filepath.Join(dir, "nvme0n1_phase1_1.json")
 	all := testFlushSamples()
-	if err := writeFlushLog(filepath.Join(dir, "nvme0n1_phase1_1_log"), flushtrace.Summarize("nvme", true, 0, all), all); err != nil {
+	if err := writeFlushLog(filepath.Join(dir, "nvme0n1_phase1_1_log"), flushtrace.Finish(flushtrace.Summary{Source: "nvme", Exact: true}, all), all); err != nil {
 		t.Fatal(err)
 	}
 	stale := &flushtrace.Summary{Source: "nvme", Count: 1, MeanNs: 42, Exact: true}
@@ -121,8 +121,7 @@ func TestFlushLog_SeriesFollowsFioPollingInterval(t *testing.T) {
 	}
 	write := func(avg int) string {
 		prefix := filepath.Join(t.TempDir(), "d_phase1_1_log")
-		sum := flushtrace.Summarize("nvme", true, 0, all)
-		sum.AvgMsec = avg
+		sum := flushtrace.Finish(flushtrace.Summary{Source: "nvme", Exact: true, AvgMsec: avg}, all)
 		if err := writeFlushLog(prefix, sum, all); err != nil {
 			t.Fatal(err)
 		}
@@ -154,8 +153,7 @@ func TestFlushLog_StartsAfterFioRamp(t *testing.T) {
 		{TimeNs: 11_500e6, LatencyNs: 300_000}, // 1.5 s after the ramp
 	}
 	prefix := filepath.Join(t.TempDir(), "d_phase1_1_log")
-	sum := flushtrace.Summarize("nvme", true, 0, all)
-	sum.OffsetMs = 10_000
+	sum := flushtrace.Finish(flushtrace.Summary{Source: "nvme", Exact: true, OffsetMs: 10_000}, all)
 	if err := writeFlushLog(prefix, sum, all); err != nil {
 		t.Fatal(err)
 	}

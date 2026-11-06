@@ -7,8 +7,8 @@ import (
 	"bbbench/internal/flushtrace"
 )
 
-// writeFlushLog stores the Flush samples of a traced phase next to fio's own
-// logs, so statistics and graphs can be rebuilt for a finished run.
+// writeFlushLog stores the Flush latency of a traced phase next to fio's own
+// logs, in fio's shape: one line per polling window plus the phase summary.
 func writeFlushLog(logPrefix string, sum flushtrace.Summary, samples []flushtrace.Sample) error {
 	f, err := os.Create(flushtrace.LogName(logPrefix))
 	if err != nil {
@@ -22,35 +22,33 @@ func writeFlushLog(logPrefix string, sum flushtrace.Summary, samples []flushtrac
 }
 
 // loadFlushLog reads the stored Flush log of the phase run identified by its
-// fio log prefix. The Summary is recomputed from the samples (not taken from
-// any saved summary), and the series is the mean latency per second in µs
-// (in the W column, like fio write latency). ok is false when there is no
-// usable log, e.g. runs from before Flush samples were stored.
+// fio log prefix: the phase summary from its header and the series, the mean
+// latency per polling window in µs (in the W column, like fio write latency).
+// ok is false when there is no usable log, e.g. runs from before the log
+// existed or in the older per-Flush format.
 func loadFlushLog(logPrefix string) (sum *flushtrace.Summary, series []TimePoint, ok bool) {
 	f, err := os.Open(flushtrace.LogName(logPrefix))
 	if err != nil {
 		return nil, nil, false
 	}
 	defer f.Close()
-	s, samples, err := flushtrace.ReadLog(f)
+	s, windows, err := flushtrace.ReadLog(f)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("unreadable flush log", "prefix", logPrefix, "err", err)
 		}
 		return nil, nil, false
 	}
-	// Same windows as fio's own series: its --log-avg-msec, stored in the log.
+	// The series counts from the start of tracing (about when fio is
+	// launched, so the ramp-up is included and drawn as such). The log stamps
+	// window ends like fio; the series is stamped at the window START, like
+	// the fio points once the graph page moves them back one window.
 	windowMs := s.AvgMsec
 	if windowMs <= 0 {
 		windowMs = defaultLogAvgMsec
 	}
-	// The series counts from the start of tracing (about when fio is
-	// launched, so the ramp-up is included and drawn as such); a point is
-	// stamped at the START of its window, like the fio points (the graph page
-	// moves fio's end-of-window stamps back by one window). The summary
-	// leaves the ramp out (ReadLog), like fio's statistics.
-	for _, b := range flushtrace.Bins(samples, int64(windowMs)*1_000_000) {
-		series = append(series, TimePoint{T: b.TSec, W: b.MeanNs / 1000})
+	for _, w := range windows {
+		series = append(series, TimePoint{T: float64(w.EndMs-int64(windowMs)) / 1000, W: float64(w.MeanNs) / 1000})
 	}
 	return &s, series, true
 }

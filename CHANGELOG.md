@@ -11,7 +11,7 @@
 - Tag-triggered release workflow publishing static linux archives (`amd64`, `arm64`, `386`) with binaries, documentation, `dist/` config and templates, and `SHA256SUMS`
 - `make check` (CI checks) and `make package` (release archives)
 - Flush tracing: phases that fsync also report the device's own Flush latency, measured from kernel trace events (NVMe tracepoints with exact pairing, generic block tracepoints for any other device); saved as `flush_trace` per phase; `--no-flush-trace` disables it
-- Flush samples are stored next to the fio logs (`<prefix>_flush.log`); the flush summary and a per-second series (`flush_series`, `ts_flush`) are rebuilt from them whenever a run is loaded, so past runs follow later changes to statistics and graphs
+- The Flush latency is stored next to the fio logs in fio's shape (`<prefix>_flush.1.log`): one line per `--log-avg-msec` window plus the whole-phase summary in the header, a few hundred lines (about 10 KB) per phase instead of one line per Flush; the summary and the series (`flush_series`, `ts_flush`) are read back from it when a run is loaded
 - Flush-latency workloads `ssd_fsync_psync_qd1`, `ssd_fsync_uring_qd1` and `ssd_fsync_uring_qd32` (4k randwrite with fsync after every write), added to the default `ssd` list
 - Run summary shows the mean fsync latency for phases that issue fsyncs
 - Workloads can override `ioengine`, `iodepth`, `direct` and `fsync` per job in `bbbench.workloadsdb`

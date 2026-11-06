@@ -68,7 +68,7 @@ func writeCacheHint(device string) string {
 	sb.WriteString("\nbbbench only reads this setting and never changes the drive's configuration: apply the fix yourself. " +
 		"Then run again: this phase counts as done, so --resume will not redo it. " +
 		"Where to look: the run output and web UI show this warning; the Flush graph and the " +
-		"<fio log>_flush.log header (write_cache=) record the cache mode the trace saw")
+		"<fio log>_flush.1.log header (write_cache=) record the cache mode the trace saw")
 	return sb.String()
 }
 

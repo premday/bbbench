@@ -68,17 +68,22 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
 - **Pairing:** each `nvme_setup_cmd` is matched to its `nvme_complete_rq` by
   controller, queue and command id, so the pairing is exact even with many
   Flushes in flight. Latency = completion time - setup time, per Flush.
-- **Storage:** every Flush is saved as a sample in `<fio log prefix>_flush.log`
-  (completion time since tracing started, latency). The summary (mean, p50,
-  p99, max) and the graph series are rebuilt from these samples when a run is
-  loaded. The series is averaged over fio's polling interval
-  (`--log-avg-msec`, stored in the log header) and lines up with the fio
-  graphs: time 0 is when the phase starts, a point is stamped at the *start* of
-  its window (fio stamps the end; the graphs move its points back one window so
-  the first point sits where the ramp-up ends, not one polling interval later),
-  and the **ramp-up** (fio's `ramp_time`, stored as `offset_ms`) is shaded
-  on the graph. Flushes during the ramp are drawn but left out of the summary,
-  as fio leaves the ramp out of its statistics.
+- **Storage:** the Flush latency is saved like fio's own logs, in
+  `<fio log prefix>_flush.1.log`: one line per polling window
+  (`--log-avg-msec`), stamped at the end of the window, in fio's columns
+  (`time_ms, mean_latency_ns, dir, bs, offset`) followed by `count, min_ns,
+  max_ns`. A 5-minute phase is a few hundred lines (about 10 KB), however many
+  Flushes it had. Header comments hold the metadata and the whole-phase summary
+  (mean, p50, p99, max over every Flush after the ramp-up), computed from the raw
+  samples when the phase ends; the individual Flushes are not kept, since exact
+  percentiles cannot be rebuilt from windows. The series uses fio's clock
+  conventions and lines up with the fio graphs: time 0 is when the phase starts,
+  a point is plotted at the *start* of its window (fio stamps the end; the graphs
+  move its points back one window so the first point sits where the ramp-up
+  ends, not one polling interval later), and the **ramp-up** (fio's
+  `ramp_time`, stored as `offset_ms`) is shaded on the graph. Flushes during the
+  ramp are drawn but left out of the summary, as fio leaves the ramp out of its
+  statistics.
 - **Other devices:** non-NVMe devices use `block_rq_issue` / `block_rq_complete`
   for requests that are Flushes. Pairing is first-in first-out, so only the mean
   is exact and no percentiles are reported.

@@ -42,7 +42,7 @@ type PhaseResult struct {
 	// Warnings are caveats about a phase that did run, per device.
 	Warnings map[string]string `json:"warnings,omitempty"`
 	// FlushSeries is the Flush latency over time (mean µs per second, W
-	// column) per device, rebuilt from the stored <prefix>_flush.log.
+	// column) per device, read back from the stored <prefix>_flush.1.log.
 	FlushSeries map[string][]TimePoint `json:"flush_series,omitempty"`
 }
 

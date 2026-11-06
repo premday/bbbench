@@ -274,19 +274,21 @@ comparing it with the fsync time shows how much of the cost is the drive.
   flight individual samples can be swapped, so percentiles and max are not
   reported.
 
-**Stored with the run.** Every measured Flush (completion time, latency) is also
-written to `<output>/<device>_phase<N>_<ts>_log_flush.log`, next to fio's own
-`_iops/_bw/_lat` logs, as text: a header (`source`, `exact`, `lost`) then one
-`time_ms, latency_ns` line per Flush. The summary and the per-second series
-(`flush_series` in the run, `ts_flush` and `flush` in the graph data of
-`bbbench serve`; averaged over fio's polling interval, `--log-avg-msec`, which
-the log header records, so the points line up with fio's IOPS/bandwidth/latency) are rebuilt from this file whenever a run is loaded, so
-changing how statistics or graphs are computed applies to tests that already
-ran, without running them again; the `flush_trace` saved in the run's JSON is
-only a fallback for runs without a log. Runs from before this have no log and
-keep their saved summary. Size: about 20 bytes per Flush, so a 5-minute QD32 phase
-at 100k Flushes/s is roughly 600 MB; fsync-after-every-write phases at queue
-depth 1 are far smaller. In the web UI the Flush latency is its own graph type
+**Stored with the run.** The Flush latency is written like fio's own logs, to
+`<output>/<device>_phase<N>_<ts>_log_flush.1.log` next to the `_iops/_bw/_lat`
+logs: one line per polling window (`--log-avg-msec`, 1 s by default), stamped at
+the end of the window, in fio's columns (`time_ms, mean_latency_ns, dir, bs,
+offset`, with direction 3 and zeros) followed by `count, min_ns, max_ns`, so a
+5-minute phase is a few hundred lines (about 10 KB) however many Flushes it had.
+Comment lines at the top hold the run's metadata (`source`, `exact`, `lost`,
+`write_cache`, `avg_msec`, `offset_ms`) and the whole-phase summary (count,
+mean, min, max, p50, p99, computed from every Flush after the ramp-up when the
+phase ended; exact percentiles cannot be rebuilt from windows, so the individual
+Flushes are not kept). The summary and the series (`flush_series` in the run,
+`ts_flush` and `flush` in the graph data of `bbbench serve`) are read back from
+this file whenever a run is loaded; the `flush_trace` saved in the run's JSON is
+only a fallback for runs without a log. Logs from earlier development builds
+(`_log_flush.log`, one line per Flush) are not read. In the web UI the Flush latency is its own graph type
 (`/graphs`, and a metric on `/compare`), separate from IOPS, bandwidth and
 latency, and every graph type carries a small `fio` or `ftrace` tag saying where
 the numbers come from.
