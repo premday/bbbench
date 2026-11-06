@@ -145,6 +145,8 @@ func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts run
 		Host:         host,
 		Settle:       groupSettle,
 		Resume:       resume,
+		// A running group shows up on the web pages live.
+		OnSave: globalGroupStore.AddGroup,
 		Execute: func(ctx context.Context, spec runSpec) (*BenchmarkResult, error) {
 			// The group loop already removed the stale per-run state file; a
 			// run of a group never resumes mid-run.

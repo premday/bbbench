@@ -36,6 +36,12 @@ The **Results** page lists every run found in the output directory (time, ID, mo
 - **Details** shows the run's overview, its drives, and its phases with duration and job count. A phase that did not run on a drive (`--skip-write-through`) shows the reason, and a phase that ran with a caveat, such as a write-through drive that never receives a Flush, shows the warning with how to check and fix it. An **Export HTML** button downloads a standalone report.
 - **Summary** is a table of statistics (min, average, max and standard deviation) per phase, broken down by disk.
 
+## Run Groups
+
+A setting test (run group, see the orchestrator) is served at `/group?id=<group id>`. The page shows the setting, its values, the strategy, host and plan, then a table of runs by drive: the value, the reading before and after the run (with the kernel's own value, for the write cache the `write_cache` of the block device), whether the result is valid, and a link to the run. When a phase of a run carried a write-through warning, the row says so, which explains missing Flush data. Below come the result of restoring the original values and a matrix of the main metrics (IOPS and MB/s: mean, min-max and n) per phase and value, taken over valid results only; a value with no valid result is shown as incomplete. A group that is still running refreshes by itself and appears while it runs.
+
+The same data is available as JSON: `/api/groups` (list), `/api/groups/detail?id=` (group file, per run summary, kernel readings, `flush_note` and the matrix) and `/api/groups/graphs?id=` (the graph data of the member runs together; each entry carries `setting_value` and `run_id`, and `invalid` for results that did not verify; runs that were not run contribute nothing).
+
 ## Graphs and Navigation
 
 The **Results** page lets you explore time-series charts from a completed (or in-progress) run.

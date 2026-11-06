@@ -34,6 +34,10 @@ func runServe(args []string) error {
 		fmt.Printf("Warning: failed to load existing results: %v\n", err)
 	}
 
+	if err := loadGroups(expandUser(*outputDir)); err != nil {
+		logger.Warn("failed to load run groups", "err", err)
+	}
+
 	srv := newWebServer(*addr)
 
 	// Start server in goroutine
@@ -86,6 +90,9 @@ func newWebServer(addr string) *http.Server {
 	mux.HandleFunc("/api/results/detail", handleResultDetail)
 	mux.HandleFunc("/api/results/graphs", handleResultGraphs)
 	mux.HandleFunc("/api/results/summary", handleResultSummaryAPI)
+	mux.HandleFunc("/api/groups", handleGroupsList)
+	mux.HandleFunc("/api/groups/detail", handleGroupDetail)
+	mux.HandleFunc("/api/groups/graphs", handleGroupGraphs)
 
 	// HTML pages
 	mux.HandleFunc("/status", handleStatusPage)
@@ -94,6 +101,7 @@ func newWebServer(addr string) *http.Server {
 	mux.HandleFunc("/graphs", handleGraphsPage)
 	mux.HandleFunc("/compare", handleComparePage)
 	mux.HandleFunc("/summary", handleSummaryPage)
+	mux.HandleFunc("/group", handleGroupPage)
 	mux.HandleFunc("/export", handleExportHTML)
 	mux.HandleFunc("/", handleIndex)
 

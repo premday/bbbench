@@ -456,7 +456,7 @@ func TestNewGroupConfig_Defaults(t *testing.T) {
 	opts := runOptions{Mode: "sequential", OutDir: t.TempDir(), Resume: &ExecutionState{}}
 	c := &groupChoice{Setting: newFakeSetting(nil), Values: fakeValues, Strategy: rungroup.Sequential}
 	cfg := newGroupConfig(c, nil, opts, "h", nil)
-	if cfg.Execute == nil || cfg.OnSave != nil || cfg.RecoveryPath != groupRecoveryPath || cfg.Settle != groupSettle {
+	if cfg.Execute == nil || cfg.RecoveryPath != groupRecoveryPath || cfg.Settle != groupSettle {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 }
