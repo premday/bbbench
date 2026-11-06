@@ -122,6 +122,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--dry-run` — show what would run without executing fio
 - `--verbose` — show fio commands and debug output
 - `--skip-write-through` — do not run fsync (Flush-latency) phases on write-through devices (by default they run, with a warning)
+- `--log-avg-msec` — fio's polling interval in ms (default 1000): one point per interval on every graph, and the first point of a series appears one interval after the ramp-up ends. It overrides the `log_avg_msec` of the generated job files
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--config` — path to config file
 - `--dist` — override dist path

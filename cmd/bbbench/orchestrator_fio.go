@@ -149,14 +149,21 @@ func groupJobsIntoPhases(jobs []FioJob) [][]FioJob {
 	return phases
 }
 
+// logAvgOptRe matches a log_avg_msec setting in a job file.
+var logAvgOptRe = regexp.MustCompile(`(?mi)^[ \t]*log_avg_msec[ \t]*=.*\n?`)
+
 // buildPhaseFioFile generates a temporary fio file for a specific phase.
 // It removes wait_for directives that reference jobs from other phases,
-// since phases run sequentially in separate fio invocations.
+// since phases run sequentially in separate fio invocations. The template's
+// own log_avg_msec (30 s, for hand-run fio) is dropped: the orchestrator sets
+// the polling interval with --log-avg-msec on the command line, and a value in
+// the file must not silently replace it (the first point of every series, and
+// the blank before it, is one polling interval long).
 func buildPhaseFioFile(workload *FioWorkload, phase []FioJob) string {
 	var sb strings.Builder
 
 	// Add global section
-	sb.WriteString(workload.GlobalSection)
+	sb.WriteString(logAvgOptRe.ReplaceAllString(workload.GlobalSection, ""))
 	sb.WriteString("\n")
 
 	// Build map of job names in this phase

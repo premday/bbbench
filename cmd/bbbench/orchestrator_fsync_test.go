@@ -189,3 +189,19 @@ func TestSkippedPhase_ResultAndGraphData(t *testing.T) {
 		t.Errorf("skippedInPhase = %v", got)
 	}
 }
+
+// The orchestrator's --log-avg-msec is the only polling interval: the
+// template's own log_avg_msec must not reach the phase file, where it would
+// override the command line.
+func TestBuildPhaseFioFile_DropsTemplateLogAvgMsec(t *testing.T) {
+	w := &FioWorkload{GlobalSection: "[global]\nioengine=libaio\nlog_avg_msec=30000\nramp_time=10\n"}
+	out := buildPhaseFioFile(w, []FioJob{{Name: "j", Section: "[j]\nrw=randwrite\n"}})
+	if strings.Contains(out, "log_avg_msec") {
+		t.Errorf("log_avg_msec kept:\n%s", out)
+	}
+	for _, keep := range []string{"ioengine=libaio", "ramp_time=10", "[j]", "rw=randwrite"} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("lost %q:\n%s", keep, out)
+		}
+	}
+}

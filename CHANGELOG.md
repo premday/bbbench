@@ -28,6 +28,7 @@
 
 ### Changed
 
+- The orchestrator drops the template's `log_avg_msec=30000` from the fio files it runs, so `--log-avg-msec` (default 1 s) is the only polling interval. The file's value could override the flag, giving 30 s points and a 30 s blank after the ramp-up on the graphs; hand-run fio on a generated file keeps the 30 s
 - Flush-latency workloads run 5 minutes instead of 30 s, for enough points in the per-second Flush series
 - CI workflows use Node 24 action versions (`checkout@v7`, `setup-go@v7`, `upload-artifact@v7`) and run on `ubuntu-26.04` instead of `ubuntu-latest`
 - `make` builds with `CGO_ENABLED=0` instead of musl-gcc: the code is pure Go, so binaries stay static without a C toolchain
