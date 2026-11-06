@@ -59,8 +59,8 @@ The left sidebar provides filters that update the displayed graphs in real time:
 | **Vendor / Model / Serial** | Select specific hardware identities. |
 | **Disk** | Choose which drives to include. |
 | **Phase** | Select one or more benchmark phases (e.g. `seqread`, `randread-randread`). |
-| **Setting value** | Run groups only (`/graphs?group=<group id>`): the values of the setting (e.g. write cache `enabled`/`disabled`), to show or contrast the variants. |
-| **Hide invalid results** | Run groups only, on by default: results whose drive did not hold its value are left out. Unchecked, they are shown and their cards say `(invalid)`. |
+| **Setting value** | Run groups only (`/graphs?group=<group id>`, and a member run of a group by its own `/graphs?id=`): the values of the setting (e.g. write cache `enabled`/`disabled`), to show or contrast the variants. |
+| **Hide invalid results** | Run groups only (the group, or one of its member runs by id), on by default: results whose drive did not hold its value are left out. Unchecked, they are shown and their cards say `(invalid)`. |
 
 `/graphs?group=<group id>` shows the member runs of a group together (`/api/groups/graphs`); `/graphs?id=<run id>` shows one run; a member run of a group viewed by its own id still carries its label, so it gets the **Setting value** filter and hides invalid results by default, while a plain run shows neither. In a group, a card is titled `disk · value`, and `disk · value · round N` when a value was measured in several runs (parallel-swap), since the same disk appears in each run.
 
@@ -76,4 +76,4 @@ The **Compare** view overlays multiple disks on a single chart, making it easy t
 
 Select two or more drives in the sidebar, choose a phase, then click **Compare**. Each drive is drawn in a distinct color with a legend. Metric, phase, and time axis are shared so curves are directly comparable. Flush latency is a metric there too; it has no read and write sides, so the direction checkboxes do not apply to it.
 
-For a run group (`/compare?group=<group id>`, linked from the group page and the results list) the sidebar adds a **Setting value** list and the **Hide invalid results** toggle (on by default; invalid series are labelled `(invalid)` when shown). Each (drive, run) is its own series, named `disk · value`, or `disk · value · round N` when a value was measured in several runs (with the phase after the disk when several phases are selected).
+For a run group (`/compare?group=<group id>`, linked from the group page and the results list), and for a member run of a group by its own `/compare?id=`, the sidebar adds a **Setting value** list and the **Hide invalid results** toggle (on by default; invalid series are labelled `(invalid)` when shown). Each (drive, run) is its own series, named `disk · value`, or `disk · value · round N` when a value was measured in several runs (with the phase after the disk when several phases are selected).
