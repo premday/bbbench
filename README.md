@@ -154,7 +154,7 @@ sudo ./bbbench orchestrator --filter-vendor samsung --filter-min-capacity 1000
 | `<device>_phase<N>_<ts>_log_{iops,bw,lat,clat,slat}.1.log` | fio's time-series logs, one point per `--log-avg-msec` |
 | `<device>_phase<N>_<ts>_log_flush.1.log` | the device Flush latency, for phases that fsync (see [Flush tracing](#flush-tracing)) |
 | `<device>_diskinfo_<start>.txt` | the drive's configuration (interface, link, power, write cache, SMART) and the raw reports it is drawn from, one per run |
-| `run_<id>_summary.json` | the run's summary, which `bbbench serve` lists and graphs |
+| `run_<unix time>_summary.json` | the run's summary, which `bbbench serve` lists and graphs |
 | `.bbbench-orchestrator-state.json` | what is done, for `--resume`; removed when the run completes |
 
 Results are written to `~/.bbbench/output/` by default (one JSON file per run).
