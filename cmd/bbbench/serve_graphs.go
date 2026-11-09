@@ -749,7 +749,7 @@ __NAVBAR_HTML__
                 type: 'line', plugins: [rampPlugin],
                 data: { datasets: [{ label: 'Flush (ftrace)', data: pts,
                     borderColor: color, backgroundColor: 'rgba(124,58,237,0.07)',
-                    fill: 'origin', tension: 0.2, pointRadius: 0.8, pointHoverRadius: 3, borderWidth: 1.5 }] },
+                    fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5 }] },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
@@ -808,12 +808,12 @@ __NAVBAR_HTML__
             if (readPts.length > 0) datasets.push({
                 label: 'Read',  data: readPts,
                 borderColor: 'rgba(37,99,235,0.9)',  backgroundColor: 'rgba(37,99,235,0.07)',
-                fill: 'origin', tension: 0.2, pointRadius: 0.8, pointHoverRadius: 3, borderWidth: 1.5,
+                fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
             });
             if (writePts.length > 0) datasets.push({
                 label: 'Write', data: writePts,
                 borderColor: 'rgba(220,38,38,0.9)', backgroundColor: 'rgba(220,38,38,0.07)',
-                fill: 'origin', tension: 0.2, pointRadius: 0.8, pointHoverRadius: 3, borderWidth: 1.5,
+                fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
             });
             return new Chart(canvas, {
                 type: 'line', data: { datasets }, plugins: [rampPlugin],

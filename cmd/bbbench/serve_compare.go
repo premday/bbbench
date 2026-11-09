@@ -457,7 +457,7 @@ __NAVBAR_HTML__
                             backgroundColor: fill,
                             fill:            false,
                             tension:         0.2,
-                            pointRadius:     0.8, pointHoverRadius: 3,
+                            pointRadius:     0, pointHoverRadius: 3,
                             borderWidth:     2,
                         });
                     }
@@ -471,7 +471,7 @@ __NAVBAR_HTML__
                             borderDash:      [5, 3],
                             fill:            false,
                             tension:         0.2,
-                            pointRadius:     0.8, pointHoverRadius: 3,
+                            pointRadius:     0, pointHoverRadius: 3,
                             borderWidth:     2,
                         });
                     }
