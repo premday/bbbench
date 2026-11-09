@@ -271,13 +271,13 @@ case 'graphs': {
   assert(run('filteredData().every(d => !d.invalid)'));
   run('renderAll()');
   let t = titles();
-  assert(t.includes('sda · on · round 1 ftrace') || t.some(x => x.startsWith('sda · on · round 1')), 'titles: ' + t);
+  assert(t.some(x => x.startsWith('sda · write_cache: on · round 1')), 'titles: ' + t);
   assert(!t.some(x => x.includes('(invalid)')), 'invalid shown by default: ' + t);
   run('setShowInvalid(true)');
   assert.strictEqual(run('filteredData().length'), 4, 'toggle does not show the invalid entry');
   ELS.length = 0; run('renderAll()'); t = titles();
-  assert(t.some(x => x.startsWith('sdb · on · round 2 (invalid)')), 'invalid not flagged: ' + t);
-  assert(t.some(x => x.startsWith('sda · <b>off</b> · round 2')), 'markup value not kept as text: ' + t);
+  assert(t.some(x => x.startsWith('sdb · write_cache: on · round 2 (invalid)')), 'invalid not flagged: ' + t);
+  assert(t.some(x => x.startsWith('sda · write_cache: <b>off</b> · round 2')), 'markup value not kept as text: ' + t);
   run('SEL.setting.delete("on"); setShowInvalid(false)');
   assert(run('filteredData().every(d => d.setting_value === "<b>off</b>")'), 'setting filter not applied');
   noRawMarkup();
@@ -305,11 +305,11 @@ case 'compare': {
   run('setShowInvalid(true)');
   assert.strictEqual(run('getEntries().length'), 4, 'toggle does not show invalid');
   const e = run('allData.find(d => d.run_id === "r10" && d.disk === "sda")');
-  assert.strictEqual(run('seriesLabel(allData.find(d => d.run_id === "r10" && d.disk === "sda"), 2, 1, RPV)'), 'sda · on · round 1');
-  assert.strictEqual(run('seriesLabel(allData.find(d => d.run_id === "r11" && d.disk === "sdb"), 2, 1, RPV)'), 'sdb · on · round 2 (invalid)');
-  assert.strictEqual(run('seriesLabel(allData.find(d => d.run_id === "r10" && d.disk === "sda"), 2, 2, RPV)'), 'sda · randwrite · on · round 1');
+  assert.strictEqual(run('seriesLabel(allData.find(d => d.run_id === "r10" && d.disk === "sda"), 2, 1, RPV)'), 'sda · write_cache: on · round 1');
+  assert.strictEqual(run('seriesLabel(allData.find(d => d.run_id === "r11" && d.disk === "sdb"), 2, 1, RPV)'), 'sdb · write_cache: on · round 2 (invalid)');
+  assert.strictEqual(run('seriesLabel(allData.find(d => d.run_id === "r10" && d.disk === "sda"), 2, 2, RPV)'), 'sda · randwrite · write_cache: on · round 1');
   // one run per value: no round
-  assert.strictEqual(run('seriesLabel(allData[0], 2, 1, {on: 1, "<b>off</b>": 1})'), 'sda · on');
+  assert.strictEqual(run('seriesLabel(allData[0], 2, 1, {on: 1, "<b>off</b>": 1})'), 'sda · write_cache: on');
   byId['dir-read'] = el('input'); byId['dir-read'].checked = true;
   byId['dir-write'] = el('input'); byId['dir-write'].checked = true;
   run('renderCompare()');

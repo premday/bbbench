@@ -93,13 +93,13 @@ const chartSharedJS = `function rampOf(d) {
         Object.keys(runs).forEach(v => { n[v] = runs[v].size; });
         return n;
     }
-    // settingTag names an entry's value, its round when the value was
-    // measured in several runs, and flags an invalid result: ' · value ·
+    // settingTag names an entry's setting and value, its round when the value was
+    // measured in several runs, and flags an invalid result: ' · setting: value ·
     // round N (invalid)'. '' for an unlabelled entry. Plain text: escape it
     // before putting it into HTML.
     function settingTag(d, rpv) {
         if (!d.setting_value) return '';
-        let s = ' · ' + d.setting_value;
+        let s = ' · ' + (d.setting ? d.setting + ': ' : '') + d.setting_value;
         if (d.round && rpv && rpv[d.setting_value] > 1) s += ' · round ' + d.round;
         if (d.invalid) s += ' (invalid)';
         return s;
