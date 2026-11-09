@@ -493,3 +493,24 @@ func TestParseFioSingleLog_MixedDirectionsComplete(t *testing.T) {
 		}
 	}
 }
+
+// TestParseFioSingleLog_EdgeSlotsNotIncomplete: one job's final stamp rounds
+// into an extra last slot that only it fills; that edge slot is not flagged.
+func TestParseFioSingleLog_EdgeSlotsNotIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "edge")
+	logs := map[string]string{
+		"1": "1000, 10, 0, 4096, 0\n2000, 11, 0, 4096, 0\n3000, 12, 0, 4096, 0\n4000, 13, 0, 4096, 0\n",
+		"2": "1000, 10, 0, 4096, 0\n2000, 11, 0, 4096, 0\n3000, 12, 0, 4096, 0\n",
+	}
+	for n, body := range logs {
+		if err := os.WriteFile(prefix+"_iops."+n+".log", []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range parseFioSingleLog(prefix, "iops", 1.0, false, 1000) {
+		if p.Incomplete {
+			t.Errorf("edge point t=%v flagged incomplete", p.T)
+		}
+	}
+}

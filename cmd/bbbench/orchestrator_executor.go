@@ -500,8 +500,13 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 		}
 		// Mark incomplete if a direction has fewer contributors than the
 		// files that log that direction.
-		incomplete := (c.rFiles > 0 && c.rFiles < rExpected) ||
-			(c.wFiles > 0 && c.wFiles < wExpected)
+		//
+		// The first and last slots are exempt: jobs start and stop a few
+		// hundred ms apart, so a job's final stamp can round into one more
+		// slot than the others', and that is not a missing contribution.
+		edge := i == 0 || i == len(buckets)-1
+		incomplete := !edge && ((c.rFiles > 0 && c.rFiles < rExpected) ||
+			(c.wFiles > 0 && c.wFiles < wExpected))
 		points[i] = TimePoint{T: float64(b) / 1000.0, R: r, W: w, Incomplete: incomplete}
 	}
 	return points
