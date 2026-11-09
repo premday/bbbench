@@ -466,3 +466,30 @@ func TestWatchSignals_StopsWhenRunEnds(t *testing.T) {
 		mu.Unlock()
 	}
 }
+
+// TestParseFioSingleLog_MixedDirectionsComplete: in a mixed workload each job
+// logs one direction only (here 2 readers, 1 writer). Every point has all the
+// files that log its direction, so none is incomplete.
+func TestParseFioSingleLog_MixedDirectionsComplete(t *testing.T) {
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "mixed")
+	logs := map[string]string{
+		"1": "1000, 10, 0, 4096, 0\n2000, 11, 0, 4096, 0\n",
+		"2": "1000, 12, 0, 4096, 0\n2000, 13, 0, 4096, 0\n",
+		"3": "1000, 20, 1, 4096, 0\n2000, 21, 1, 4096, 0\n",
+	}
+	for n, body := range logs {
+		if err := os.WriteFile(prefix+"_iops."+n+".log", []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
+	if len(pts) != 2 {
+		t.Fatalf("points = %d, want 2", len(pts))
+	}
+	for _, p := range pts {
+		if p.Incomplete {
+			t.Errorf("point t=%v flagged incomplete in a mixed workload", p.T)
+		}
+	}
+}

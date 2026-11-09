@@ -367,6 +367,10 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 		rFiles, wFiles int     // number of files that contributed (for avgAcrossFiles)
 	}
 	global := make(map[int64]*combined)
+	// rExpected/wExpected count the files that log each direction at all. A
+	// job that only reads (or only writes) never contributes to the other
+	// direction, so it must not count as missing there.
+	var rExpected, wExpected int
 
 	type acc struct {
 		rSum, wSum float64
@@ -410,6 +414,18 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 				a.wSum += v
 				a.wN++
 			}
+		}
+
+		fileHasR, fileHasW := false, false
+		for _, a := range perTime {
+			fileHasR = fileHasR || a.rN > 0
+			fileHasW = fileHasW || a.wN > 0
+		}
+		if fileHasR {
+			rExpected++
+		}
+		if fileHasW {
+			wExpected++
 		}
 
 		// Second pass: coalesce this file's timestamps into per-bucket accumulators,
@@ -469,7 +485,6 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 	}
 	sort.Slice(buckets, func(i, j int) bool { return buckets[i] < buckets[j] })
 
-	nFiles := int64(len(files))
 	points := make([]TimePoint, len(buckets))
 	for i, b := range buckets {
 		c := global[b]
@@ -483,9 +498,10 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 				w /= float64(c.wFiles)
 			}
 		}
-		// Mark incomplete if any active direction has fewer contributors than expected.
-		incomplete := (c.rFiles > 0 && int64(c.rFiles) < nFiles) ||
-			(c.wFiles > 0 && int64(c.wFiles) < nFiles)
+		// Mark incomplete if a direction has fewer contributors than the
+		// files that log that direction.
+		incomplete := (c.rFiles > 0 && c.rFiles < rExpected) ||
+			(c.wFiles > 0 && c.wFiles < wExpected)
 		points[i] = TimePoint{T: float64(b) / 1000.0, R: r, W: w, Incomplete: incomplete}
 	}
 	return points
