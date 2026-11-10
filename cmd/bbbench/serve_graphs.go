@@ -1068,37 +1068,48 @@ __NAVBAR_HTML__
     // tooltip, and the card header gets badges and the "array busy" note. A
     // phase without md data takes none of this. Everything up to "md track
     // (end)" belongs to it.
-    const MD_BAND = 'rgba(245,158,11,0.16)', MD_INK = '#b45309', MD_EVENT = '#be123c';
-    // mdPlugin draws the sync bands under the datasets and the event markers
-    // over them (options: {bands, markers}, from mdOptions).
+    const MD_BAND = 'rgba(245,158,11,0.16)', MD_STRIP = 'rgba(217,119,6,0.9)', MD_INK = '#b45309', MD_EVENT = '#be123c';
+    // mdPlugin draws a light full-height tint of each sync band under the
+    // datasets; over them, so stacked fills cannot hide it, an opaque strip in
+    // the top 6 px of the chart area with the action on a white box, then the
+    // event markers (options: {bands, markers}, from mdOptions).
     const mdPlugin = {
         id: 'mdTrack',
         beforeDatasetsDraw(chart, args, opts) {
             if (!opts || !opts.bands || !opts.bands.length) return;
             const x = chart.scales.x, a = chart.chartArea, c = chart.ctx;
             c.save();
-            c.font = '9px sans-serif';
-            c.textBaseline = 'top';
+            c.fillStyle = MD_BAND;
             opts.bands.forEach(b => {
                 const x0 = Math.max(a.left, x.getPixelForValue(b.x0));
                 const x1 = Math.min(a.right, x.getPixelForValue(b.x1));
-                if (x1 <= x0) return;
-                c.fillStyle = MD_BAND;
-                c.fillRect(x0, a.top, x1 - x0, a.bottom - a.top);
-                if (c.measureText(b.action).width + 6 <= x1 - x0) {
-                    c.fillStyle = MD_INK;
-                    c.fillText(b.action, x0 + 3, a.top + 14);
-                }
+                if (x1 > x0) c.fillRect(x0, a.top, x1 - x0, a.bottom - a.top);
             });
             c.restore();
         },
         afterDatasetsDraw(chart, args, opts) {
-            if (!opts || !opts.markers || !opts.markers.length) return;
+            if (!opts) return;
             const x = chart.scales.x, a = chart.chartArea, c = chart.ctx;
             c.save();
             c.font = '9px sans-serif';
             c.textBaseline = 'top';
-            const vis = opts.markers.map(m => ({m, x: x.getPixelForValue(m.t)}))
+            const bands = opts.bands || [];
+            bands.forEach((b, i) => {
+                const x0 = Math.max(a.left, x.getPixelForValue(b.x0));
+                const x1 = Math.min(a.right, x.getPixelForValue(b.x1));
+                if (x1 <= x0) return;
+                c.fillStyle = MD_STRIP;
+                c.fillRect(x0, a.top, x1 - x0, 6);
+                // The label may run past a narrow band, up to the next one.
+                const next = bands[i + 1] ? Math.min(a.right, x.getPixelForValue(bands[i + 1].x0)) : a.right;
+                const s = mdFit(c, b.action, next - x0 - 6);
+                if (!s) return;
+                c.fillStyle = 'rgba(255,255,255,0.85)';
+                c.fillRect(x0 + 1, a.top + 7, c.measureText(s).width + 4, 11);
+                c.fillStyle = MD_INK;
+                c.fillText(s, x0 + 3, a.top + 8);
+            });
+            const vis = (opts.markers || []).map(m => ({m, x: x.getPixelForValue(m.t)}))
                 .filter(v => v.x >= a.left && v.x <= a.right);
             const lay = mdLabelLayout(vis.map(v => ({x: v.x, w: c.measureText(v.m.text).width})), a.right);
             vis.forEach((v, i) => {
@@ -1112,7 +1123,7 @@ __NAVBAR_HTML__
                 c.setLineDash([]);
                 const s = mdFit(c, v.m.text, lay[i].maxW - 2);
                 if (!s) return;
-                const y = a.top + 25 + lay[i].row * 11;
+                const y = a.top + 21 + lay[i].row * 11;
                 c.fillStyle = 'rgba(255,255,255,0.8)';
                 c.fillRect(v.x + 1, y - 1, c.measureText(s).width + 3, 11);
                 c.fillStyle = MD_EVENT;
@@ -1152,21 +1163,32 @@ __NAVBAR_HTML__
         });
         return out;
     }
-    // mdBadges: per action, its progress at its first and last window; then
-    // the highest degraded count ('degraded' for 1).
+    // mdBadges: per activity of an action, its progress at its first and
+    // last window with a known progress (pct 0 = total unknown, skipped; no
+    // known progress: the action alone); a drop in progress is a restart and
+    // starts a new badge. Then the highest degraded count ('degraded' for 1).
     function mdBadges(d) {
-        const order = [], first = {}, last = {};
+        const segs = [], cur = {};
         let deg = 0;
         (d.ts_md || []).forEach(p => {
             if (mdBusy(p)) {
-                if (!(p.action in first)) { order.push(p.action); first[p.action] = p.pct || 0; }
-                last[p.action] = p.pct || 0;
+                const pct = p.pct || 0;
+                let g = cur[p.action];
+                if (!g || (pct > 0 && g.last !== null && pct < g.last)) {
+                    g = cur[p.action] = {action: p.action, first: null, last: null};
+                    segs.push(g);
+                }
+                if (pct > 0) {
+                    if (g.first === null) g.first = pct;
+                    g.last = pct;
+                }
             }
             deg = Math.max(deg, p.degraded || 0);
         });
-        const out = order.map(a => {
-            const f = Math.round(first[a]), l = Math.round(last[a]);
-            return {text: a + ' ' + f + '%' + (f === l ? '' : ' -> ' + l + '%'), kind: 'sync'};
+        const out = segs.map(g => {
+            if (g.first === null) return {text: g.action, kind: 'sync'};
+            const f = Math.round(g.first), l = Math.round(g.last);
+            return {text: g.action + ' ' + f + '%' + (f === l ? '' : ' -> ' + l + '%'), kind: 'sync'};
         });
         if (deg > 0) out.push({text: deg === 1 ? 'degraded' : 'degraded ' + deg, kind: 'degraded'});
         return out;

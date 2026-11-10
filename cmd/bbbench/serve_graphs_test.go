@@ -535,7 +535,12 @@ func TestGraphsPageMDBadge(t *testing.T) {
 const d = {log_avg_msec: 1000, ts_md: [
     md(0, 'idle', 0, 0, 0), md(1, 'resync', 43.4, 10240, 0), md(2, 'resync', 50, 10240, 0),
     md(3, 'idle', 0, 0, 0), md(4, 'resync', 61.2, 20480, 0), md(5, 'check', 0, 0, 0)]};
-assert.deepStrictEqual(mdBadges(d), [{text: 'resync 43% -> 61%', kind: 'sync'}, {text: 'check 0%', kind: 'sync'}]);
+assert.deepStrictEqual(mdBadges(d), [{text: 'resync 43% -> 61%', kind: 'sync'}, {text: 'check', kind: 'sync'}]);
+// pct 0 (total unknown) is not the first value; a drop is a restart: new badge.
+const r = {ts_md: [md(0, 'check', 0, 0, 0), md(1, 'check', 20, 1, 0), md(2, 'check', 30, 1, 0),
+    md(3, 'idle', 0, 0, 0), md(4, 'check', 2, 1, 0), md(5, 'check', 0, 1, 0), md(6, 'check', 9, 1, 0)]};
+assert.deepStrictEqual(mdBadges(r).map(b => b.text), ['check 20% -> 30%', 'check 2% -> 9%']);
+assert.deepStrictEqual(mdBadges({ts_md: [md(0, 'resync', 50, 1, 0)]}).map(b => b.text), ['resync 50%']);
 assert.strictEqual(mdBusyNote(d), true);
 // Degraded only: no sync badge.
 const g = {ts_md: [md(0, 'idle', 0, 0, 0), md(1, 'idle', 0, 0, 1)], md_events: [{t: 1, text: 'degraded 0 -> 1'}]};
@@ -601,4 +606,62 @@ console.log('OK');
 	if !strings.Contains(hdr, "if (!mdMetric(d, metric)) return null;") {
 		t.Errorf("mdHeader does not bail out without md data:\n%s", hdr)
 	}
+}
+
+// TestGraphsPageMDPluginDraw runs the page's own mdPlugin against a fake
+// canvas: the light full-height tint is drawn before the datasets, the opaque
+// strip at the top of the chart area and the action label (on a white box)
+// after them, so stacked fills cannot hide the activity.
+func TestGraphsPageMDPluginDraw(t *testing.T) {
+	body := graphsPageBody(t)
+	start := strings.Index(body, "const MD_BAND")
+	end := strings.Index(body[start:], "\n    };\n")
+	if start < 0 || end < 0 {
+		t.Fatal("page has no mdPlugin")
+	}
+	plugin := body[start:start+end] + "\n    };\n"
+	runPageJS(t, []string{"mdLabelLayout", "mdFit"}, plugin+`
+const assert = require('assert');
+function fakeChart() {
+    const calls = [];
+    const ctx = {fillStyle: '', strokeStyle: '', font: '', textBaseline: '', lineWidth: 1,
+        save() {}, restore() {}, setLineDash() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() { calls.push({op: 'stroke'}); },
+        measureText(s) { return {width: s.length * 5}; },
+        fillRect(x, y, w, h) { calls.push({op: 'rect', x, y, w, h, style: this.fillStyle}); },
+        fillText(s, x, y) { calls.push({op: 'text', s, x, y, style: this.fillStyle}); }};
+    return {calls, chart: {ctx, chartArea: {left: 0, right: 300, top: 20, bottom: 120},
+        scales: {x: {getPixelForValue: v => v * 10}}}};
+}
+const alpha = s => { const m = /rgba\(.*,\s*([\d.]+)\)/.exec(s); return m ? +m[1] : 1; };
+const opts = {bands: [{action: 'resync', x0: 6, x1: 13}], markers: [{t: 6, text: 'sync_action idle -> resync'}]};
+const before = fakeChart();
+mdPlugin.beforeDatasetsDraw(before.chart, {}, opts);
+const tint = before.calls.filter(c => c.op === 'rect');
+assert.strictEqual(tint.length, 1);
+assert.deepStrictEqual([tint[0].x, tint[0].y, tint[0].w, tint[0].h], [60, 20, 70, 100]);
+assert.ok(alpha(tint[0].style) < 0.3, 'tint is light: ' + tint[0].style);
+assert.ok(!before.calls.some(c => c.op === 'text' && c.s === 'resync'), 'label drawn under the data');
+const after = fakeChart();
+mdPlugin.afterDatasetsDraw(after.chart, {}, opts);
+const strip = after.calls.find(c => c.op === 'rect' && c.x === 60 && c.w === 70);
+assert.ok(strip, 'no strip over the band: ' + JSON.stringify(after.calls));
+assert.ok(strip.y === 20 && strip.h > 0 && strip.h <= 6, 'strip not in the top 6 px: ' + JSON.stringify(strip));
+assert.ok(alpha(strip.style) >= 0.85, 'strip not opaque: ' + strip.style);
+const li = after.calls.findIndex(c => c.op === 'text' && c.s === 'resync');
+assert.ok(li > 0, 'no action label after the data');
+const box = after.calls[li - 1];
+assert.ok(box.op === 'rect' && /255,\s*255,\s*255/.test(box.style), 'label without white box: ' + JSON.stringify(box));
+// Event labels sit below the strip label.
+const ev = after.calls.find(c => c.op === 'text' && c.s.indexOf('sync_action') === 0);
+assert.ok(ev && ev.y >= after.calls[li].y + 11, 'event label overlaps the strip label');
+// Markers alone still draw; nothing at all without options.
+const m = fakeChart();
+mdPlugin.afterDatasetsDraw(m.chart, {}, {bands: [], markers: opts.markers});
+assert.ok(m.calls.some(c => c.op === 'stroke'));
+const n = fakeChart();
+mdPlugin.beforeDatasetsDraw(n.chart, {}, false);
+mdPlugin.afterDatasetsDraw(n.chart, {}, false);
+assert.strictEqual(n.calls.length, 0);
+console.log('OK');
+`)
 }
