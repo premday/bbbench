@@ -85,3 +85,41 @@ unstacked-line setup and no stack for latency (existing page tests style).
 README (graphs section: what the per-member charts show and the latency
 resolution note), CHANGELOG, `documentation/web-ui.md`, CLAUDE.md (new package and
 the log).
+
+## Addendum: md state and administrative operations (user request)
+
+The user asked that a resync/resilver in progress, or **any administrative
+operation** on the array, be visible on the charts. Decision on the open point:
+visibility only; there is no option to benchmark during the initial resync (the
+md provider still waits for it before a run starts; author's call, the user did
+not ask for it). A sync seen during a phase is therefore a mid-run event (a
+scheduled `check`, a rebuild after a member failure, a reshape).
+
+- **Source**: `/sys/block/<array>/md/` read every window by the same sampler, only
+  when that directory exists (the core and `diskstat` name no provider; LVM RAID
+  and hardware providers can add their own source later):
+  `sync_action` (idle, resync, recover, check, repair, reshape, frozen),
+  `sync_completed` (`done / total` sectors, or `none`), `sync_speed` (KiB/s),
+  `degraded`, `array_state`, `raid_disks`, and per member
+  `md/dev-<member>/state` (in_sync, faulty, spare, write_mostly, blocked,
+  journal, ...). A value that cannot be read is recorded as empty, never fails.
+- **Log**: extra lines in `<prefix>_members.1.log`, distinguished by a prefix so
+  a reader of the old format that stops at unknown `#` lines is not affected:
+  `md, end_ms, span_ms, action, completed_sectors, total_sectors, speed_kibps,
+  degraded, array_state, raid_disks` and
+  `mdmember, end_ms, device, state` per window.
+- **Load**: `ts_md` on the phase data: per window the action, progress percent
+  and speed, plus `md_events`: every change between two consecutive windows of
+  the action, array_state, degraded, raid_disks or any member's state, as
+  `{t, text}` (e.g. `sdb: in_sync -> faulty`, `degraded 0 -> 1`, `sync_action
+  idle -> check`). A phase that starts with a non-idle action or a degraded
+  array gets an event at its first window.
+- **Charts** (IOPS, bandwidth and latency charts of an array phase): windows
+  where `sync_action` is not idle are shaded and labelled with the action;
+  events are vertical markers with their text; hover adds action, progress
+  percent, speed and the degraded count for that window. The card header shows a
+  badge such as `resync 43% -> 61%` (progress at the first and last window of
+  the activity) or `degraded`. A phase with a sync or a change of state is also
+  flagged in its card as "array busy: results include administrative work".
+- **Not**: no change to what is benchmarked, no extra writes, no `/proc/mdstat`
+  parsing (sysfs carries the same facts without a text format).

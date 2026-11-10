@@ -106,3 +106,39 @@
 
 - [ ] **Step 1:** state what the charts show; that the numbers are the kernel's counters on each member (they include md overhead such as parity and mirroring, so the stack total can exceed the array value); latency is the kernel's per-request time (queue plus service, 1 ms tick resolution, coarse at low load); the array line is fio's; only runs made from this version have it; not on compare.
 - [ ] **Step 2:** `make check` passes. **Step 3: commit** "Document the per-member charts and the members log"
+
+---
+
+## Addendum tasks: md state and administrative operations
+
+Spec: the "Addendum" section of the spec. Global constraints as above, plus: the core never names a provider (`diskstat` reads the sysfs `md` directory only when present); unreadable values are empty, never an error; an old members log (without the new lines) still loads and renders; the old reader semantics for the existing lines are unchanged.
+
+### Task 6: Read and store the md state
+
+**Files:** Modify `internal/diskstat/diskstat.go`, `internal/diskstat/log.go`, their tests.
+
+**Interfaces:**
+- Produces: `type MDState struct{ Action string; Completed, Total uint64; SpeedKiBps uint64; Degraded int; ArrayState string; RaidDisks int; Members map[string]string }`; `func ReadMD(sysBlock, array string, members []string) (MDState, bool)` (ok false when `<sysBlock>/<array>/md` does not exist; `sync_completed` `none` = 0/0; members read from `md/dev-<name>/state`; an unreadable file leaves that field empty/zero); `type MDWindow struct{ EndMs, SpanMs int64; S MDState }`; `Sampler` gets `func (s *Sampler) WithArray(name string, members []string) *Sampler` and records one `MDWindow` per `Sample` after the first when the array has an md directory; `func (s *Sampler) MDWindows() []MDWindow`. Log: `WriteLog(w, m Meta, ws []Window)` becomes `WriteLog(w, m Meta, ws []Window, md []MDWindow)` and `ReadLog` returns them too, with the `md,` and `mdmember,` line formats of the spec; every existing caller is updated.
+- [ ] Tests: `TestReadMDParses` (fake sysfs: sync_action check, sync_completed `1000 / 4000`, sync_speed, degraded 1, array_state, per-member states), `TestReadMDNoDirIsNotOK`, `TestReadMDUnreadableFieldIsEmpty`, `TestSamplerRecordsMDWindows`, `TestLogRoundTripWithMD`, `TestReadLogOldFormatHasNoMD` (a log without the new lines), `TestReadLogRejectsGarbageMDLine`.
+- [ ] Commit "Sample the md sysfs state of an array next to the member counters"
+
+### Task 7: Load into the graph data
+
+**Files:** Modify `cmd/bbbench/memberslog.go`, `cmd/bbbench/serve_results.go`, `cmd/bbbench/serve_graphs.go` (data only), tests.
+
+**Interfaces:**
+- Produces: `type MDPoint struct{ T float64 `json:"t"`; Action string `json:"action"`; Pct float64 `json:"pct"`; SpeedKiBps uint64 `json:"speed"`; Degraded int `json:"degraded"`; State string `json:"state"` }`, `type MDEvent struct{ T float64 `json:"t"`; Text string `json:"text"` }`, `PhaseResult.MDSeries map[string]MDInfo` (device -> `{Points []MDPoint; Events []MDEvent}`), `DiskPhaseData.TSmd []MDPoint` (`ts_md,omitempty`) and `MDEvents []MDEvent` (`md_events,omitempty`). `startMemberSampler` calls `WithArray(drive.Device.Name, member names)` and writes the md windows; `loadMembersLog` returns them with the same ramp-window drop and window-start stamping as the members; events are derived from consecutive windows (action, array_state, degraded, raid_disks, each member's state; first window event when not idle or degraded). Event text format: `sync_action idle -> check`, `degraded 0 -> 1`, `array_state clean -> active`, `sdb: in_sync -> faulty`, `raid_disks 4 -> 5`; first-window: `sync_action check (at phase start)`, `degraded 1 (at phase start)`.
+- [ ] Tests: `TestMDEventsFromWindows` (each change kind, none when stable, first-window events), `TestLoadMembersLogMD`, `TestMDJSONOmittedWithoutMD`, `TestStartMemberSamplerRecordsMD`.
+- [ ] Commit "Load the md state and its changes into the graph data of an array phase"
+
+### Task 8: Show it on the charts
+
+**Files:** Modify `cmd/bbbench/serve_graphs.go` (JS), `cmd/bbbench/serve_graphs_test.go`.
+
+**Interfaces:** Consumes `d.ts_md`, `d.md_events`. For an array phase with md data, on IOPS, bandwidth and latency charts: a Chart.js plugin shades windows whose action is not `idle`, labelled with the action (colour distinct from the ramp-up shading); events drawn as vertical markers with their text; hover adds `md: <action> <pct>% <speed> MiB/s, degraded <n>` for the hovered window (the tooltip already uses a shared x grid, keyed with the same `memberKey`); the card header badge `resync 43% -> 61%` / `degraded` and the line "array busy: results include administrative work". No md data = no change.
+- [ ] Tests (node on the page's own JS as in `TestGraphsPageMemberGrid`, plus string tests): `TestGraphsPageMDBands` (band windows, label), `TestGraphsPageMDBadge` (progress first -> last, degraded only), `TestGraphsPageNoMDUnchanged`. Check once in headless Chrome and say what was and was not checked.
+- [ ] Commit "Shade md sync activity and mark administrative events on the array charts"
+
+### Task 9: Docs
+
+- [ ] README (graphs and the layout section), CHANGELOG, `documentation/web-ui.md`, CLAUDE.md: what the md track shows and where it comes from (sysfs `md` directory), the event kinds, that a resync during a phase means the numbers include it, that the md provider still waits for the initial resync, not verified on real hardware. `make check` passes. Commit "Document the md state track on the array charts".
