@@ -1,4 +1,4 @@
-# Software layouts (mdadm, LVM) as a run-group setting — design
+# Storage layouts (mdadm, LVM) as a run-group setting — design
 
 Branch `run_groups_mdadm` (from `run_groups`, PR #15 not merged yet). Builds on
 `docs/superpowers/specs/2026-11-06-run-groups-design.md`; read its sections on
@@ -9,7 +9,7 @@ trash it; the branch itself is left alone). The file keeps its first name
 
 ## Intent
 
-Let the user compare **software layouts**: run the whole test plan once per
+Let the user compare **storage layouts**: run the whole test plan once per
 layout (backend, level, member disks, chunk or stripe size, extras), on the
 device each layout builds, and compare the results in the same web pages that
 already compare write-cache values. A layout is built by a **backend**; this
@@ -21,7 +21,7 @@ core must not learn the name of any backend.
 
 ## Goals
 
-- A new setting, *software layout*, selectable in setting-test mode. Each layout
+- A new setting, *storage layout*, selectable in setting-test mode. Each layout
   names its **backend** (`mdadm` or `lvm`); one group may mix backends (e.g.
   mdadm raid5 against lvm raid5) and the baseline.
 - The user lists **layouts one by one** (layout scope, input = variants). When

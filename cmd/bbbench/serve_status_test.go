@@ -658,7 +658,7 @@ func TestStatusAPI_CarriesMembersAndProgress(t *testing.T) {
 	defer ResetStatus()
 	UpdateStatus(func(s *BenchmarkStatus) {
 		s.Running = true
-		s.Group = &GroupStatus{ID: "g3", Setting: "software layout", Strategy: "sequential", Run: 1, Runs: 2,
+		s.Group = &GroupStatus{ID: "g3", Setting: "storage layout", Strategy: "sequential", Run: 1, Runs: 2,
 			Step: stepResyncing, Progress: 42.4, Variant: "raid1 · 2 disks"}
 		s.Drives = newDriveStatuses(arrayDrives()[:1], nil)
 	})
@@ -725,7 +725,7 @@ const ctx = {
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx);
 const run = s => vm.runInContext(s, ctx);
-const g = step => '{id:"g3",setting:"software layout",strategy:"sequential",run:1,runs:2,step:"' + step + '",progress:42.4,variant:"raid1 <i>x</i>"}';
+const g = step => '{id:"g3",setting:"storage layout",strategy:"sequential",run:1,runs:2,step:"' + step + '",progress:42.4,variant:"raid1 <i>x</i>"}';
 
 let b = run('groupBannerHTML(' + g('resyncing') + ', [], {})');
 assert(b.includes('resyncing 42%'), b);

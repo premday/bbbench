@@ -373,7 +373,7 @@ func TestMdadm_Available(t *testing.T) {
 
 func TestAll_RegistersLayout(t *testing.T) {
 	all := All(Env{})
-	if len(all) != 2 || all[0].Name() != "disk write cache policy" || all[1].Name() != "software layout" {
+	if len(all) != 2 || all[0].Name() != "disk write cache policy" || all[1].Name() != "storage layout" {
 		t.Fatalf("%d settings", len(all))
 	}
 	ls, ok := all[1].(LayoutSetting)

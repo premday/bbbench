@@ -890,7 +890,7 @@ func TestOfferRecovery_ArraysDeclineRefusesStart(t *testing.T) {
 }
 
 func TestPrintGroupSummary_Arrays(t *testing.T) {
-	g := &rungroup.GroupFile{ID: "1", Setting: "software layout", Strategy: rungroup.Sequential, Runs: []rungroup.GroupRun{{
+	g := &rungroup.GroupFile{ID: "1", Setting: "storage layout", Strategy: rungroup.Sequential, Runs: []rungroup.GroupRun{{
 		Status:   rungroup.RunDone,
 		Teardown: &rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: []string{"bbbench_1_1"}},
 		Drives: []rungroup.GroupDrive{{Device: "md127", Value: "mdadm raid1", Kind: settings.TargetArray, Label: rungroup.Label{Valid: true},
@@ -918,7 +918,7 @@ func TestLayoutDesc(t *testing.T) {
 // original values; a write-cache group's keeps its wording.
 func TestPrintGroupSummary_LayoutRestoreWording(t *testing.T) {
 	layoutGroup := func(st rungroup.GroupRestore) *rungroup.GroupFile {
-		return &rungroup.GroupFile{ID: "1", Setting: "software layout", Strategy: rungroup.Sequential,
+		return &rungroup.GroupFile{ID: "1", Setting: "storage layout", Strategy: rungroup.Sequential,
 			Variants: []rungroup.GroupVariant{{Value: "raid1 · 2 disks"}},
 			Runs:     []rungroup.GroupRun{{Status: rungroup.RunDone, Teardown: &rungroup.GroupRestore{Status: rungroup.RestoreDone}}},
 			Restore:  st}

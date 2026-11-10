@@ -146,7 +146,7 @@ func withRole(d Disk, r Role) Disk { d.Role = r; return d }
 
 func TestLayout_Identity(t *testing.T) {
 	s := NewLayout(Env{}, aaBackend())
-	if s.Name() != "software layout" || s.Kind() != Applied || s.Scope() != ScopeLayout ||
+	if s.Name() != "storage layout" || s.Kind() != Applied || s.Scope() != ScopeLayout ||
 		s.Input() != InputVariants || s.Lifetime() != LifetimeRun {
 		t.Errorf("%s %s %s %s %s", s.Name(), s.Kind(), s.Scope(), s.Input(), s.Lifetime())
 	}

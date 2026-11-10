@@ -18,7 +18,7 @@ type Option struct {
 	Default    string
 }
 
-// Layout is one software layout: a backend, its level and the options of
+// Layout is one storage layout: a backend, its level and the options of
 // that level. The baseline is Layout{Level: LevelNone}.
 type Layout struct {
 	Backend, Level string

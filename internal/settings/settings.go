@@ -255,7 +255,7 @@ func (e Env) fill() Env {
 }
 
 // All lists the settings bbbench knows: the drive write cache, then the
-// software layout with its backends.
+// storage layout with its backends.
 func All(env Env) []Setting {
 	return []Setting{NewWriteCache(env), NewLayout(env, NewMdadm(env), NewLVM(env))}
 }

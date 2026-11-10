@@ -348,7 +348,7 @@ func layoutResult(id, dev, value string, ts time.Time, members []rungroup.Member
 		Drives: []DriveInfo{{Device: blockdev.Device{Name: dev, Path: "/dev/" + dev, Model: "array", Serial: "u-" + dev}, UUID: "u-" + dev, Members: members}},
 		Phases: []PhaseResult{{PhaseNumber: 1, PhaseName: "randwrite",
 			Jobs: []JobResult{{Device: dev, WriteStats: &IOStats{IOPS: 500, Bandwidth: 2048, AvgLatNS: 1000}}}}},
-		Labels: map[string]rungroup.Label{dev: {Setting: "software layout", Value: value, Valid: true,
+		Labels: map[string]rungroup.Label{dev: {Setting: "storage layout", Value: value, Valid: true,
 			Before: &settings.Reading{Value: value, Kernel: "array_state=clean"},
 			After:  &settings.Reading{Value: value, Kernel: "array_state=<i>clean</i>"}}},
 	}
@@ -371,12 +371,12 @@ func seedLayoutGroup(t *testing.T) {
 	v1, v2 := "mdadm raid1 · 2 data + 1 spare", "lvm striped · 2 disks"
 	drive := func(dev, value string, ms []rungroup.Member) rungroup.GroupDrive {
 		return rungroup.GroupDrive{Device: dev, Serial: "u-" + dev, Model: "array", Value: value, Kind: settings.TargetArray, UUID: "u-" + dev, Members: ms,
-			Label: rungroup.Label{Setting: "software layout", Value: value, Valid: true,
+			Label: rungroup.Label{Setting: "storage layout", Value: value, Valid: true,
 				After: &settings.Reading{Value: value, Kernel: "array_state=<i>clean</i>"}}}
 	}
 	globalGroupStore.AddGroup(&rungroup.GroupFile{
 		ID: "g3", Created: time.Unix(9000, 0), Host: "h", Plan: []string{"randwrite"},
-		Setting: "software layout", Strategy: rungroup.Sequential, Values: []string{v1, v2},
+		Setting: "storage layout", Strategy: rungroup.Sequential, Values: []string{v1, v2},
 		Variants: []rungroup.GroupVariant{{Value: v1, Disks: md}, {Value: v2, Disks: dm}},
 		Runs: []rungroup.GroupRun{
 			{RunID: "r20", Status: rungroup.RunDone, Drives: []rungroup.GroupDrive{drive("md127", v1, md)},

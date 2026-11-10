@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a destructive *software layout* setting to setting tests with two backends, mdadm and LVM: the user lists layouts (and optionally the no-array baseline), bbbench builds each md array or logical volume, waits for its resync, verifies it before and after the run, benchmarks its block device, tears it down, and the web pages compare the layouts and show each layout's members.
+**Goal:** Add a destructive *storage layout* setting to setting tests with two backends, mdadm and LVM: the user lists layouts (and optionally the no-array baseline), bbbench builds each md array or logical volume, waits for its resync, verifies it before and after the run, benchmarks its block device, tears it down, and the web pages compare the layouts and show each layout's members.
 
 **Architecture:** The run-group core learns *targets* (a drive, or a composite with members) and a variant-based `settings.Setting` (Prepare, Apply returning targets, Read, Undo, plus a `Lifetime`). The write cache goes through a `PerDrive` adapter so its behaviour does not change. One layout `Setting` (`layout.go`) does what is common to every backend (baseline, in-use re-check, generic validation, udev settle) and dispatches by backend name to a `settings.Backend`: `mdadm.go` first, `lvm.go` second, controller backends in the next branch. A new `internal/inuse` package decides which disks may be erased. One undo ledger mirrors every change to the recovery file, which now holds drive values and built layouts.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Not built: hardware RAID (the next branch), ZFS, btrfs, bcache, partitioning, any filesystem on the layout (fio runs on the raw md or dm device), LVM thin pools, caches, VDO, snapshots, integrity, `--assume-clean` / `--nosync`, a RAID 10 near/far/offset choice (each backend's default layout is used and read back), resilver or degraded-mode benchmarks.
-- Setting name `software layout`. Every layout value starts with its backend name (`mdadm`, `lvm`), except the baseline `none · N disks`, which belongs to no backend. One group may mix backends and the baseline.
+- Setting name `storage layout`. Every layout value starts with its backend name (`mdadm`, `lvm`), except the baseline `none · N disks`, which belongs to no backend. One group may mix backends and the baseline.
 - mdadm parameters are exactly: level (`raid0`, `raid1`, `raid5`, `raid6`, `raid10`, `linear`), member disks each with a role (`data`, `spare`, `journal`), chunk size (default `512K`) and write-intent bitmap. Minimum data disks: raid0 2, raid1 2, raid5 3, raid6 4, raid10 4, linear 2.
 - LVM parameters are exactly: type (`linear`, `striped`, `mirror`, `raid1`, `raid5`, `raid6`, `raid10`), member disks (data only), stripes (`striped` only, 2 up to the disks, default all) and stripe size (`striped`, `raid5`, `raid6`, `raid10`; 64K to 1024K, default `64K`). Minimum disks: linear 1, striped 2, mirror 2, raid1 2, raid5 3, raid6 5, raid10 4 and even.
 - The baseline `none` takes 1 or more data disks.
@@ -271,7 +271,7 @@ Real mdadm and lvm2 could not be run in development, so these parts are marked `
     ```
   - `func NewLayout(env Env, backends ...Backend) LayoutSetting`; `func WithDefaults(b Backend, l Layout, dataDisks int) Layout` (drops options not listed for the level, sets missing ones and ones no longer among the choices to the default); `func ArrayName(variantName string) (string, error)` (`"bbbench_"+variantName`, error when longer than 32 characters).
 - Behaviour of the layout setting (`layout.go`; it names no backend):
-  - `Name() == "software layout"`, `Applied`, `ScopeLayout`, `InputVariants`, `LifetimeRun`. `Values()` is `none`, then `<backend> <level>` for every backend and level in order.
+  - `Name() == "storage layout"`, `Applied`, `ScopeLayout`, `InputVariants`, `LifetimeRun`. `Values()` is `none`, then `<backend> <level>` for every backend and level in order.
   - `Applicable(t)`: true when any backend is available; otherwise false with `<name>: <reason>` per backend joined by `"; "`.
   - `ValidateLayout` messages (exact, checked in this order): `unknown backend %q`; `%s is not available: %s`; `unknown %s level %q` (`a layout needs a backend` when `Backend == ""` and the level is not `none`); `%s is used twice`; `none takes data disks only`; `none needs at least 1 disk`; `%s cannot have a %s disk` (a role not in `Roles(level)`); `%s has no %s option` (level, key); `%s is not set` (label); `%s must be one of %s` (label, choices joined by `", "`); then `b.Validate`; then `mixed media: data disks %s (HDD) and %s (SSD)` (first rotational and first non-rotational data disk).
   - `LayoutValue`: the baseline label is `none · N disks` (`none · 1 disk`). A backend label that does not start with `<name> ` gives `backend %s labels %q without its name`. `ParseLayout`: `none · …` is the baseline, else the first word picks the backend (`unknown backend %q`).
@@ -298,7 +298,7 @@ Real mdadm and lvm2 could not be run in development, so these parts are marked `
 - [ ] **Step 2: Run** `go test ./internal/settings -run 'Layout|ArrayName|WithDefaults'`. Expect FAIL (undefined).
 - [ ] **Step 3: Implement** `backend.go` and `layout.go`. `All` is not changed yet: no backend exists.
 - [ ] **Step 4: Run** `go test -race ./internal/settings` and `make check`. Expect PASS.
-- [ ] **Step 5: Commit** `git commit -m "Add the software layout setting that dispatches to pluggable backends, with the baseline and the in-use re-check"`.
+- [ ] **Step 5: Commit** `git commit -m "Add the storage layout setting that dispatches to pluggable backends, with the baseline and the in-use re-check"`.
 
 ---
 
@@ -346,7 +346,7 @@ Real mdadm and lvm2 could not be run in development, so these parts are marked `
   - `TestMdadm_Label`: the five examples above. `TestMdadm_ParseRoundTrip`: every example parses back to its `Layout`.
   - `TestMdadm_Validate`: one row per message above, plus valid rows (raid5 3 data + 1 spare + bitmap).
   - `TestMdadm_ThroughLayout`: `NewLayout(env, NewMdadm(env)).ValidateLayout` gives `raid0 cannot have a spare disk`, `raid1 cannot have a journal disk`, `raid0 has no bitmap option`, `chunk must be one of 64K, 128K, 256K, 512K, 1024K`.
-  - `TestMdadm_Identity` (name, levels, roles, options per level); `TestMdadm_Available` (`"mdadm is not installed"`); `TestAll_RegistersLayout`: `All(env)[1].Name() == "software layout"` and its backends are `["mdadm"]`.
+  - `TestMdadm_Identity` (name, levels, roles, options per level); `TestMdadm_Available` (`"mdadm is not installed"`); `TestAll_RegistersLayout`: `All(env)[1].Name() == "storage layout"` and its backends are `["mdadm"]`.
   - `TestMdadm_PrepareRecordsNameAndUUID`: `Rand` returns the bytes `0x00..0x0f`, so the uuid is `"00010203:04050607:08090a0b:0c0d0e0f"` and no command runs. `TestMdadm_PrepareRefusesExistingName`.
   - `TestMdadm_CreateArgs`: an exact argv for raid5 3 data + 1 spare + bitmap at 512K; raid1 without a bitmap (`--bitmap=none`, no `--chunk`); raid0 (`--chunk=512K`, no `--bitmap`); raid6 with a journal (`--write-journal=/dev/nvme0n1`, no `--bitmap`); linear (no chunk, no bitmap). (mdadm adds an internal bitmap on its own to large redundant arrays, so `--bitmap=none` must be explicit.)
   - `TestMdadm_ApplyResolvesKernelName`: the returned target is exactly as specified above.
@@ -560,7 +560,7 @@ Real mdadm and lvm2 could not be run in development, so these parts are marked `
 - Orchestrator: after `runModeTUI`, a setting whose `Input()` is `InputVariants` (asserted to `settings.LayoutSetting`) gets `busy, berr := inuse.Scan(inuse.Options{Paths: inUsePaths(os.Executable(), outDir)})`, then `runLayoutSetupTUI(setting, drives, targets, busy, berr)` with the filtered discovered drives. The drive selection TUI is skipped. The templates are loaded for `fioGenerator`, and `makeDrive` is passed to `newGroupConfig`. `--dry-run` is still refused.
 
 - [ ] **Step 1: Write the failing tests** (drive the model's `Update` with key messages, as `group_tui_test.go` does; the setting is `settings.NewLayout(env, settings.NewMdadm(env), settings.NewLVM(env))` with a fake `LookPath`):
-  - `TestMode_ListsVariantSettings`: `software layout` appears with its count.
+  - `TestMode_ListsVariantSettings`: `storage layout` appears with its count.
   - `TestLayout_BackendPickerFirst`: with both tools, `a` shows `mdadm` and `lvm`; choosing `lvm` opens `Layout 1 (lvm)` with LVM levels.
   - `TestLayout_SingleBackendSkipsPicker`: without `lvm`, `a` opens `Layout 1 (mdadm)` at once. `TestLayout_UnavailableBackendGrayed`: with both listed and `lvm` missing, the picker shows `the lvm2 tools are not installed` and `Enter` on it does nothing. `TestLayout_NoBackend`.
   - `TestLayout_BusyDiskGrayedWithReason`: `sdb` mounted at `/data` shows its reason in the view; `Space` on it leaves it unused with the message `sdb is in use: mounted at /data`. `TestLayout_InUseCheckFailedGraysAll`.

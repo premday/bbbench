@@ -24,7 +24,7 @@ type layout struct {
 	backends []Backend
 }
 
-func (s *layout) Name() string       { return "software layout" }
+func (s *layout) Name() string       { return "storage layout" }
 func (s *layout) Kind() Kind         { return Applied }
 func (s *layout) Scope() Scope       { return ScopeLayout }
 func (s *layout) Input() Input       { return InputVariants }
@@ -57,7 +57,7 @@ func (s *layout) backend(name string) Backend {
 // of each backend.
 func (s *layout) Applicable(Target) (bool, string) {
 	if len(s.backends) == 0 {
-		return false, "no layout backend is registered"
+		return false, "no layout provider is registered"
 	}
 	var why []string
 	for _, b := range s.backends {

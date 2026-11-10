@@ -324,7 +324,7 @@ func (m *layoutModel) addLayout() {
 		if len(why) == 0 {
 			why = []string{"none is registered"}
 		}
-		m.msg = "no layout backend is available: " + strings.Join(why, "; ")
+		m.msg = "no layout provider is available: " + strings.Join(why, "; ")
 		return
 	}
 	if len(bs) == 1 {
@@ -627,7 +627,7 @@ func (m layoutModel) listView(b *strings.Builder) {
 }
 
 func (m layoutModel) backendView(b *strings.Builder) {
-	b.WriteString("\n  Which backend builds the layout? (up/down, Enter, Esc to go back)\n\n")
+	b.WriteString("\n  Which provider builds the layout? (up/down, Enter, Esc to go back)\n\n")
 	for i, be := range m.setting.Backends() {
 		line := be.Name()
 		if ok, why := be.Available(); !ok {

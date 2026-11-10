@@ -82,7 +82,7 @@ func TestRecovery_ArraysRoundTrip(t *testing.T) {
 		Members: []settings.Disk{{Target: b, Role: settings.RoleData}, {Target: c, Role: settings.RoleSpare}},
 		Extra:   map[string]string{"vg": "bbbench_1_2_vg"},
 	}
-	r := RecoveryOf("software layout", []settings.Undo{{Array: arr}})
+	r := RecoveryOf("storage layout", []settings.Undo{{Array: arr}})
 	want := []RecoveryArray{{Backend: "lvm", Name: "bbbench_1_2", Extra: map[string]string{"vg": "bbbench_1_2_vg"}, Members: []RecoveryMember{
 		{Serial: "S1", Model: "M", Name: "sdb", Role: settings.RoleData},
 		{Serial: "S2", Model: "M", Name: "sdc", Role: settings.RoleSpare},
@@ -118,7 +118,7 @@ func TestRecovery_ArraysRoundTrip(t *testing.T) {
 }
 
 func TestRecovery_ArrayUndosResolveMembers(t *testing.T) {
-	r := &Recovery{Setting: "software layout", Arrays: []RecoveryArray{
+	r := &Recovery{Setting: "storage layout", Arrays: []RecoveryArray{
 		{Backend: "mdadm", Name: "a1", UUID: "u1", Members: []RecoveryMember{
 			{Serial: "S1", Model: "M", Name: "sdb", Role: settings.RoleData},
 			{Serial: "S2", Model: "M", Name: "sdc", Role: settings.RoleData},
@@ -152,7 +152,7 @@ func TestRecovery_LVMRecordRoundTrip(t *testing.T) {
 		Extra: map[string]string{"devicesfile_added": "S2"},
 	}
 	path := filepath.Join(t.TempDir(), "rec.json")
-	if err := RecoveryOf("software layout", []settings.Undo{{Array: arr}}).Save(path); err != nil {
+	if err := RecoveryOf("storage layout", []settings.Undo{{Array: arr}}).Save(path); err != nil {
 		t.Fatal(err)
 	}
 	got, err := LoadRecovery(path)
@@ -182,7 +182,7 @@ func TestRecovery_LVMRecordRoundTrip(t *testing.T) {
 // model of an entry cannot tell which one it is; the entry is not matched
 // (never the first one).
 func TestRecovery_AmbiguousIsNotPresent(t *testing.T) {
-	r := &Recovery{Setting: "software layout",
+	r := &Recovery{Setting: "storage layout",
 		Drives: []RecoveryDrive{{Serial: "S1", Model: "M", Name: "sdb", Original: settings.Reading{Value: "enabled"}}},
 		Arrays: []RecoveryArray{{Backend: "mdadm", Name: "bbbench_1_1", Members: []RecoveryMember{
 			{Serial: "S1", Model: "M", Name: "sdb", Role: settings.RoleData},

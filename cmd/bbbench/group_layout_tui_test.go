@@ -124,12 +124,12 @@ func TestMode_ListsVariantSettings(t *testing.T) {
 	s, _ := bothBackends("mdadm", "lvm")
 	drives, targets := testDrives("sdb", "sdc")
 	mm := press(newModeModel([]settings.Setting{perDrive(newFakeSetting(nil)), s}, drives, targets), "down", "enter")
-	if v := mm.View(); !strings.Contains(v, "software layout: applies to 2 of 2 drives") {
-		t.Fatalf("view lacks the software layout with its count:\n%s", v)
+	if v := mm.View(); !strings.Contains(v, "storage layout: applies to 2 of 2 drives") {
+		t.Fatalf("view lacks the storage layout with its count:\n%s", v)
 	}
 	m := press(mm, "down", "enter").(modeModel)
-	if !m.done || m.choice.Setting == nil || m.choice.Setting.Name() != "software layout" {
-		t.Fatalf("choice = %+v, want the software layout", m.choice)
+	if !m.done || m.choice.Setting == nil || m.choice.Setting.Name() != "storage layout" {
+		t.Fatalf("choice = %+v, want the storage layout", m.choice)
 	}
 }
 
@@ -196,7 +196,7 @@ func TestLayout_NoBackend(t *testing.T) {
 		t.Fatalf("step = %v, want to stay on the list", m.step)
 	}
 	v := m.View()
-	for _, want := range []string{"no layout backend is available: ", "mdadm is not installed", "the lvm2 tools are not installed"} {
+	for _, want := range []string{"no layout provider is available: ", "mdadm is not installed", "the lvm2 tools are not installed"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("view lacks %q:\n%s", want, v)
 		}
@@ -615,7 +615,7 @@ func TestLayout_OutcomeVariants(t *testing.T) {
 	if !slices.Equal(gotValues, wantValues) {
 		t.Fatalf("values = %v, want %v", gotValues, wantValues)
 	}
-	if c.Strategy != rungroup.Sequential || c.Setting.Name() != "software layout" {
+	if c.Strategy != rungroup.Sequential || c.Setting.Name() != "storage layout" {
 		t.Fatalf("strategy %v setting %v", c.Strategy, c.Setting.Name())
 	}
 	if len(c.Variants) != 2 || c.Variants[0].Value.ID != wantValues[0] || c.Variants[1].Value.ID != wantValues[1] {
@@ -678,7 +678,7 @@ func TestInUsePaths_OutputDirNotYetCreated(t *testing.T) {
 
 func layoutGroupFile() *rungroup.GroupFile {
 	return &rungroup.GroupFile{
-		ID: "5", Setting: "software layout", Strategy: rungroup.Sequential,
+		ID: "5", Setting: "storage layout", Strategy: rungroup.Sequential,
 		Values: []string{"mdadm raid1 · 2 disks · 512K", "none · 2 disks"},
 		Variants: []rungroup.GroupVariant{
 			{Value: "mdadm raid1 · 2 disks", Disks: []rungroup.Member{{Name: "old1", Serial: "SN-sdb", Model: "M1", Role: settings.RoleData}, {Name: "old2", Serial: "SN-sdc", Model: "M1", Role: settings.RoleData}}},
