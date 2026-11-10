@@ -137,6 +137,9 @@ func (s *Sampler) Sample(now time.Time) {
 
 // Run samples at start and every `every` until ctx is done, then once more.
 func (s *Sampler) Run(ctx context.Context, every time.Duration) {
+	if every <= 0 {
+		every = time.Second // NewTicker panics otherwise; sampling must never fail a phase
+	}
 	s.Sample(time.Now())
 	t := time.NewTicker(every)
 	defer t.Stop()
