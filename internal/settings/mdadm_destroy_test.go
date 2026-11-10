@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"bbbench/internal/inuse"
 )
 
 const (
@@ -803,5 +805,86 @@ func TestMdExistingNestedOnLVHasNoSerial(t *testing.T) {
 	bs, err := l.DestroyBlockers(context.Background(), es[0])
 	if err != nil || len(bs) != 1 || !strings.Contains(bs[0], "no serial") {
 		t.Errorf("blockers %v %v", bs, err)
+	}
+}
+
+func TestMdDestroyCommandOfABlockedEntryIsEmpty(t *testing.T) {
+	m := &mdadm{}
+	for _, e := range []Existing{
+		{Name: "md-11111111", ID: "11111111:22222222:33333333:44444444", Blocked: mdFirmwareBlocked,
+			Extra: map[string]string{ExtraKind: KindMDValue, "assembled": "no", "member_devs": "/dev/sdg,/dev/sdh"}},
+		{Name: "md126 (IMSM container)", ID: "11111111:22222222:33333333:44444444", Blocked: mdFirmwareBlocked,
+			Extra: map[string]string{ExtraKind: KindMDValue, "assembled": "yes", "member_devs": "/dev/sdg,/dev/sdh"}},
+	} {
+		if c := m.DestroyCommand(e); c != "" {
+			t.Errorf("%s: %q", e.Name, c)
+		}
+		if c := m.LeftoverCommand(e, e); c != "" {
+			t.Errorf("%s leftover: %q", e.Name, c)
+		}
+	}
+}
+
+func TestMdLeftoverCommandKeepsToTheConfirmedDevices(t *testing.T) {
+	m := &mdadm{}
+	confirmed := Existing{Name: "md127", ID: mdU1,
+		Extra: map[string]string{ExtraKind: KindMDValue, "assembled": "yes", "member_devs": "/dev/sdb,/dev/sdc"}}
+	fresh := Existing{Name: "md-a1b2c3d4", ID: mdU1,
+		Extra: map[string]string{ExtraKind: KindMDValue, "assembled": "no", "member_devs": "/dev/sdc,/dev/sde"}}
+	want := "after checking with mdadm --examine that each device carries uuid " + mdU1 + ": mdadm --zero-superblock /dev/sdc"
+	if got := m.LeftoverCommand(confirmed, fresh); got != want {
+		t.Errorf("\n got %q\nwant %q", got, want)
+	}
+	// Still assembled under the confirmed node: stop it, then zero.
+	fresh = confirmed
+	want = "after checking with mdadm --examine that each device carries uuid " + mdU1 + ": mdadm --stop /dev/md127 && mdadm --zero-superblock /dev/sdb /dev/sdc"
+	if got := m.LeftoverCommand(confirmed, fresh); got != want {
+		t.Errorf("\n got %q\nwant %q", got, want)
+	}
+	// Assembled under another node: never a --stop of a node not confirmed.
+	fresh = Existing{Name: "md9", ID: mdU1,
+		Extra: map[string]string{ExtraKind: KindMDValue, "assembled": "yes", "member_devs": "/dev/sdb"}}
+	if got := m.LeftoverCommand(confirmed, fresh); got != "" {
+		t.Errorf("other node: %q", got)
+	}
+	// Only unconfirmed devices left: nothing.
+	fresh = Existing{Name: "md-a1b2c3d4", ID: mdU1,
+		Extra: map[string]string{ExtraKind: KindMDValue, "assembled": "no", "member_devs": "/dev/sde"}}
+	if got := m.LeftoverCommand(confirmed, fresh); got != "" {
+		t.Errorf("unconfirmed only: %q", got)
+	}
+}
+
+// After a successful teardown a stale superblock of the same uuid on a disk
+// that was never confirmed is listed again under that uuid: the gate's
+// leftover command must not name it.
+func TestMdDestroyLeftoverNeverNamesAStaleDevice(t *testing.T) {
+	s, e := raid5Sim(t)
+	s.disk("sde")
+	s.supers["/dev/sde"] = mdU1
+	env := s.env()
+	scans := 0
+	env.InUse = func() (*inuse.Report, error) {
+		if scans++; scans == 1 {
+			return &inuse.Report{Busy: map[string][]string{}}, nil
+		}
+		return reportOf(map[string][]inuse.Cause{"sdb": {{Kind: inuse.KindMD, Disk: "sdb", Via: mdU1, Device: "sdb", Text: "has an md RAID superblock"}}}), nil
+	}
+	l := NewLayout(env, &mdadm{env: env.fill()})
+	err := l.Destroy(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "has an md RAID superblock") {
+		t.Fatalf("want the leftover reported, got %v", err)
+	}
+	if strings.Contains(err.Error(), "/dev/sde") {
+		t.Errorf("names the unconfirmed stale device: %v", err)
+	}
+}
+
+func TestMdPartialWithNothingProvenLeft(t *testing.T) {
+	s, e := raid5Sim(t)
+	s.fail["mdadm --examine --export /dev/sdd"] = exitErr("mdadm: cannot open /dev/sdd")
+	err := s.mdadm().Destroy(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "nothing proven is left to run by hand") {
+		t.Errorf("error %v", err)
 	}
 }

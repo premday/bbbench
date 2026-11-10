@@ -18,7 +18,10 @@ import (
 	"bbbench/internal/blockdev"
 )
 
-var _ Destroyer = (*mdadm)(nil)
+var (
+	_ Destroyer         = (*mdadm)(nil)
+	_ LeftoverCommander = (*mdadm)(nil)
+)
 
 // Extra keys of the mdadm entries, next to ExtraKind and ExtraOwnedNodes.
 const (
@@ -697,9 +700,9 @@ func (m *mdadm) partial(e Existing, stopped bool, done, left []string, cause err
 	if stopped {
 		rest.Extra[mdExtraAssembled] = "no"
 	}
-	hand := "nothing else to run by hand"
+	hand := "nothing proven is left to run by hand"
 	if c := m.DestroyCommand(rest); c != "" {
-		hand = fmt.Sprintf("rest by hand, after checking with mdadm --examine that each device carries uuid %s: %s", e.ID, c)
+		hand = "rest by hand, " + examineFirst(e.ID, c)
 	}
 	return fmt.Errorf("%s: %s; %v; %s", e.Name, strings.Join(parts, "; "), cause, hand)
 }
@@ -772,7 +775,12 @@ func (m *mdadm) findUUID(ctx context.Context, uuid string) (string, bool, error)
 
 // DestroyCommand is the shell command that tears e down by hand:
 // "mdadm --stop /dev/md127 && mdadm --zero-superblock /dev/sdb /dev/sdc".
+// It is "" for a Blocked entry: what the reason says not to run is never
+// printed.
 func (m *mdadm) DestroyCommand(e Existing) string {
+	if e.Blocked != "" {
+		return ""
+	}
 	var cmds []string
 	if e.Extra[mdExtraAssembled] == "yes" && e.Name != "" {
 		cmds = append(cmds, "mdadm --stop "+shQuote("/dev/"+e.Name))
@@ -795,4 +803,47 @@ func shQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+// examineFirst is cmd prefixed with the check to make before running it.
+func examineFirst(uuid, cmd string) string {
+	return "after checking with mdadm --examine that each device carries uuid " + uuid + ": " + cmd
+}
+
+// LeftoverCommand is the command for what is left of confirmed, as fresh
+// lists it after a successful Destroy: only the member devices confirmed
+// named, a --stop only of the node confirmed named, "" for a Blocked
+// entry, another uuid, or nothing confirmed left.
+func (m *mdadm) LeftoverCommand(confirmed, fresh Existing) string {
+	if confirmed.Blocked != "" || fresh.Blocked != "" || fresh.Extra[ExtraKind] != KindMDValue ||
+		normUUID(fresh.ID) == "" || normUUID(fresh.ID) != normUUID(confirmed.ID) {
+		return ""
+	}
+	stop := fresh.Extra[mdExtraAssembled] == "yes"
+	if stop && (confirmed.Extra[mdExtraAssembled] != "yes" || fresh.Name != confirmed.Name) {
+		return ""
+	}
+	allowed := map[string]bool{}
+	for _, d := range memberDevs(confirmed) {
+		allowed[d] = true
+	}
+	var devs []string
+	for _, d := range memberDevs(fresh) {
+		if allowed[d] {
+			devs = append(devs, d)
+		}
+	}
+	if len(devs) == 0 && !stop {
+		return ""
+	}
+	assembled := "no"
+	if stop {
+		assembled = "yes"
+	}
+	c := m.DestroyCommand(Existing{Name: fresh.Name, Extra: map[string]string{
+		mdExtraAssembled: assembled, mdExtraMemberDevs: strings.Join(devs, ",")}})
+	if c == "" {
+		return ""
+	}
+	return examineFirst(confirmed.ID, c)
 }

@@ -78,8 +78,18 @@ const maxStackDepth = 16
 type Destroyer interface {
 	Existing(ctx context.Context) ([]Existing, error)
 	Destroy(ctx context.Context, e Existing) error
-	// DestroyCommand is the command that tears e down by hand.
+	// DestroyCommand is the command that tears e down by hand, "" for a
+	// Blocked entry.
 	DestroyCommand(e Existing) string
+}
+
+// LeftoverCommander is the optional part of a Destroyer that gives the
+// manual command for what a successful Destroy left of confirmed, as fresh
+// now lists it, limited to what confirmed named (and "" for a Blocked
+// entry or when nothing confirmed is left). The gate uses it instead of
+// DestroyCommand(fresh), which could name what the user never confirmed.
+type LeftoverCommander interface {
+	LeftoverCommand(confirmed, fresh Existing) string
 }
 
 // Existing lists the configurations of every backend that is a Destroyer. A
@@ -184,21 +194,51 @@ func (s *layout) Destroy(ctx context.Context, e Existing) error {
 	return fmt.Errorf("%s; %s", strings.Join(what, "; "), s.finishCommand(bg, g.d, fresh))
 }
 
-// finishCommand is the manual command for what is left of e, from a fresh
-// listing.
+// finishCommand is the manual command for what is left of e, the entry
+// the user confirmed, from a fresh listing. It never names more than was
+// confirmed: a provider that is a LeftoverCommander limits the command
+// itself; otherwise a fresh entry on other disks gets no command. A fresh
+// entry that is now Blocked gets its reason and no command.
 func (s *layout) finishCommand(ctx context.Context, d Destroyer, e Existing) string {
+	const again = "list the configurations again to see what is left"
 	es, err := d.Existing(ctx)
 	if err != nil {
-		return fmt.Sprintf("cannot list the configurations again (%v); list the configurations again to see what is left", err)
+		return fmt.Sprintf("cannot list the configurations again (%v); %s", err, again)
 	}
 	for _, x := range es {
-		if x.Backend == e.Backend && x.ID == e.ID {
-			if c := d.DestroyCommand(x); c != "" {
-				return "to finish by hand: " + c
+		if x.Backend != e.Backend || x.ID != e.ID {
+			continue
+		}
+		if x.Blocked != "" {
+			return fmt.Sprintf("%s is now listed as not destroyable: %s; nothing to run by hand", x.Name, x.Blocked)
+		}
+		if lc, ok := d.(LeftoverCommander); ok {
+			if c := lc.LeftoverCommand(e, x); c != "" {
+				return "to finish by hand, " + c
 			}
+			return "nothing of what was confirmed is left to run by hand; " + again
+		}
+		if !disksWithin(x.Disks, e.Disks) {
+			return "it is now listed on disks that were not confirmed; " + again
+		}
+		if c := d.DestroyCommand(x); c != "" {
+			return "to finish by hand: " + c
 		}
 	}
-	return "it is no longer listed; list the configurations again to see what is left"
+	return "it is no longer listed; " + again
+}
+
+// disksWithin is whether every disk of a is one of b (name, path, serial,
+// model).
+func disksWithin(a, b []Target) bool {
+	for _, t := range a {
+		if !slices.ContainsFunc(b, func(u Target) bool {
+			return u.Name == t.Name && u.Path == t.Path && u.Serial == t.Serial && u.Model == t.Model
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 // leftOver re-scans and lists what the configuration owned that is still

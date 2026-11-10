@@ -593,3 +593,36 @@ func TestLayout_DestroyPostCheck(t *testing.T) {
 		t.Errorf("all: %v", err)
 	}
 }
+
+func TestLayout_DestroyLeftoverNowBlocked(t *testing.T) {
+	sys := sysHolders(t, map[string][]string{"md127": nil})
+	r := newDestroyRig(t, sys, md127())
+	r.reports = []*inuse.Report{reportOf(heldBy()), reportOf(map[string][]inuse.Cause{"sdc": heldBy()["sdc"]})}
+	r.d.onDestroy = func() {
+		b := md127()
+		b.Blocked = "firmware RAID: use the vendor tool"
+		r.d.existing = []Existing{b}
+		os.RemoveAll(filepath.Join(sys, "block", "md127"))
+	}
+	err := r.s.Destroy(context.Background(), md127())
+	if err == nil || strings.Contains(err.Error(), "tear down") ||
+		!strings.Contains(err.Error(), "md127 is now listed as not destroyable: firmware RAID: use the vendor tool; nothing to run by hand") {
+		t.Errorf("error %v", err)
+	}
+}
+
+func TestLayout_DestroyLeftoverOnUnconfirmedDisks(t *testing.T) {
+	sys := sysHolders(t, map[string][]string{"md127": nil})
+	r := newDestroyRig(t, sys, md127())
+	r.reports = []*inuse.Report{reportOf(heldBy()), reportOf(map[string][]inuse.Cause{"sdc": heldBy()["sdc"]})}
+	r.d.onDestroy = func() {
+		w := md127()
+		w.Disks = append(w.Disks, Target{Name: "sdd", Path: "/dev/sdd", Serial: "S3", Model: "M"})
+		r.d.existing = []Existing{w}
+		os.RemoveAll(filepath.Join(sys, "block", "md127"))
+	}
+	err := r.s.Destroy(context.Background(), md127())
+	if err == nil || strings.Contains(err.Error(), "tear down") || !strings.Contains(err.Error(), "list the configurations again") {
+		t.Errorf("a command over disks never confirmed: %v", err)
+	}
+}
