@@ -187,7 +187,9 @@ func resumeChoice(g *rungroup.GroupFile, available []settings.Setting, drives []
 }
 
 // newGroupConfig builds the group to run from the confirmed choice.
-func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts runOptions, host string, resume *rungroup.GroupFile) groupConfig {
+// makeDrive turns a composite target built by a layout into the drive a run
+// benchmarks (arrayDrive in production); nil refuses composite targets.
+func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts runOptions, host string, resume *rungroup.GroupFile, makeDrive func(settings.BenchTarget) (DriveInfo, error)) groupConfig {
 	return groupConfig{
 		Setting:      c.Setting,
 		Values:       c.Values,
@@ -200,7 +202,11 @@ func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts run
 		Settle:       groupSettle,
 		Resume:       resume,
 		// fio, the fio files and the engines, checked before the first apply.
-		Precheck: func() error { return precheckRun(opts, c.Drives) },
+		// For layouts c.Drives is the union of the disks: a composite's fio
+		// file does not exist before its build, but it is rendered from the
+		// same templates and carries the same workloads as its members'.
+		Precheck:  func() error { return precheckRun(opts, c.Drives) },
+		MakeDrive: makeDrive,
 		// A running group shows up on the web pages live.
 		OnSave: globalGroupStore.AddGroup,
 		Execute: func(ctx context.Context, spec runSpec) (*BenchmarkResult, error) {

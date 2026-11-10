@@ -51,6 +51,7 @@ import (
 	"bbbench/internal/dmi"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
+	"bbbench/internal/templating"
 	"bbbench/internal/util"
 )
 
@@ -362,7 +363,21 @@ func runOrchestrator(args []string) error {
 
 	var runErr error
 	if group != nil {
-		cfg := newGroupConfig(group, targets, opts, host, resumeGroup)
+		// A composite target built by a layout gets its fio file rendered
+		// from the same templates; they are loaded on the first composite
+		// only, so a group of drive values loads nothing more.
+		var eng *templating.Engine
+		makeDrive := func(bt settings.BenchTarget) (DriveInfo, error) {
+			if eng == nil {
+				e, err := loadTemplatesWithSearch("", dir)
+				if err != nil {
+					return DriveInfo{}, fmt.Errorf("load templates: %w", err)
+				}
+				eng = e
+			}
+			return arrayDrive(bt, drivesByName(group.Drives), *sysBlock, fioGenerator(cfg, eng, host))
+		}
+		cfg := newGroupConfig(group, targets, opts, host, resumeGroup, makeDrive)
 		fmt.Printf("Setting test: %s, %d values, strategy %s\n\n", group.Setting.Name(), len(group.Values), group.Strategy)
 		g, err := runGroup(context.Background(), cfg)
 		if g == nil {
@@ -600,18 +615,7 @@ func discoverDrivesWithFioFiles(cfg *config.Root, host, sysBlock string, verbose
 	// Match devices with fio files
 	var drives []DriveInfo
 	for _, disk := range devs {
-		manufacturer := util.SanitizeFilename(strings.TrimSpace(disk.Vendor), "_")
-		if manufacturer == "" {
-			manufacturer = "unknown"
-		}
-
-		// Construct expected fio filename (matches generate.go pattern)
-		filename := util.SanitizeFilename(fmt.Sprintf(
-			"%s_%s_%s_%s_%s_config.fio",
-			host, manufacturer, disk.Model, disk.Serial, disk.ParentSubsystem,
-		), "_")
-
-		fioPath := filepath.Join(hostDir, filename)
+		fioPath := filepath.Join(hostDir, fioFileName(host, disk))
 		fioExists := false
 		if _, err := os.Stat(fioPath); err == nil {
 			fioExists = true

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
+	"bbbench/internal/blockdev"
 	"bbbench/internal/diskinfo"
 )
 
@@ -23,6 +25,10 @@ func (ec *ExecutionCoordinator) collectDiskConfig() {
 		}
 	}
 	for _, drive := range ec.drives {
+		if drive.IsArray() {
+			ec.collectMembers(drive, collect)
+			continue
+		}
 		go func() {
 			info, dump := collect(drive)
 			markDrive(drive.Device.Name, func(d *DriveStatus) { d.Config = &info })
@@ -30,6 +36,34 @@ func (ec *ExecutionCoordinator) collectDiskConfig() {
 				logger.Warn("writing disk configuration", "device", drive.Device.Name, "err", err)
 			} else if ec.verbose {
 				fmt.Printf("[%s] disk configuration: %s\n", drive.Device.Name, path)
+			}
+		}()
+	}
+}
+
+// collectMembers collects each member disk of a composite target (an
+// array), not the composite: the drive's interface, SMART and topology
+// belong to the disks, while the benchmark results attach to the composite.
+// Each member's configuration lands in the composite's status entry, keyed
+// by name and serial, on a fresh slice (a reader may hold the old one), and
+// its dump is written as <member>_diskinfo_<start>.txt.
+func (ec *ExecutionCoordinator) collectMembers(drive DriveInfo, collect func(DriveInfo) (diskinfo.Info, string)) {
+	for _, m := range drive.Members {
+		go func() {
+			info, dump := collect(DriveInfo{Device: blockdev.Device{Name: m.Name, Serial: m.Serial, Model: m.Model}})
+			markDrive(drive.Device.Name, func(d *DriveStatus) {
+				ms := slices.Clone(d.Members)
+				for i := range ms {
+					if ms[i].Name == m.Name && ms[i].Serial == m.Serial {
+						ms[i].Config = &info
+					}
+				}
+				d.Members = ms
+			})
+			if path, err := ec.writeDiskInfo(m.Name, dump); err != nil {
+				logger.Warn("writing disk configuration", "device", m.Name, "err", err)
+			} else if ec.verbose {
+				fmt.Printf("[%s] disk configuration of member %s: %s\n", drive.Device.Name, m.Name, path)
 			}
 		}()
 	}

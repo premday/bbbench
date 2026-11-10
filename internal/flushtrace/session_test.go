@@ -93,6 +93,63 @@ func TestSession_BlockDeviceUsesDevNumbers(t *testing.T) {
 	}
 }
 
+// blockSession starts a session on name (sysfs dev = devnum) with the block
+// events present and the given trace_pipe, and returns it with the instance.
+func blockSession(t *testing.T, name, devnum, pipe string) (*Session, string) {
+	t.Helper()
+	root, inst := fakeTracefs(t, []string{"block/block_rq_issue", "block/block_rq_complete"}, pipe)
+	sysBlock := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sysBlock, name), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sysBlock, name, "dev"), []byte(devnum+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Start(name, Options{TracefsRoot: root, SysBlock: sysBlock, InstanceName: "test"})
+	if err != nil {
+		t.Fatalf("Start %s: %v", name, err)
+	}
+	return s, inst
+}
+
+// An md array or a dm device (an LV) takes the generic Block path, and the
+// collector keeps only the events of its own dev numbers.
+func checkBlockSession(t *testing.T, name, devnum, mm string) {
+	t.Helper()
+	pipe := "fio-1 [000] ..... 9.000000: block_rq_issue: 8,16 F 0 () 0 + 0 none,0,0 [fio]\n" +
+		"<idle>-0 [000] d.h1. 9.000900: block_rq_complete: 8,16 F () 0 + 0 [0]\n" +
+		"fio-1 [000] ..... 10.000000: block_rq_issue: " + mm + " F 0 () 0 + 0 none,0,0 [fio]\n" +
+		"<idle>-0 [000] d.h1. 10.000300: block_rq_complete: " + mm + " F () 0 + 0 [0]\n"
+	s, inst := blockSession(t, name, devnum, pipe)
+	for _, e := range []string{"block_rq_issue", "block_rq_complete"} {
+		if got := read(t, filepath.Join(inst, "events/block", e, "enable")); got != "1" {
+			t.Errorf("%s: %s enable = %q while running", name, e, got)
+		}
+		if got := read(t, filepath.Join(inst, "events/block", e, "filter")); !strings.Contains(got, `rwbs ~ "F*"`) {
+			t.Errorf("%s: %s filter = %q", name, e, got)
+		}
+	}
+	sum, _ := s.Stop()
+	if sum.Source != "block" || sum.Count != 1 || sum.MeanNs != 300_000 || sum.Exact {
+		t.Errorf("%s: summary = %+v", name, sum)
+	}
+}
+
+func TestSession_MdUsesBlockCollector(t *testing.T) { checkBlockSession(t, "md127", "9:127", "9,127") }
+
+func TestSession_DmUsesBlockCollector(t *testing.T) { checkBlockSession(t, "dm-3", "253:3", "253,3") }
+
+// UNVERIFIED on hardware: md and dm are bio-based, so the request events may
+// never fire for them. The session then ends with a block summary of 0
+// Flushes (the phase shows the "ftrace saw 0 Flush commands" note).
+func TestSession_MdNoRequestEventsGivesZeroFlushes(t *testing.T) {
+	s, _ := blockSession(t, "md127", "9:127", "")
+	sum, _ := s.Stop()
+	if sum.Source != "block" || sum.Count != 0 {
+		t.Errorf("summary = %+v", sum)
+	}
+}
+
 func TestSession_NVMeFallsBackToBlockWithoutNVMeTracepoints(t *testing.T) {
 	root, _ := fakeTracefs(t, []string{"block/block_rq_issue", "block/block_rq_complete"}, "")
 	sysBlock := t.TempDir()

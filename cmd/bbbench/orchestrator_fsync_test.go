@@ -156,6 +156,24 @@ func TestFlushGate(t *testing.T) {
 	}
 }
 
+// The flush gate reads the composite's own queue/write_cache: no new branch.
+func TestFlushGate_ArrayOwnWriteCache(t *testing.T) {
+	sys := t.TempDir()
+	q := filepath.Join(sys, "md127", "queue")
+	if err := os.MkdirAll(q, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(q, "write_cache"), []byte("write through\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ec := &ExecutionCoordinator{sysBlock: sys}
+	fsync := []FioJob{{Name: "j", Section: "[j]\nrw=randwrite\nfsync=1\n"}}
+	warn, skip := ec.flushGate("md127", fsync)
+	if skip != "" || !strings.HasPrefix(warn, "md127 is write through") {
+		t.Errorf("warn=%q skip=%q", warn, skip)
+	}
+}
+
 // With --skip-write-through a skipped phase is reported (not an error, not completed, fio not started)
 // and reaches the graph data with its reason.
 func TestSkippedPhase_ResultAndGraphData(t *testing.T) {
