@@ -36,7 +36,11 @@ func WriteLog(w io.Writer, m Meta, ws []Window) error {
 		fmt.Fprintf(bw, "# array %s\n", m.Array)
 	}
 	for _, d := range m.Members {
-		fmt.Fprintf(bw, "# device %s %s\n", d.Name, d.Role)
+		role := d.Role
+		if role == "" {
+			role = "data" // a member recorded without a role is a data disk; ReadLog needs the field
+		}
+		fmt.Fprintf(bw, "# device %s %s\n", d.Name, role)
 	}
 	fmt.Fprint(bw, "# end_ms, span_ms, device, read_ios, write_ios, read_sectors, write_sectors, read_ticks_ms, write_ticks_ms\n")
 	for _, x := range ws {
