@@ -617,14 +617,14 @@ func TestCausesMirrorBusy(t *testing.T) {
 	r := h.scan()
 
 	want := map[string][]Cause{
-		"sda": {{KindMount, "sda", "/data", "mounted at /data (sda2)"}},
-		"sdd": {{KindSwap, "sdd", "/dev/sdd1", "active swap (/dev/sdd1)"}},
-		"sdf": {{KindPath, "sdf", "/usr/local/bin/bbbench", "holds the bbbench binary (/usr/local/bin/bbbench)"}},
-		"sdg": {{KindHolder, "sdg", "md127", "member of md127 (md RAID)"}},
-		"sdb": {{KindHolder, "sdb", "dm-0", "used by dm-0 (device mapper: LVM, LUKS or multipath)"}},
-		"sdk": {{KindPV, "sdk", "vg0", "is an LVM physical volume of volume group vg0"}},
-		"sdh": {{KindMD, "sdh", "", "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)"}},
-		"sdi": {{KindSignature, "sdi", "", "has a ZFS pool label"}},
+		"sda": {{KindMount, "sda", "/data", "sda2", "mounted at /data (sda2)"}},
+		"sdd": {{KindSwap, "sdd", "/dev/sdd1", "sdd1", "active swap (/dev/sdd1)"}},
+		"sdf": {{KindPath, "sdf", "/usr/local/bin/bbbench", "sdf", "holds the bbbench binary (/usr/local/bin/bbbench)"}},
+		"sdg": {{KindHolder, "sdg", "md127", "md127", "member of md127 (md RAID)"}},
+		"sdb": {{KindHolder, "sdb", "dm-0", "dm-0", "used by dm-0 (device mapper: LVM, LUKS or multipath)"}},
+		"sdk": {{KindPV, "sdk", "vg0", "", "is an LVM physical volume of volume group vg0"}},
+		"sdh": {{KindMD, "sdh", "", "", "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)"}},
+		"sdi": {{KindSignature, "sdi", "", "", "has a ZFS pool label"}},
 	}
 	for disk, w := range want {
 		got := r.Causes[disk]
@@ -667,5 +667,63 @@ func TestBlockersFiltersOwned(t *testing.T) {
 	got = r.Blockers([]string{"sdb"}, func(Cause) bool { return true })
 	if len(got) != 1 || got[0].Kind != KindAll || got[0].Text != "no disk can be offered" {
 		t.Fatalf("All case: %+v", got)
+	}
+}
+
+func TestCausesDevice(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sda", "8:0")
+	h.part("sda", "sda1", "8:1")
+	h.part("sda", "sda2", "8:2")
+	h.disk("sdb", "8:16")
+	h.stack("md127", "9:127", "sda1", "sdb")
+	h.stack("md128", "9:128", "sda2")
+	h.holder("sda/sda1", "md127")
+	h.holder("sdb", "md127")
+	h.holder("sda/sda2", "md128")
+	h.mount("9:127", "/", "ext4", "/dev/md127")
+	h.mount("9:128", "/srv", "ext4", "/dev/md128")
+	h.udevType("8:1", "linux_raid_member")
+	h.disk("sdc", "8:32")
+	h.stack("dm-3", "253:3", "sdc")
+	h.stats["/dev/mapper/vg-swap"] = [2]uint64{dev(0, 5), dev(253, 3)}
+	h.swap("/dev/mapper/vg-swap\tpartition\t100\t0\t-2")
+	r := h.scan()
+
+	for _, d := range []string{"sda", "sdb"} {
+		found := false
+		for _, c := range r.Causes[d] {
+			if c.Kind == KindMount && c.Via == "/" && c.Device == "md127" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: no root mount cause on md127: %+v", d, r.Causes[d])
+		}
+	}
+	var got []string
+	for _, c := range r.Causes["sda"] {
+		got = append(got, string(c.Kind)+":"+c.Via+":"+c.Device)
+	}
+	want := []string{"mount:/:md127", "mount:/srv:md128", "holder:md127:md127", "holder:md128:md128", "md::"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("sda causes %v want %v", got, want)
+	}
+	c := r.Causes["sdc"]
+	if len(c) == 0 || c[0].Kind != KindSwap || c[0].Device != "dm-3" || c[0].Via != "/dev/mapper/vg-swap" {
+		t.Fatalf("sdc: %+v", c)
+	}
+}
+
+func TestBlockersAllWinsAndDedupes(t *testing.T) {
+	r := &Report{All: "x", Causes: map[string][]Cause{"sda": {{Kind: KindSwap, Disk: "sda"}}}}
+	got := r.Blockers([]string{"sda"}, func(Cause) bool { return false })
+	if len(got) != 1 || got[0].Kind != KindAll {
+		t.Fatalf("%+v", got)
+	}
+	r.All = ""
+	got = r.Blockers([]string{"sda", "sda"}, func(Cause) bool { return false })
+	if len(got) != 1 {
+		t.Fatalf("repeated disk repeated causes: %+v", got)
 	}
 }
