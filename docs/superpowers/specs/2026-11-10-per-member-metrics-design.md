@@ -13,7 +13,7 @@ it is latency, with the array's own value on the same chart.
 - IOPS and bandwidth charts: a **stacked** graph of the per-member values. The
   array value is **not in the stack**: it is drawn as a line over it (the stack
   top is the sum of the members, the line is what the array reports).
-- Hover shows each member's value and the array's value.
+- Hover shows each member's value, the stack total and the array's value.
 - Latency: **never aggregated**. One line per member plus the array's line, no
   stack.
 - Software RAID is the case asked for. Not on the compare page.
@@ -62,7 +62,7 @@ it is latency, with the array's own value on the same chart.
   member (fixed colour per member name, per direction as the chart already splits
   read and write) and the array's fio series as a line, unstacked. The latency
   chart draws one line per member plus the array line. The tooltip lists every
-  member's value, the array's value and (call) the stack total, so the gap
+  member's value, the stack total and the array's value (the user's decision), so the gap
   between sum and array (raid5 parity, read-modify-write, mirroring) is visible.
   The array line is fio's own series (call: same line as today, not md's own
   counters). The per-phase shared scale rule still applies.
