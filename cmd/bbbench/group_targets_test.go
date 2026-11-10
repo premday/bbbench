@@ -344,7 +344,7 @@ func TestCoreDoesNotNameTheBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files = append(files, "group_run.go", "group_flow.go", "group_undo.go", "group_targets.go")
+	files = append(files, "group_run.go", "group_flow.go", "group_undo.go", "group_targets.go", "group_layout_tui.go")
 	files = append(files, serve...)
 	banned := regexp.MustCompile(`(?i)mdadm|lvm|pvcreate|vgcreate|lvcreate`)
 	checked := 0
@@ -369,7 +369,7 @@ func TestCoreDoesNotNameTheBackend(t *testing.T) {
 		fh.Close()
 		checked++
 	}
-	if checked < 6 {
+	if checked < 7 {
 		t.Errorf("only %d files checked", checked)
 	}
 }

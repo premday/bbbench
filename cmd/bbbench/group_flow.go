@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"bbbench/internal/inuse"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 )
@@ -141,11 +143,16 @@ func findResumableGroup(dir string) *rungroup.GroupFile {
 }
 
 // resumeChoice rebuilds what the user chose for group g: the setting, the
-// values in their order, and the drives (matched by serial and model).
-func resumeChoice(g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo) (*groupChoice, error) {
+// values in their order, and the drives (matched by serial and model). A
+// layout group gets its layouts back from g.Variants (see
+// resumeLayoutChoice); inUse is called for it only.
+func resumeChoice(g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo, inUse func() (*inuse.Report, error)) (*groupChoice, error) {
 	s := settingByName(available, g.Setting)
 	if s == nil {
 		return nil, fmt.Errorf("group %s is for the unknown setting %q", g.ID, g.Setting)
+	}
+	if s.Input() == settings.InputVariants || len(g.Variants) > 0 {
+		return resumeLayoutChoice(g, s, drives, inUse)
 	}
 	known := map[string]settings.Value{}
 	for _, v := range s.Values() {
@@ -186,6 +193,94 @@ func resumeChoice(g *rungroup.GroupFile, available []settings.Setting, drives []
 	return c, nil
 }
 
+// resumeLayoutChoice rebuilds the layouts of group g from g.Variants: each
+// disk is found again by serial and model (its name may have changed) and
+// must not be in use now; each value must parse. The values are layout
+// strings, so the known-values check of a value group does not apply.
+func resumeLayoutChoice(g *rungroup.GroupFile, s settings.Setting, drives []DriveInfo, inUse func() (*inuse.Report, error)) (*groupChoice, error) {
+	ls, ok := s.(settings.LayoutSetting)
+	if !ok {
+		return nil, fmt.Errorf("cannot resume group %s: %s does not take layouts", g.ID, s.Name())
+	}
+	if len(g.Variants) == 0 {
+		return nil, fmt.Errorf("cannot resume group %s: it recorded no layouts; start a new setting test", g.ID)
+	}
+	if inUse == nil {
+		return nil, fmt.Errorf("cannot resume group %s: cannot check which disks are in use", g.ID)
+	}
+	rep, err := inUse()
+	if err == nil && rep == nil {
+		err = errors.New("no report")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cannot resume group %s: cannot check which disks are in use: %v", g.ID, err)
+	}
+	c := &groupChoice{Setting: s, Strategy: g.Strategy, Excluded: map[string]string{}}
+	seen := map[string]bool{}
+	for i, gv := range g.Variants {
+		if _, err := ls.ParseLayout(gv.Value); err != nil {
+			return nil, fmt.Errorf("cannot resume group %s: layout %d: %v", g.ID, i+1, err)
+		}
+		v := settings.Variant{Value: settings.Value{ID: gv.Value, Label: gv.Value}}
+		for _, m := range gv.Disks {
+			var found *DriveInfo
+			for k := range drives {
+				if drives[k].Device.Serial == m.Serial && drives[k].Device.Model == m.Model {
+					found = &drives[k]
+					break
+				}
+			}
+			if found == nil {
+				return nil, fmt.Errorf("cannot resume group %s: disk %s (%s, S/N %s) of layout %d is not present", g.ID, m.Name, m.Model, m.Serial, i+1)
+			}
+			name := found.Device.Name
+			if why := rep.Reason(name); why != "" {
+				return nil, fmt.Errorf("cannot resume group %s: %s is in use: %s", g.ID, name, why)
+			}
+			dev := found.Device
+			v.Disks = append(v.Disks, settings.Disk{
+				Target: settings.Target{Name: name, Path: dev.Path, Serial: dev.Serial, Model: dev.Model, Vendor: dev.Vendor, Rotational: dev.Rotational},
+				Role:   m.Role,
+			})
+			if !seen[name] {
+				seen[name] = true
+				c.Drives = append(c.Drives, *found)
+			}
+		}
+		c.Variants = append(c.Variants, v)
+		c.Values = append(c.Values, v.Value)
+	}
+	return c, nil
+}
+
+// inUsePaths are the paths whose disks must not be erased: the bbbench
+// binary (exe, skipped when "") and the output directory, through its
+// nearest existing ancestor since it may not be created yet.
+func inUsePaths(exe, outDir string) map[string]string {
+	paths := map[string]string{}
+	if exe != "" {
+		paths[exe] = "the bbbench binary"
+	}
+	if outDir != "" {
+		d := filepath.Clean(outDir)
+		if abs, err := filepath.Abs(d); err == nil {
+			d = abs
+		}
+		for {
+			if _, err := os.Stat(d); err == nil {
+				break
+			}
+			parent := filepath.Dir(d)
+			if parent == d {
+				break
+			}
+			d = parent
+		}
+		paths[d] = "the output directory"
+	}
+	return paths
+}
+
 // newGroupConfig builds the group to run from the confirmed choice.
 // makeDrive turns a composite target built by a layout into the drive a run
 // benchmarks (arrayDrive in production); nil refuses composite targets.
@@ -206,6 +301,7 @@ func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts run
 		// file does not exist before its build, but it is rendered from the
 		// same templates and carries the same workloads as its members'.
 		Precheck:  func() error { return precheckRun(opts, c.Drives) },
+		Variants:  c.Variants,
 		MakeDrive: makeDrive,
 		// A running group shows up on the web pages live.
 		OnSave: globalGroupStore.AddGroup,
@@ -297,8 +393,8 @@ func stateIfAny(path string) *ExecutionState {
 // prepareGroupResume rebuilds the choice for the unfinished group g and asks
 // the user to confirm it: resuming applies settings. An error stops the
 // run; nothing has been applied then.
-func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo) (*groupChoice, error) {
-	c, err := resumeChoice(g, available, drives)
+func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo, inUse func() (*inuse.Report, error)) (*groupChoice, error) {
+	c, err := resumeChoice(g, available, drives, inUse)
 	if err != nil {
 		return nil, fmt.Errorf("%w\nThe unfinished group is %s in the output directory; removing or renaming it unblocks --resume", err, groupFileName(g))
 	}
@@ -307,6 +403,20 @@ func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, avai
 		if !r.Status.Finished() {
 			todo++
 		}
+	}
+	if c.Variants != nil {
+		fmt.Fprintf(out, "\nResume setting test %s (%s, %s): THE DISKS BELOW WILL BE ERASED\n", g.ID, g.Setting, g.Strategy)
+		for i, v := range c.Variants {
+			fmt.Fprintf(out, "  Run %d: %s\n", i+1, v.Value.Label)
+			for _, d := range v.Disks {
+				fmt.Fprintf(out, "      %s  %s %s (S/N %s)  %s\n", d.Name, d.Vendor, d.Model, d.Serial, d.Role)
+			}
+		}
+		fmt.Fprintf(out, "  Runs still to do: %d of %d\n", todo, len(g.Runs))
+		if !askYes(in, out, "  Each layout still to run is built again and torn down after its run, its members wiped.\nContinue and erase these disks? [y/n] ") {
+			return nil, errors.New("setting test not resumed; nothing was built")
+		}
+		return c, nil
 	}
 	fmt.Fprintf(out, "\nResume setting test %s (%s, %s)\n", g.ID, g.Setting, g.Strategy)
 	var labels []string

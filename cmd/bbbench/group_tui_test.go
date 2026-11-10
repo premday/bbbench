@@ -41,6 +41,10 @@ func keyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
 	case "esc":
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	case " ":
@@ -77,8 +81,9 @@ func TestMode_ListsSettingsWithDriveCounts(t *testing.T) {
 	if !strings.Contains(v, "no controllable write cache on USB") {
 		t.Fatalf("view lacks the reason for the drive it does not apply to:\n%s", v)
 	}
-	if strings.Contains(v, "raid layout") {
-		t.Fatalf("a variants setting must not be listed:\n%s", v)
+	// A variants setting is listed too (it is set up by the layout screens).
+	if !strings.Contains(v, "raid layout: applies to 3 of 3 drives") {
+		t.Fatalf("a variants setting must be listed with its count:\n%s", v)
 	}
 	m := press(mm, "enter").(modeModel)
 	if !m.done || m.choice.Setting == nil || m.choice.Setting.Name() != "fake cache" {
@@ -431,7 +436,7 @@ func TestResume_FindsUnfinishedGroupAndRebuildsChoice(t *testing.T) {
 	if got == nil || got.ID != "2" {
 		t.Fatalf("found %v, want group 2", got)
 	}
-	c, err := resumeChoice(got, []settings.Setting{perDrive(newFakeSetting(nil))}, drives)
+	c, err := resumeChoice(got, []settings.Setting{perDrive(newFakeSetting(nil))}, drives, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +444,7 @@ func TestResume_FindsUnfinishedGroupAndRebuildsChoice(t *testing.T) {
 		t.Fatalf("choice = %+v", c)
 	}
 	// A drive that is gone stops the resume.
-	if _, err := resumeChoice(got, []settings.Setting{perDrive(newFakeSetting(nil))}, drives[:1]); err == nil {
+	if _, err := resumeChoice(got, []settings.Setting{perDrive(newFakeSetting(nil))}, drives[:1], nil); err == nil {
 		t.Fatal("a missing drive must be an error")
 	}
 	// All runs finished: nothing to resume.
@@ -526,7 +531,7 @@ func TestResume_AnsweringNoAppliesNothing(t *testing.T) {
 	drives, _ := testDrives("sda")
 	fs := newFakeSetting(map[string]string{"sda": "enabled"})
 	var out strings.Builder
-	c, err := prepareGroupResume(strings.NewReader("n\n"), &out, unfinishedGroup(), []settings.Setting{perDrive(fs)}, drives)
+	c, err := prepareGroupResume(strings.NewReader("n\n"), &out, unfinishedGroup(), []settings.Setting{perDrive(fs)}, drives, nil)
 	if err == nil || c != nil {
 		t.Fatalf("choice %v err %v, want a refusal", c, err)
 	}
@@ -536,13 +541,13 @@ func TestResume_AnsweringNoAppliesNothing(t *testing.T) {
 	if !strings.Contains(out.String(), "Runs still to do: 1 of 2") || !strings.Contains(out.String(), "restored") {
 		t.Fatalf("confirmation text incomplete:\n%s", out.String())
 	}
-	if c, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{perDrive(fs)}, drives); err != nil || len(c.Drives) != 1 {
+	if c, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{perDrive(fs)}, drives, nil); err != nil || len(c.Drives) != 1 {
 		t.Fatalf("yes: %v %v", c, err)
 	}
 }
 
 func TestResume_UnresumableGroupNamesTheFile(t *testing.T) {
-	_, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{perDrive(newFakeSetting(nil))}, nil)
+	_, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{perDrive(newFakeSetting(nil))}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "group_9_group.json") || !strings.Contains(err.Error(), "--resume") {
 		t.Fatalf("err = %v, want the file name and the way out", err)
 	}

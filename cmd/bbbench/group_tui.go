@@ -76,10 +76,9 @@ type modeModel struct {
 
 func newModeModel(available []settings.Setting, drives []DriveInfo, targets map[string]settings.Target) modeModel {
 	m := modeModel{total: len(drives)}
+	// Settings of values and of variants (layouts) alike; each is set up by
+	// its own screens afterwards.
 	for _, s := range available {
-		if s.Input() != settings.InputValues {
-			continue
-		}
 		e := modeEntry{setting: s}
 		for _, d := range drives {
 			name := d.Device.Name
@@ -200,12 +199,16 @@ func runModeTUI(available []settings.Setting, drives []DriveInfo, targets map[st
 
 // groupChoice is what the user confirmed for a setting test. Drives are the
 // drives the setting applies to; Excluded maps the others to the reason.
+// For a layout group, Variants are the layouts in order, Values their
+// values, Drives the union of their disks in order of first use and the
+// strategy is sequential.
 type groupChoice struct {
 	Setting  settings.Setting
 	Values   []settings.Value
 	Strategy rungroup.Strategy
 	Drives   []DriveInfo
 	Excluded map[string]string
+	Variants []settings.Variant
 }
 
 type setupStep int

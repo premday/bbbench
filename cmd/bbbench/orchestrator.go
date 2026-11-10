@@ -49,6 +49,7 @@ import (
 	"bbbench/internal/config"
 	"bbbench/internal/diskinfo"
 	"bbbench/internal/dmi"
+	"bbbench/internal/inuse"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 	"bbbench/internal/templating"
@@ -198,7 +199,16 @@ func runOrchestrator(args []string) error {
 
 	// A drive setting left changed by an earlier setting test is offered for
 	// restoring before anything else; all discovered drives are candidates.
-	available := settings.All(settings.Env{})
+	// The disks a layout must not erase include those holding this binary
+	// and the output directory; the layout re-checks them before each build.
+	exe, err := os.Executable()
+	if err != nil {
+		exe = ""
+	}
+	scanInUse := func() (*inuse.Report, error) {
+		return inuse.Scan(inuse.Options{Paths: inUsePaths(exe, outDir)})
+	}
+	available := settings.All(settings.Env{InUse: scanInUse})
 	targets := targetsFor(allDrives, diskinfo.Options{})
 	if err := offerRecovery(context.Background(), os.Stdin, os.Stdout, groupRecoveryPath, available, targets); err != nil {
 		return err
@@ -214,7 +224,7 @@ func runOrchestrator(args []string) error {
 				if *dryRun {
 					return errors.New("a dry run cannot be combined with a setting test")
 				}
-				c, err := prepareGroupResume(os.Stdin, os.Stdout, g, available, allDrives)
+				c, err := prepareGroupResume(os.Stdin, os.Stdout, g, available, allDrives, scanInUse)
 				if err != nil {
 					return err
 				}
@@ -236,22 +246,36 @@ func runOrchestrator(args []string) error {
 			fmt.Println(note)
 		}
 
-		// Launch TUI for drive selection
-		selectedDrives, err = runDriveSelectionTUI(drives)
-		if err != nil {
-			return err
-		}
-
-		if len(selectedDrives) == 0 {
-			return errors.New("no drives selected")
-		}
-
-		if choice.Setting != nil {
-			group, err = runGroupSetupTUI(choice.Setting, selectedDrives, targets)
+		if choice.Setting != nil && choice.Setting.Input() == settings.InputVariants {
+			// A layout test picks its disks per layout: no drive selection.
+			ls, ok := choice.Setting.(settings.LayoutSetting)
+			if !ok {
+				return fmt.Errorf("%s takes layouts but has no layout screens", choice.Setting.Name())
+			}
+			busy, berr := scanInUse()
+			group, err = runLayoutSetupTUI(ls, drives, targets, busy, berr)
 			if err != nil {
 				return err
 			}
 			selectedDrives = group.Drives
+		} else {
+			// Launch TUI for drive selection
+			selectedDrives, err = runDriveSelectionTUI(drives)
+			if err != nil {
+				return err
+			}
+
+			if len(selectedDrives) == 0 {
+				return errors.New("no drives selected")
+			}
+
+			if choice.Setting != nil {
+				group, err = runGroupSetupTUI(choice.Setting, selectedDrives, targets)
+				if err != nil {
+					return err
+				}
+				selectedDrives = group.Drives
+			}
 		}
 	}
 
@@ -378,7 +402,11 @@ func runOrchestrator(args []string) error {
 			return arrayDrive(bt, drivesByName(group.Drives), *sysBlock, fioGenerator(cfg, eng, host))
 		}
 		cfg := newGroupConfig(group, targets, opts, host, resumeGroup, makeDrive)
-		fmt.Printf("Setting test: %s, %d values, strategy %s\n\n", group.Setting.Name(), len(group.Values), group.Strategy)
+		if group.Variants != nil {
+			fmt.Printf("Setting test: %s, %d layouts, one after the other\n\n", group.Setting.Name(), len(group.Variants))
+		} else {
+			fmt.Printf("Setting test: %s, %d values, strategy %s\n\n", group.Setting.Name(), len(group.Values), group.Strategy)
+		}
 		g, err := runGroup(context.Background(), cfg)
 		if g == nil {
 			// Setup failed before the first run: nothing to wait for.
