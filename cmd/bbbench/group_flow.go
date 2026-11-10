@@ -21,6 +21,15 @@ const (
 	groupSettle = 10 * time.Second
 )
 
+// askYes prints prompt, reads one line from in and reports whether it is
+// "y" or "yes" (any case).
+func askYes(in io.Reader, out io.Writer, prompt string) bool {
+	fmt.Fprint(out, prompt)
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	a := strings.ToLower(strings.TrimSpace(line))
+	return a == "y" || a == "yes"
+}
+
 func settingByName(available []settings.Setting, name string) settings.Setting {
 	for _, s := range available {
 		if s.Name() == name {
@@ -50,9 +59,7 @@ func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string
 	for _, e := range rec.Drives {
 		fmt.Fprintf(out, "  %s (%s, S/N %s): original value %q\n", e.Name, e.Model, e.Serial, e.Original.Value)
 	}
-	fmt.Fprint(out, "Restore the original values now? [y/n] ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
-	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+	if !askYes(in, out, "Restore the original values now? [y/n] ") {
 		fmt.Fprintf(out, "Not restored. A setting test will refuse to start while %s exists; a single run is not affected.\n\n", path)
 		return nil
 	}
@@ -252,9 +259,7 @@ func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, avai
 		fmt.Fprintf(out, "    %s  %s %s (S/N %s)\n", d.Device.Name, d.Device.Vendor, d.Device.Model, d.Device.Serial)
 	}
 	fmt.Fprintf(out, "  Runs still to do: %d of %d\n", todo, len(g.Runs))
-	fmt.Fprint(out, "  The original values are read first and restored when the group ends.\nContinue and change these drives? [y/n] ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
-	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+	if !askYes(in, out, "  The original values are read first and restored when the group ends.\nContinue and change these drives? [y/n] ") {
 		return nil, errors.New("setting test not resumed; nothing was changed")
 	}
 	return c, nil
