@@ -602,14 +602,3 @@ func TestWithDefaults(t *testing.T) {
 		t.Errorf("none %v", l.Options)
 	}
 }
-
-func TestAll_LayoutOnlyWithBackends(t *testing.T) {
-	all := All(Env{})
-	if len(all) != 1 || all[0].Name() != "disk write cache policy" {
-		var names []string
-		for _, s := range all {
-			names = append(names, s.Name())
-		}
-		t.Errorf("no backend registered: %v", names)
-	}
-}

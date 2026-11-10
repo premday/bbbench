@@ -254,18 +254,11 @@ func (e Env) fill() Env {
 	return e
 }
 
-// All lists the settings bbbench knows. The software layout is listed only
-// when at least one layout backend is registered.
+// All lists the settings bbbench knows: the drive write cache, then the
+// software layout with its backends.
 func All(env Env) []Setting {
-	all := []Setting{NewWriteCache(env)}
-	if bs := layoutBackends(env); len(bs) > 0 {
-		all = append(all, NewLayout(env, bs...))
-	}
-	return all
+	return []Setting{NewWriteCache(env), NewLayout(env, NewMdadm(env))}
 }
-
-// layoutBackends are the registered layout backends; none exists yet.
-func layoutBackends(Env) []Backend { return nil }
 
 // Verify reads the setting every 200 ms until it equals t.Want or settle has
 // elapsed; it returns the last reading and whether it matched.

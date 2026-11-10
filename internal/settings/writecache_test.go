@@ -155,7 +155,7 @@ func TestWriteCache_ScopeAndInput(t *testing.T) {
 	if v := s.Values(); len(v) != 2 || v[0].ID != "enabled" || v[1].ID != "disabled" {
 		t.Errorf("%+v", v)
 	}
-	if len(All(Env{})) != 1 {
+	if all := All(Env{}); len(all) != 2 || all[0].Name() != s.Name() {
 		t.Error("All")
 	}
 }
