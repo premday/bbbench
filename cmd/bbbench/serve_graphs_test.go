@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -442,10 +443,7 @@ console.log('OK');
 // sub-second windows are neither merged nor double counted, the stack totals
 // and the Y extent equal the drawn stack top, 1 s windows keep whole-second x.
 func TestGraphsPageMemberGrid(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := requireNode(t)
 	body := graphsPageBody(t)
 	var js strings.Builder
 	for _, f := range []string{"rampOf", "windowOf", "fioShift", "memberNames", "memberStep", "memberKey",
@@ -466,10 +464,7 @@ func TestGraphsPageMemberGrid(t *testing.T) {
 // to print OK.
 func runPageJS(t *testing.T, funcs []string, script string) {
 	t.Helper()
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := requireNode(t)
 	body := graphsPageBody(t)
 	var js strings.Builder
 	for _, f := range funcs {
@@ -664,4 +659,19 @@ mdPlugin.afterDatasetsDraw(n.chart, {}, false);
 assert.strictEqual(n.calls.length, 0);
 console.log('OK');
 `)
+}
+
+// requireNode returns the node binary the page-script tests run in. Without it
+// the test skips locally, but fails when CI=true so a CI run cannot pass
+// without having run the JS tests.
+func requireNode(t *testing.T) string {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("node not installed (required when CI=true)")
+		}
+		t.Skip("node not installed")
+	}
+	return node
 }

@@ -525,10 +525,7 @@ func pageScript(t *testing.T) string {
 // The group banner, badges and ETA run in node against sample data; the page
 // script must also pass node --check. Skipped without node.
 func TestStatusPage_GroupScript(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := requireNode(t)
 	dir := t.TempDir()
 	page := filepath.Join(dir, "page.js")
 	if err := os.WriteFile(page, []byte(pageScript(t)), 0o644); err != nil {
@@ -692,10 +689,7 @@ func TestStatusAPI_CarriesMembersAndProgress(t *testing.T) {
 // array target run in node against the real status page script. Skipped
 // without node.
 func TestStatusPage_LayoutScript(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := requireNode(t)
 	dir := t.TempDir()
 	page := filepath.Join(dir, "page.js")
 	if err := os.WriteFile(page, []byte(pageScript(t)), 0o644); err != nil {

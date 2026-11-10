@@ -168,10 +168,7 @@ func inlineScript(t *testing.T, name, body string) string {
 // their handlers, pass node --check and behave in node (fake DOM) as the
 // run-group UI requires; plain-run data is unaffected. Skipped without node.
 func TestGroupPages_Scripts(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := requireNode(t)
 	seedSwapGroup(t)
 	dir := t.TempDir()
 	write := func(name, s string) string {
@@ -428,10 +425,7 @@ func layoutPages(t *testing.T, node, dir string) (map[string]string, string) {
 // runLayoutHarness runs one check of layoutPagesHarness on script.
 func runLayoutHarness(t *testing.T, check string) {
 	t.Helper()
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := requireNode(t)
 	dir := t.TempDir()
 	scripts, dataPath := layoutPages(t, node, dir)
 	harness := filepath.Join(dir, "harness.js")

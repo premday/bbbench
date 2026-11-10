@@ -21,6 +21,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v6 # the page-script tests run in node
+        with:
+          node-version: 20
       - name: gofmt
         run: |
           out=$(gofmt -l .)
