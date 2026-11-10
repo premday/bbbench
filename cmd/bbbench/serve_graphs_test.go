@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -320,7 +321,7 @@ func jsFunction(t *testing.T, body, name string) string {
 	if start < 0 {
 		t.Fatalf("page has no function %s", name)
 	}
-	rest := body[start+1:]
+	rest := body[start:]
 	end := len(rest)
 	for _, next := range []string{"\n    function ", "\n    //"} {
 		if i := strings.Index(rest, next); i >= 0 && i < end {
@@ -380,5 +381,83 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 	mm := jsFunction(t, body, "memberMetric")
 	if !strings.Contains(mm, "d.ts_members") {
 		t.Errorf("memberMetric does not test ts_members:\n%s", mm)
+	}
+}
+
+// memberGridJS is the node script TestGraphsPageMemberGrid runs over the page's
+// own member chart functions.
+const memberGridJS = `
+function series(n, t0, step, jitter, f) {
+    const out = [];
+    for (let k = 0; k < n; k++) out.push({t: t0 + k * step + jitter(k), r: f(k), w: f(k) / 2});
+    return out;
+}
+function check(name, d) {
+    const metric = {key: 'iops', tsKey: 'ts_iops'};
+    const g = memberGrid(d, metric);
+    const bands = stackedMemberDatasets(d, g, {sdb: [0, 0, 0], sdc: [0, 0, 0]});
+    const reads = bands.filter(b => b.dir === 'r'), writes = bands.filter(b => b.dir === 'w');
+    const fail = m => { throw new Error(name + ': ' + m); };
+    // No window merged: every member and the array keep each of their points.
+    Object.keys(d.ts_members).forEach(n => {
+        const drawn = reads.find(b => b.member === n).data.filter(p => p.y !== null).length;
+        if (drawn !== d.ts_members[n].iops.length) fail(n + ' draws ' + drawn + ' of ' + d.ts_members[n].iops.length + ' windows');
+    });
+    const arr = arrayDatasets(g, true);
+    const arrDrawn = arr.find(a => a.dir === 'r').data.filter(p => p.y !== null).length;
+    if (arrDrawn !== d.ts_iops.length) fail('array draws ' + arrDrawn + ' of ' + d.ts_iops.length);
+    // Stack total and Y scale = the drawn stack top (Chart.js draws a band
+    // at the sum of the bands below it).
+    let topR = 0, topW = 0;
+    g.xs.forEach((x, i) => {
+        const r = reads.reduce((s, b) => s + (b.data[i].y || 0), 0);
+        const w = -writes.reduce((s, b) => s + (b.data[i].y || 0), 0);
+        const t = g.totals[x] || {r: 0, w: 0};
+        if (Math.abs(t.r - r) > 1e-9 || Math.abs(t.w - w) > 1e-9) fail('total at ' + x + ' = ' + JSON.stringify(t) + ', drawn ' + r + '/' + w);
+        topR = Math.max(topR, r); topW = Math.max(topW, w);
+    });
+    const e = memberExtent(d, metric);
+    if (e.r !== topR || e.w !== topW) fail('extent ' + JSON.stringify(e) + ', drawn top ' + topR + '/' + topW);
+    return g;
+}
+const jit = k => [0.001, 0.003, 0.002, 0.004][k % 4];
+// 0.5 s windows: two windows a second, each its own x.
+let g = check('500ms', { ramp_sec: 2, log_avg_msec: 500,
+    ts_iops: series(10, 0.5, 0.5, k => 0, k => 200 + k),
+    ts_members: { sdb: {iops: series(10, 2, 0.5, jit, k => 100 + k)}, sdc: {iops: series(10, 2, 0.5, jit, k => 50 + 3 * k)} } });
+if (g.xs.length !== 10 || g.xs[1] !== 2.5) throw new Error('500ms grid ' + JSON.stringify(g.xs));
+// fio offset from the members by a quarter window.
+check('offset', { ramp_sec: 2.25, log_avg_msec: 500,
+    ts_iops: series(10, 0.5, 0.5, k => 0, k => 200 + k),
+    ts_members: { sdb: {iops: series(10, 2, 0.5, jit, k => 100 + k)}, sdc: {iops: series(10, 2, 0.5, jit, k => 50 + 3 * k)} } });
+// 1 s windows: x stays the whole second, as Math.round(t) gave.
+g = check('1s', { ramp_sec: 2, log_avg_msec: 1000,
+    ts_iops: series(10, 1, 1, k => 0, k => 200 + k),
+    ts_members: { sdb: {iops: series(10, 2, 1, jit, k => 100 + k)}, sdc: {iops: series(10, 2, 1, jit, k => 50 + k)} } });
+if (g.xs.join(',') !== '2,3,4,5,6,7,8,9,10,11') throw new Error('1s grid ' + g.xs.join(','));
+console.log('OK');
+`
+
+// TestGraphsPageMemberGrid runs the page's member chart functions in node:
+// sub-second windows are neither merged nor double counted, the stack totals
+// and the Y extent equal the drawn stack top, 1 s windows keep whole-second x.
+func TestGraphsPageMemberGrid(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	body := graphsPageBody(t)
+	var js strings.Builder
+	for _, f := range []string{"rampOf", "windowOf", "fioShift", "memberNames", "memberStep", "memberKey",
+		"memberGrid", "memberExtent", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets"} {
+		js.WriteString(jsFunction(t, body, f))
+		js.WriteString("\n")
+	}
+	js.WriteString(memberGridJS)
+	cmd := exec.Command(node)
+	cmd.Stdin = strings.NewReader(js.String())
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "OK" {
+		t.Fatalf("node: %v\n%s", err, out)
 	}
 }

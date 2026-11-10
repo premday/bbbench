@@ -853,28 +853,60 @@ __NAVBAR_HTML__
     function rgba(c, a) {
         return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')';
     }
-    // memberTotals sums the members per x: the top (read) and bottom (write)
-    // of the stack.
-    function memberTotals(d, metric) {
-        const tot = {};
-        memberNames(d).forEach(n => (d.ts_members[n][metric.key] || []).forEach(p => {
-            const x = Math.round(p.t), s = tot[x] || (tot[x] = {r: 0, w: 0});
-            s.r += p.r || 0;
-            s.w += p.w || 0;
+    // memberStep is the width of one log window in seconds (the sampler
+    // uses fio's --log-avg-msec); 1 when unknown.
+    function memberStep(d) {
+        const w = d.log_avg_msec ? d.log_avg_msec / 1000 : windowOf(d);
+        return w > 0 ? w : 1;
+    }
+    // memberKey puts a time on the window grid: the nearest multiple of the
+    // window, in whole ms. The sampler's stamps jitter by a few ms and fio's
+    // are bucketed, so both land on the same key; a sub-second window keeps
+    // its own key instead of sharing one with its neighbour. With 1 s windows
+    // it is Math.round(t).
+    function memberKey(t, step) {
+        return Math.round(Math.round(t / step) * step * 1000) / 1000;
+    }
+    // memberGrid is everything a member chart draws, built once: the x grid
+    // every dataset shares (the tooltip, mode 'index', pairs the points of
+    // the datasets by position), each member's and the array's point per x,
+    // and the stack totals summed from those same member points, so the
+    // totals and the Y scale cannot differ from the drawn stack top.
+    function memberGrid(d, metric) {
+        const step = memberStep(d), shift = fioShift(d), keys = new Set();
+        const members = {}, array = {}, totals = {};
+        memberNames(d).forEach(n => {
+            const m = members[n] = {};
+            (d.ts_members[n][metric.key] || []).forEach(p => {
+                const x = memberKey(p.t, step);
+                m[x] = p;
+                keys.add(x);
+            });
+        });
+        (d[metric.tsKey] || []).forEach(p => {
+            const x = memberKey(p.t + shift, step);
+            array[x] = p;
+            keys.add(x);
+        });
+        Object.values(members).forEach(m => Object.keys(m).forEach(x => {
+            const s = totals[x] || (totals[x] = {r: 0, w: 0});
+            s.r += m[x].r || 0;
+            s.w += m[x].w || 0;
         }));
-        return tot;
+        return { xs: [...keys].sort((a, b) => a - b), members, array, totals };
     }
     // memberExtent is the highest read and write a member chart draws: the
     // stack totals for IOPS and bandwidth, each member's own for latency.
     function memberExtent(d, metric) {
+        const g = memberGrid(d, metric);
         let r = 0, w = 0;
         if (metric.key === 'lat') {
-            memberNames(d).forEach(n => (d.ts_members[n].lat || []).forEach(p => {
+            Object.values(g.members).forEach(m => Object.values(m).forEach(p => {
                 r = Math.max(r, p.r || 0);
                 w = Math.max(w, p.w || 0);
             }));
         } else {
-            Object.values(memberTotals(d, metric)).forEach(s => {
+            Object.values(g.totals).forEach(s => {
                 r = Math.max(r, s.r);
                 w = Math.max(w, s.w);
             });
@@ -890,12 +922,6 @@ __NAVBAR_HTML__
         const role = d.ts_members[n].role;
         return n + (role ? ' (' + role + ')' : '') + (dir === 'r' ? ' read' : ' write');
     }
-    // memberPoints maps x -> point of member n.
-    function memberPoints(d, metric, n) {
-        const m = {};
-        (d.ts_members[n][metric.key] || []).forEach(p => { m[Math.round(p.t)] = p; });
-        return m;
-    }
     function hasDir(pts, dir) {
         return Object.values(pts).some(p => (p[dir] || 0) > 0);
     }
@@ -903,17 +929,16 @@ __NAVBAR_HTML__
     // and write are two stacks: Chart.js adds a 0 to every earlier value of
     // its stack whatever their sign, so an idle write would sit on the reads.
     // Zeros are kept: a missing point would let the bands above it drop.
-    function stackedMemberDatasets(d, metric, xs, colors) {
+    function stackedMemberDatasets(d, g, colors) {
         const out = [];
         ['r', 'w'].forEach(dir => {
-            const pts = memberNames(d).map(n => memberPoints(d, metric, n));
-            if (!pts.some(p => hasDir(p, dir))) return;
+            if (!memberNames(d).some(n => hasDir(g.members[n], dir))) return;
             let first = true;
-            memberNames(d).forEach((n, i) => {
-                const c = colors[n];
+            memberNames(d).forEach(n => {
+                const c = colors[n], pts = g.members[n];
                 out.push({
                     label: memberLabel(d, n, dir), member: n, dir,
-                    data: xs.map(x => ({x, y: pts[i][x] ? (dir === 'r' ? 1 : -1) * (pts[i][x][dir] || 0) : null})),
+                    data: g.xs.map(x => ({x, y: pts[x] ? (dir === 'r' ? 1 : -1) * (pts[x][dir] || 0) : null})),
                     stack: dir === 'r' ? 'members' : 'members-write',
                     fill: first ? 'origin' : '-1',
                     borderColor: rgba(c, 0.9), backgroundColor: rgba(c, dir === 'r' ? 0.35 : 0.22),
@@ -926,15 +951,15 @@ __NAVBAR_HTML__
     }
     // memberLatencyDatasets: one line per member and direction. A window
     // without I/O has no latency (0): no point.
-    function memberLatencyDatasets(d, metric, xs, colors) {
+    function memberLatencyDatasets(d, g, colors) {
         const out = [];
         ['r', 'w'].forEach(dir => memberNames(d).forEach(n => {
-            const pts = memberPoints(d, metric, n);
+            const pts = g.members[n];
             if (!hasDir(pts, dir)) return;
             const c = colors[n];
             out.push({
                 label: memberLabel(d, n, dir), member: n, dir,
-                data: xs.map(x => ({x, y: pts[x] && pts[x][dir] > 0 ? (dir === 'r' ? 1 : -1) * pts[x][dir] : null})),
+                data: g.xs.map(x => ({x, y: pts[x] && pts[x][dir] > 0 ? (dir === 'r' ? 1 : -1) * pts[x][dir] : null})),
                 fill: false, borderColor: rgba(c, 0.9), backgroundColor: rgba(c, 0.9),
                 borderDash: dir === 'w' ? [4, 2] : [],
                 tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.2, spanGaps: true,
@@ -945,15 +970,13 @@ __NAVBAR_HTML__
     // arrayDatasets: the array's own fio series, unfilled lines drawn over
     // the members (order -1). Under the stacked scale they get their own
     // stack, so their values are not added to the members'.
-    function arrayDatasets(d, metric, xs, stacked) {
-        const ts = d[metric.tsKey] || [], shift = fioShift(d), pts = {};
-        ts.forEach(p => { pts[Math.round(p.t + shift)] = p; });
-        const out = [];
+    function arrayDatasets(g, stacked) {
+        const pts = g.array, out = [];
         [['r', 'Read', 'rgba(37,99,235,0.95)'], ['w', 'Write', 'rgba(220,38,38,0.95)']].forEach(([dir, name, color]) => {
             if (!hasDir(pts, dir)) return;
             const ds = {
                 label: 'Array ' + name.toLowerCase(), array: true, dir, order: -1,
-                data: xs.map(x => ({x, y: pts[x] && pts[x][dir] > 0 ? (dir === 'r' ? 1 : -1) * pts[x][dir] : null})),
+                data: g.xs.map(x => ({x, y: pts[x] && pts[x][dir] > 0 ? (dir === 'r' ? 1 : -1) * pts[x][dir] : null})),
                 fill: false, borderColor: color, backgroundColor: color,
                 tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 2, spanGaps: true,
             };
@@ -962,22 +985,14 @@ __NAVBAR_HTML__
         });
         return out;
     }
-    // memberXs is the x grid every dataset of a member chart shares: the
-    // tooltip (mode 'index') pairs the points of the datasets by position.
-    function memberXs(d, metric) {
-        const xs = new Set(), shift = fioShift(d);
-        memberNames(d).forEach(n => (d.ts_members[n][metric.key] || []).forEach(p => xs.add(Math.round(p.t))));
-        (d[metric.tsKey] || []).forEach(p => xs.add(Math.round(p.t + shift)));
-        return [...xs].sort((a, b) => a - b);
-    }
     function makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl) {
         tsWarn(warnEl, d[metric.tsKey] || []);
         const stacked = metric.key !== 'lat';
-        const xs = memberXs(d, metric), colors = memberColors(memberNames(d));
-        const members = stacked ? stackedMemberDatasets(d, metric, xs, colors) : memberLatencyDatasets(d, metric, xs, colors);
-        const array = arrayDatasets(d, metric, xs, stacked);
+        const g = memberGrid(d, metric), xs = g.xs, colors = memberColors(memberNames(d));
+        const members = stacked ? stackedMemberDatasets(d, g, colors) : memberLatencyDatasets(d, g, colors);
+        const array = arrayDatasets(g, stacked);
         const datasets = members.concat(array);
-        const totals = stacked ? memberTotals(d, metric) : {};
+        const totals = stacked ? g.totals : {};
         const dirs = ['r', 'w'].filter(dir => members.some(m => m.dir === dir));
         const fmt = v => fmtTick(Math.abs(v)) + ' ' + metric.unit;
         const totalLines = i => {
