@@ -72,3 +72,45 @@ func (r *Recovery) Match(devices []DriveRef) (found map[string]RecoveryDrive, mi
 	}
 	return found, missing
 }
+
+// RecoveryOf is the recovery file of setting holding undos: each drive undo
+// becomes a Drives entry.
+func RecoveryOf(setting string, undos []settings.Undo) *Recovery {
+	r := &Recovery{Setting: setting}
+	for _, u := range undos {
+		if u.Drive == nil || u.Original == nil {
+			continue
+		}
+		r.Drives = append(r.Drives, RecoveryDrive{Serial: u.Drive.Serial, Model: u.Drive.Model, Name: u.Drive.Name, Original: *u.Original})
+	}
+	return r
+}
+
+// Undos are the entries as undo records, matched to the current targets by
+// serial and model (Match), in the order of the file. A found entry carries
+// its current target; a missing one keeps its recorded name, serial and
+// model as an unresolved target.
+func (r *Recovery) Undos(targets []settings.Target) (found, missing []settings.Undo) {
+	refs := make([]DriveRef, 0, len(targets))
+	byName := make(map[string]settings.Target, len(targets))
+	for _, t := range targets {
+		refs = append(refs, DriveRef{Name: t.Name, Serial: t.Serial, Model: t.Model})
+		byName[t.Name] = t
+	}
+	matched, _ := r.Match(refs)
+	current := map[string]string{} // serial+model -> current name
+	for name, e := range matched {
+		current[e.Serial+"\x00"+e.Model] = name
+	}
+	for _, e := range r.Drives {
+		orig := e.Original
+		if name, ok := current[e.Serial+"\x00"+e.Model]; ok {
+			t := byName[name]
+			found = append(found, settings.Undo{Drive: &t, Original: &orig})
+			continue
+		}
+		t := settings.Target{Name: e.Name, Serial: e.Serial, Model: e.Model}
+		missing = append(missing, settings.Undo{Drive: &t, Original: &orig})
+	}
+	return found, missing
+}

@@ -89,27 +89,93 @@ type Reading struct {
 	At     time.Time `json:"at"`
 }
 
+// Lifetime says when a setting is prepared and undone.
+type Lifetime string
+
+const (
+	// LifetimeGroup is prepared once for every disk of the group and undone
+	// when the group ends (drive values).
+	LifetimeGroup Lifetime = "group"
+	// LifetimeRun is prepared before each run and undone right after it
+	// (layouts).
+	LifetimeRun Lifetime = "run"
+)
+
+// Variant is one value of a setting on its disks: what one part of a run
+// applies. Name is unique in the group, "<group id>_<run n>", and is set by
+// the group loop.
+type Variant struct {
+	Name  string
+	Value Value
+	Disks []Disk
+}
+
+// BenchTarget is what a run benchmarks after Apply. For a drive, Target is
+// the drive itself. For a composite, Target.Name/Path are its kernel name and
+// node ("md127", "dm-3"), Serial is its uuid, Model the level, and the
+// backend sets Vendor and Interface.
+type BenchTarget struct {
+	Kind    TargetKind
+	Target  Target
+	UUID    string
+	Members []Disk
+	// Want is the Reading.Value that verifies the target.
+	Want string
+	// Err is set when Apply could not make this one target effective.
+	Err error
+}
+
+// Undo is one record of what puts the machine back: for a drive, its
+// original reading.
+type Undo struct {
+	Drive    *Target
+	Original *Reading
+}
+
+// Name is the name of the drive the record puts back.
+func (u Undo) Name() string {
+	if u.Drive != nil {
+		return u.Drive.Name
+	}
+	return ""
+}
+
+// Settler is implemented by settings whose targets need time to become
+// steady after Apply (an array resyncing), before a run may start.
+type Settler interface {
+	WaitSteady(ctx context.Context, ts []BenchTarget, progress func(pct float64)) error
+}
+
 // Setting is one thing bbbench can vary between groups.
 type Setting interface {
 	Name() string
 	Kind() Kind
 	Scope() Scope
 	Input() Input
+	Lifetime() Lifetime
 	Values() []Value
-	// Applicable says whether the setting can be controlled on t, and if not, why.
+	// Applicable says whether the setting can be controlled on one disk,
+	// and if not, why.
 	Applicable(t Target) (bool, string)
-	Read(ctx context.Context, t Target) (Reading, error)
-	Apply(ctx context.Context, t Target, v Value) error
-	// Restore puts the setting back to original, writing only when it differs.
-	Restore(ctx context.Context, t Target, original Reading) error
+	// ApplicableVariant says the same for a whole variant.
+	ApplicableVariant(v Variant) (bool, string)
+	// Prepare reads what Apply will change and returns what undoes it; it
+	// changes nothing.
+	Prepare(ctx context.Context, v Variant) ([]Undo, error)
+	// Apply makes v effective and returns the targets to benchmark.
+	Apply(ctx context.Context, v Variant, prepared []Undo) ([]BenchTarget, error)
+	Read(ctx context.Context, t BenchTarget) (Reading, error)
+	// Undo puts back one record and checks it; it writes only when
+	// something differs.
+	Undo(ctx context.Context, u Undo) error
 }
 
-// CommandHinter is implemented by settings that can say which command sets
-// a drive back by hand, for the report of a failed restore.
+// CommandHinter is implemented by settings that can say which command puts
+// a record back by hand, for the report of a failed restore.
 type CommandHinter interface {
-	// RestoreCommand is the command that sets t to original, or "" when
-	// there is none (unknown value or interface).
-	RestoreCommand(t Target, original Reading) string
+	// UndoCommand is the command that undoes u, or "" when there is none
+	// (unknown value or interface).
+	UndoCommand(u Undo) string
 }
 
 // Runner runs a command and returns its standard output.
@@ -121,6 +187,9 @@ type Env struct {
 	LookPath func(string) (string, error)       // default exec.LookPath
 	Sys      string                             // sysfs root, default /sys
 	GetWCE   func(devPath string) (bool, error) // default scsi.GetWCE
+	// Settle is how long a read-back may take to show a restored value
+	// (default 10 s).
+	Settle time.Duration
 }
 
 func (e Env) fill() Env {
@@ -138,6 +207,9 @@ func (e Env) fill() Env {
 	if e.GetWCE == nil {
 		e.GetWCE = scsi.GetWCE
 	}
+	if e.Settle == 0 {
+		e.Settle = 10 * time.Second
+	}
 	return e
 }
 
@@ -146,15 +218,15 @@ func All(env Env) []Setting {
 	return []Setting{NewWriteCache(env)}
 }
 
-// Verify reads the setting every 200 ms until it equals want or settle has
+// Verify reads the setting every 200 ms until it equals t.Want or settle has
 // elapsed; it returns the last reading and whether it matched.
-func Verify(ctx context.Context, s Setting, t Target, want Value, settle time.Duration) (Reading, bool) {
+func Verify(ctx context.Context, s Setting, t BenchTarget, settle time.Duration) (Reading, bool) {
 	deadline := time.Now().Add(settle)
 	var last Reading
 	for {
 		if r, err := s.Read(ctx, t); err == nil {
 			last = r
-			if r.Value == want.ID {
+			if r.Value == t.Want {
 				return r, true
 			}
 		}

@@ -20,9 +20,6 @@ import (
 	"bbbench/internal/settings"
 )
 
-// restoreTimeout bounds restoring one drive (its commands and the read-back).
-const restoreTimeout = 2 * time.Minute
-
 // groupConfig is a run group ready to execute: the setting, its values, how
 // they are spread over the drives, and how to run the test plan once.
 type groupConfig struct {
@@ -88,6 +85,9 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 	if s.Kind() != settings.Applied {
 		return nil, fmt.Errorf("run group: %s cannot be applied by bbbench", s.Name())
 	}
+	if s.Lifetime() != settings.LifetimeGroup {
+		return nil, fmt.Errorf("run group: %s is prepared per run, which run groups do not support yet", s.Name())
+	}
 	if cfg.RecoveryPath == "" {
 		return nil, errors.New("run group: no recovery file path")
 	}
@@ -136,42 +136,41 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 		signal.Stop(sigChan)
 	}()
 
-	// The originals, read before anything changes.
-	rec := &rungroup.Recovery{Setting: s.Name()}
-	g.Originals = map[string]settings.Reading{}
-	for _, d := range cfg.Drives {
-		name := d.Device.Name
-		r, rerr := s.Read(ctx, cfg.Targets[name])
-		if rerr != nil {
-			return nil, fmt.Errorf("run group: read the original %s of %s: %w", s.Name(), name, rerr)
-		}
-		if r.Value == "" {
-			return nil, fmt.Errorf("run group: the %s of %s read back empty", s.Name(), name)
-		}
-		if cfg.Resume != nil {
-			if was, ok := cfg.Resume.Originals[name]; ok && was.Value != r.Value {
-				logger.Warn("resumed group: drive value differs from the recorded original", "device", name, "now", r.Value, "recorded", was.Value)
-			}
-		}
-		g.Originals[name] = r
-		rec.Drives = append(rec.Drives, rungroup.RecoveryDrive{Serial: d.Device.Serial, Model: d.Device.Model, Name: name, Original: r})
-	}
-
-	// The recovery file, then the group file, both before the first apply.
+	// A recovery file from an earlier group must be restored first.
 	if existing, lerr := rungroup.LoadRecovery(cfg.RecoveryPath); lerr != nil || existing != nil {
 		if lerr != nil {
 			return nil, fmt.Errorf("run group: check the recovery file %s: %w", cfg.RecoveryPath, lerr)
 		}
 		return nil, fmt.Errorf("run group: a recovery file from an earlier group exists (%s); restore it first", cfg.RecoveryPath)
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.RecoveryPath), 0o755); err != nil {
-		return nil, fmt.Errorf("run group: create the recovery directory: %w", err)
+
+	// The originals, read before anything changes.
+	all := settings.Variant{Name: g.ID, Disks: groupDisks(cfg, cfg.Drives)}
+	undos, err := s.Prepare(ctx, all)
+	if err != nil {
+		return nil, fmt.Errorf("run group: %w", err)
 	}
-	if err := rec.Save(cfg.RecoveryPath); err != nil {
-		return nil, fmt.Errorf("run group: write the recovery file: %w", err)
+	g.Originals = map[string]settings.Reading{}
+	for _, u := range undos {
+		if u.Original == nil {
+			continue
+		}
+		name, r := u.Name(), *u.Original
+		if cfg.Resume != nil {
+			if was, ok := cfg.Resume.Originals[name]; ok && was.Value != r.Value {
+				logger.Warn("resumed group: drive value differs from the recorded original", "device", name, "now", r.Value, "recorded", was.Value)
+			}
+		}
+		g.Originals[name] = r
+	}
+
+	// The recovery file, then the group file, both before the first apply.
+	ledger := newUndoLedger(cfg.RecoveryPath, s.Name(), nil)
+	if err := ledger.add(undos...); err != nil {
+		return nil, fmt.Errorf("run group: %w", err)
 	}
 	if err := saveGroup(cfg, g); err != nil {
-		if rerr := rec.Remove(cfg.RecoveryPath); rerr != nil {
+		if rerr := (&rungroup.Recovery{}).Remove(cfg.RecoveryPath); rerr != nil {
 			logger.Warn("remove recovery file", "path", cfg.RecoveryPath, "err", rerr)
 		}
 		return nil, fmt.Errorf("run group: write the group file: %w", err)
@@ -188,7 +187,7 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 				current.Drives[i].Label = interruptedLabel(current.Drives[i].Label)
 			}
 		}
-		err = errors.Join(err, finishGroup(cfg, g, rec, lastRun, len(plans)))
+		err = errors.Join(err, finishGroup(cfg, g, ledger, lastRun, len(plans)))
 		if p != nil {
 			panic(p)
 		}
@@ -386,11 +385,19 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 	}
 	fmt.Printf("\nRun group: run %d of %d (%s)\n", idx+1, total, describeRun(plan))
 
-	applyErr := map[string]error{}
-	for _, d := range drives {
-		name := d.Device.Name
-		if err := s.Apply(ctx, cfg.Targets[name], values[valueOf[name]]); err != nil {
-			applyErr[name] = err
+	// One variant per value of the plan, its disks in drive order.
+	bench := map[string]settings.BenchTarget{} // keyed by target name
+	for _, v := range runVariants(cfg, g.ID, idx, plan, drives, values) {
+		ts, err := s.Apply(ctx, v, nil)
+		if err != nil {
+			// The whole variant failed: each of its disks carries the error.
+			ts = ts[:0]
+			for _, d := range v.Disks {
+				ts = append(ts, settings.BenchTarget{Kind: settings.TargetDrive, Target: d.Target, Want: v.Value.ID, Err: err})
+			}
+		}
+		for _, bt := range ts {
+			bench[bt.Target.Name] = bt
 		}
 	}
 
@@ -401,13 +408,18 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 		l := labels[name]
 		var r settings.Reading
 		var ok bool
-		if aerr := applyErr[name]; aerr != nil {
-			if rr, rerr := s.Read(ctx, cfg.Targets[name]); rerr == nil {
+		bt, applied := bench[name]
+		if !applied {
+			bt = settings.BenchTarget{Kind: settings.TargetDrive, Target: cfg.Targets[name], Want: l.Value, Err: errors.New("no target to benchmark")}
+			bench[name] = bt
+		}
+		if aerr := bt.Err; aerr != nil {
+			if rr, rerr := s.Read(ctx, bt); rerr == nil {
 				r = rr
 			}
 			l.Note = fmt.Sprintf("apply failed: %v", aerr)
-		} else if r, ok = settings.Verify(ctx, s, cfg.Targets[name], values[l.Value], cfg.Settle); !ok {
-			l.Note = fmt.Sprintf("setting not effective: reads %q, want %q", r.Value, l.Value)
+		} else if r, ok = settings.Verify(ctx, s, bt, cfg.Settle); !ok {
+			l.Note = fmt.Sprintf("setting not effective: reads %q, want %q", r.Value, bt.Want)
 		}
 		if !r.At.IsZero() {
 			l.Before = &r
@@ -476,7 +488,7 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 	for _, d := range drives {
 		name := d.Device.Name
 		l := labels[name]
-		r, ok := settings.Verify(ctx, s, cfg.Targets[name], values[l.Value], cfg.Settle)
+		r, ok := settings.Verify(ctx, s, bench[name], cfg.Settle)
 		if !r.At.IsZero() {
 			l.After = &r
 		}
@@ -512,6 +524,23 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 	return nil
 }
 
+// runVariants are the variants of run idx of group id: one per value of
+// plan, named "<group id>_<run n>", with the plan's drives (in the order of
+// drives) as data disks.
+func runVariants(cfg groupConfig, id string, idx int, plan rungroup.RunPlan, drives []DriveInfo, values map[string]settings.Value) []settings.Variant {
+	out := make([]settings.Variant, 0, len(plan.Variants))
+	for _, pv := range plan.Variants {
+		var picked []DriveInfo
+		for _, d := range drives {
+			if slices.Contains(pv.Drives, d.Device.Name) {
+				picked = append(picked, d)
+			}
+		}
+		out = append(out, settings.Variant{Name: id + "_" + strconv.Itoa(idx+1), Value: values[pv.Value], Disks: groupDisks(cfg, picked)})
+	}
+	return out
+}
+
 // interruptedNote explains why the results of an interrupted run are excluded.
 const interruptedNote = "run interrupted, setting not verified after the run"
 
@@ -537,32 +566,24 @@ func describeRun(p rungroup.RunPlan) string {
 	return strings.Join(parts, "; ")
 }
 
-// finishGroup restores every drive to its original value, verifies it,
+// finishGroup undoes every record (each restored drive is verified),
 // records the result in the group file and removes the recovery file, or
-// keeps it with only the drives that failed.
-func finishGroup(cfg groupConfig, g *rungroup.GroupFile, rec *rungroup.Recovery, run, total int) error {
+// keeps it with only the records that failed.
+func finishGroup(cfg groupConfig, g *rungroup.GroupFile, ledger *undoLedger, run, total int) error {
 	setGroupStatus(g, run, total, stepRestoring)
 	fmt.Println("\nRun group: restoring the original values")
-	var failed []string
-	var kept []rungroup.RecoveryDrive
-	for _, e := range rec.Drives {
-		if err := restoreOne(context.Background(), cfg.Setting, cfg.Targets, e.Name, e, cfg.Settle); err != nil {
-			failed = append(failed, e.Name)
-			kept = append(kept, e)
-		}
-	}
+	failed, ferr := ledger.undo(context.Background(), cfg.Setting, func(settings.Undo) bool { return true })
 	var errs []error
 	if len(failed) == 0 {
 		g.Restore = rungroup.GroupRestore{Status: rungroup.RestoreDone}
-		if err := rec.Remove(cfg.RecoveryPath); err != nil {
-			errs = append(errs, fmt.Errorf("remove the recovery file: %w", err))
+		if ferr != nil {
+			errs = append(errs, fmt.Errorf("remove the recovery file: %w", ferr))
 		}
 		fmt.Println("Original values restored and verified.")
 	} else {
 		g.Restore = rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: failed}
-		left := &rungroup.Recovery{Setting: rec.Setting, Drives: kept}
-		if err := left.Save(cfg.RecoveryPath); err != nil {
-			errs = append(errs, fmt.Errorf("update the recovery file: %w", err))
+		if ferr != nil {
+			errs = append(errs, fmt.Errorf("update the recovery file: %w", ferr))
 		}
 		errs = append(errs, fmt.Errorf("restore failed on %s; the recovery file %s is kept", strings.Join(failed, ", "), cfg.RecoveryPath))
 	}
@@ -574,89 +595,13 @@ func finishGroup(cfg groupConfig, g *rungroup.GroupFile, rec *rungroup.Recovery,
 	return errors.Join(errs...)
 }
 
-// restoreDrive restores t to original and reads it back, within
-// restoreTimeout of parent.
-// A panic in the setting is returned as an error, so one drive cannot keep
-// the others from being restored.
-func restoreDrive(parent context.Context, s settings.Setting, t settings.Target, original settings.Reading, settle time.Duration) (err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			err = fmt.Errorf("panic while restoring: %v", p)
-		}
-	}()
-	ctx, cancel := context.WithTimeout(parent, restoreTimeout)
-	defer cancel()
-	if err := s.Restore(ctx, t, original); err != nil {
-		return err
+// groupDisks are the data disks of drives, with their targets.
+func groupDisks(cfg groupConfig, drives []DriveInfo) []settings.Disk {
+	disks := make([]settings.Disk, 0, len(drives))
+	for _, d := range drives {
+		disks = append(disks, settings.Disk{Target: cfg.Targets[d.Device.Name], Role: settings.RoleData})
 	}
-	if r, ok := settings.Verify(ctx, s, t, settings.Value{ID: original.Value}, settle); !ok {
-		return fmt.Errorf("reads %q after restoring, want %q", r.Value, original.Value)
-	}
-	return nil
-}
-
-// restoreOne restores drive name (entry e) and reports a failure. Restore
-// and report both run under one recover, so a panic in either is returned as
-// an error and the other drives are still restored.
-func restoreOne(parent context.Context, s settings.Setting, targets map[string]settings.Target, name string, e rungroup.RecoveryDrive, settle time.Duration) (err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			err = errors.Join(err, fmt.Errorf("panic while restoring or reporting %s: %v", name, p))
-		}
-	}()
-	t, ok := targets[name]
-	if !ok {
-		err = errors.New("no target for the drive")
-	} else {
-		err = restoreDrive(parent, s, t, e.Original, settle)
-	}
-	if err != nil {
-		e.Name = name
-		reportRestoreFailure(s, t, e, err)
-	}
-	return err
-}
-
-// restoreReportOut is where failed restores are reported (tests replace it).
-var restoreReportOut io.Writer = os.Stderr
-
-// reportRestoreFailure makes a failed restore impossible to miss, with the
-// command to run by hand when the setting knows it.
-func reportRestoreFailure(s settings.Setting, t settings.Target, e rungroup.RecoveryDrive, err error) {
-	logger.Error("restore failed", "setting", s.Name(), "device", e.Name, "serial", e.Serial, "original", e.Original.Value, "err", err)
-	fmt.Fprintf(restoreReportOut, "\n*** RESTORE FAILED: %s on %s (%s, S/N %s): %v\n", s.Name(), e.Name, e.Model, e.Serial, err)
-	fmt.Fprintf(restoreReportOut, "*** Set it back to %q by hand; it is volatile, so a power cycle also resets it.\n", e.Original.Value)
-	if h, ok := s.(settings.CommandHinter); ok {
-		if cmd := h.RestoreCommand(t, e.Original); cmd != "" {
-			fmt.Fprintf(restoreReportOut, "*** Command to set it back by hand: %s\n", cmd)
-		}
-	}
-}
-
-// restoreFromRecovery restores the drives of a recovery file left by an
-// earlier group, matching them by serial and model (names change across
-// reboots). It returns the drives not restored: the recorded name of an
-// entry with no matching drive, the current name of one whose restore or
-// read-back failed.
-func restoreFromRecovery(ctx context.Context, s settings.Setting, rec *rungroup.Recovery, devices []DriveInfo, targets map[string]settings.Target) (failed []string) {
-	found, _ := rec.Match(driveRefs(devices, nil))
-	current := map[string]string{} // serial+model -> current device name
-	for name, e := range found {
-		current[e.Serial+"\x00"+e.Model] = name
-	}
-	for _, e := range rec.Drives {
-		name, ok := current[e.Serial+"\x00"+e.Model]
-		if !ok {
-			logger.Warn("recovery: drive not present", "name", e.Name, "serial", e.Serial, "model", e.Model)
-			fmt.Fprintf(os.Stderr, "Recovery: %s (%s, S/N %s) is not present; not restored.\n", e.Name, e.Model, e.Serial)
-			failed = append(failed, e.Name)
-			continue
-		}
-		if err := restoreOne(ctx, s, targets, name, e, groupSettle); err != nil {
-			failed = append(failed, name)
-		}
-	}
-	return failed
+	return disks
 }
 
 // saveGroup writes the group file and tells OnSave.

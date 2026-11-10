@@ -199,7 +199,7 @@ func runOrchestrator(args []string) error {
 	// restoring before anything else; all discovered drives are candidates.
 	available := settings.All(settings.Env{})
 	targets := targetsFor(allDrives, diskinfo.Options{})
-	if err := offerRecovery(context.Background(), os.Stdin, os.Stdout, groupRecoveryPath, available, allDrives, targets); err != nil {
+	if err := offerRecovery(context.Background(), os.Stdin, os.Stdout, groupRecoveryPath, available, targets); err != nil {
 		return err
 	}
 

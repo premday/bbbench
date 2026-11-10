@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -44,7 +45,7 @@ func settingByName(available []settings.Setting, name string) settings.Setting {
 // restore its drives, and offers to restore them (answer read from in). The
 // file is removed only after every drive was restored. An error means the
 // run must stop: the file could not be read, or a drive was not restored.
-func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string, available []settings.Setting, drives []DriveInfo, targets map[string]settings.Target) error {
+func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string, available []settings.Setting, targets map[string]settings.Target) error {
 	rec, err := rungroup.LoadRecovery(path)
 	if err != nil {
 		return fmt.Errorf("read the recovery file %s: %w (check it by hand: it lists drive settings bbbench changed)", path, err)
@@ -64,12 +65,16 @@ func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string
 		fmt.Fprintf(out, "Not restored. A setting test will refuse to start while %s exists; a single run is not affected.\n\n", path)
 		return nil
 	}
-	failed := restoreFromRecovery(ctx, s, rec, drives, targets)
+	failed := restoreFromRecovery(ctx, s, rec, path, targets)
 	if len(failed) > 0 {
 		fmt.Fprintf(out, "\nNot restored: %s. The recovery file %s is kept. Set them back by hand (the command is printed above when known); a power cycle also resets a volatile setting.\n", strings.Join(failed, ", "), path)
 		return fmt.Errorf("could not restore %s on %s", s.Name(), strings.Join(failed, ", "))
 	}
-	if err := rec.Remove(path); err != nil {
+	// restoreFromRecovery removed the file once nothing was left to undo.
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			err = errors.New("it is still there")
+		}
 		return fmt.Errorf("restored, but could not remove the recovery file %s: %w", path, err)
 	}
 	fmt.Fprintf(out, "Restored the original values.\n\n")
