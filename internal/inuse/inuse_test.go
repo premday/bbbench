@@ -259,8 +259,8 @@ func TestScan_BtrfsRootBySource(t *testing.T) {
 	if got := r.Reason("sdh"); got != "holds the root filesystem (/)" {
 		t.Fatal(got)
 	}
-	if len(r.Warnings) != 0 {
-		t.Fatalf("a resolved mount must not warn: %v", r.Warnings)
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "may span more disks") {
+		t.Fatalf("a btrfs mount must warn about other members: %v", r.Warnings)
 	}
 }
 
@@ -365,4 +365,193 @@ func TestParsePVs(t *testing.T) {
 	if _, err := parsePVs([]byte("nope")); err == nil {
 		t.Fatal("want an error")
 	}
+}
+
+func TestScan_BtrfsMemberSignature(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdh", "8:112")
+	h.disk("sdm", "8:192") // second member, not named in the mount source
+	h.udevType("8:112", "btrfs")
+	h.udevType("8:192", "btrfs")
+	h.mount("0:27", "/pool", "btrfs", "/dev/sdh")
+	h.stats["/dev/sdh"] = [2]uint64{dev(0, 5), dev(8, 112)}
+	r := h.scan()
+	want := "has a btrfs filesystem label (member of a btrfs filesystem; check with btrfs filesystem show)"
+	if got := r.Busy["sdm"]; len(got) != 1 || got[0] != want {
+		t.Fatal(got)
+	}
+	if len(r.Warnings) != 1 || strings.Contains(r.Warnings[0], "ZFS, LVM or md") {
+		t.Fatal(r.Warnings)
+	}
+}
+
+func TestScan_BtrfsUnresolvedWarnText(t *testing.T) {
+	h := fakeHost(t)
+	h.mount("0:27", "/pool", "btrfs", "UUID=abc")
+	r := h.scan()
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "btrfs signature") && !strings.Contains(r.Warnings[0], "btrfs, ZFS") {
+		t.Fatal(r.Warnings)
+	}
+}
+
+func TestScan_BcachefsMemberSignature(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdm", "8:192")
+	h.udevType("8:192", "bcachefs")
+	if got := h.scan().Reason("sdm"); !strings.HasPrefix(got, "has a bcachefs filesystem label") {
+		t.Fatal(got)
+	}
+}
+
+func TestScan_RootUnknownToSysfs(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sda", "8:0")
+	h.mount("8:99", "/", "ext4", "/dev/sda99")
+	r := h.scan()
+	if !strings.HasPrefix(r.All, "the disk holding the root filesystem could not be determined") {
+		t.Fatal(r.All)
+	}
+}
+
+func TestScan_SwapUnattributed(t *testing.T) {
+	want := func(f string) string {
+		return "an active swap area (" + f + ") could not be attributed to a disk; no disk can be offered"
+	}
+	t.Run("stat fails", func(t *testing.T) {
+		h := fakeHost(t)
+		h.disk("sdd", "8:48")
+		h.swap("/dev/gone\tpartition\t100\t0\t-2")
+		if r := h.scan(); r.All != want("/dev/gone") || r.Reason("sdd") != r.All {
+			t.Fatal(r.All)
+		}
+	})
+	t.Run("partition not in sysfs", func(t *testing.T) {
+		h := fakeHost(t)
+		h.disk("sdd", "8:48")
+		h.stats["/dev/x"] = [2]uint64{dev(0, 5), dev(8, 200)}
+		h.swap("/dev/x\tpartition\t100\t0\t-2")
+		if r := h.scan(); r.All != want("/dev/x") {
+			t.Fatal(r.All)
+		}
+	})
+	t.Run("file on unknown fs", func(t *testing.T) {
+		h := fakeHost(t)
+		h.stats["/swapfile"] = [2]uint64{dev(0, 77), 0}
+		h.swap("/swapfile\tfile\t100\t0\t-3")
+		if r := h.scan(); r.All != want("/swapfile") {
+			t.Fatal(r.All)
+		}
+	})
+}
+
+func TestScan_SwapEscapedFilename(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sde", "8:64")
+	h.stats["/my swap"] = [2]uint64{dev(8, 64), 0}
+	h.swap(`/my\040swap` + "\tfile\t100\t0\t-3")
+	eq(t, h.scan().Busy["sde"], []string{"holds an active swap file (/my swap)"})
+}
+
+func TestScan_SwapAndPathsNegative(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdd", "8:48")
+	h.disk("sde", "8:64")
+	h.stats["/dev/sdd"] = [2]uint64{dev(0, 5), dev(8, 48)}
+	h.stats["/bin/x"] = [2]uint64{dev(8, 48), 0}
+	h.swap("/dev/sdd\tpartition\t100\t0\t-2")
+	h.paths = map[string]string{"/bin/x": "the bbbench binary"}
+	r := h.scan()
+	if r.All != "" || r.Reason("sde") != "" {
+		t.Fatal(r.All, r.Busy)
+	}
+	if len(r.Busy["sdd"]) != 2 {
+		t.Fatal(r.Busy)
+	}
+}
+
+func TestScan_PathsUnattributed(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdf", "8:80")
+	h.paths = map[string]string{"/out": "the output directory"}
+	r := h.scan() // Stat fails for /out
+	if !strings.HasPrefix(r.All, "the output directory (/out) could not be attributed to a disk") ||
+		!strings.HasSuffix(r.All, "no disk can be offered") {
+		t.Fatal(r.All)
+	}
+	h2 := fakeHost(t)
+	h2.disk("sdf", "8:80")
+	h2.stats["/out"] = [2]uint64{dev(0, 77), 0}
+	h2.paths = map[string]string{"/out": "the output directory"}
+	if r := h2.scan(); r.All != "the output directory (/out) could not be attributed to a disk; no disk can be offered" {
+		t.Fatal(r.All)
+	}
+}
+
+func TestScan_PVStatFails(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdk", "8:160")
+	h.pvs = []PV{{"/dev/missing", "vg0"}}
+	r := h.scan()
+	if len(r.Warnings) != 1 || !strings.HasPrefix(r.Warnings[0], "cannot tell which disk holds the LVM physical volume /dev/missing") {
+		t.Fatal(r.Warnings)
+	}
+}
+
+func TestScan_UnknownSlave(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdb", "8:16")
+	h.stack("dm-0", "253:0", "sdb1", "ghost") // ghost is not in class/block
+	h.part("sdb", "sdb1", "8:17")
+	h.mount("253:0", "/home", "ext4", "/dev/mapper/x")
+	r := h.scan()
+	if !strings.Contains(r.All, "ghost") {
+		t.Fatal(r.All)
+	}
+	for _, reasons := range r.Busy {
+		_ = reasons
+	}
+	if _, ok := r.Busy["ghost"]; ok {
+		t.Fatal("slave name must not become a disk")
+	}
+}
+
+func TestScan_MissingUdevAndSwaps(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sda", "8:0")
+	os.RemoveAll(h.udev)
+	r := h.scan()
+	if r.All != "" || r.Reason("sda") != "" {
+		t.Fatal(r.All, r.Busy)
+	}
+}
+
+func fakeLVM(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lvm"), []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+func TestListPVs(t *testing.T) {
+	t.Run("no lvm", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		if pvs, err := listPVs(); pvs != nil || err != nil {
+			t.Fatal(pvs, err)
+		}
+	})
+	t.Run("non-zero exit", func(t *testing.T) {
+		fakeLVM(t, "exit 5")
+		if _, err := listPVs(); err == nil {
+			t.Fatal("want an error")
+		}
+	})
+	t.Run("output", func(t *testing.T) {
+		fakeLVM(t, `echo '{"report":[{"pv":[{"pv_name":"/dev/sda1","vg_name":"vg0"}]}]}'`)
+		pvs, err := listPVs()
+		if err != nil || len(pvs) != 1 || pvs[0] != (PV{"/dev/sda1", "vg0"}) {
+			t.Fatal(pvs, err)
+		}
+	})
 }

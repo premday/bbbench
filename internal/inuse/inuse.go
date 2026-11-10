@@ -61,6 +61,13 @@ func (s *scanner) add(disk, reason string) {
 	s.r.Busy[disk] = append(s.r.Busy[disk], reason)
 }
 
+// setAll marks that no disk can be offered; the first reason wins.
+func (s *scanner) setAll(reason string) {
+	if s.r.All == "" {
+		s.r.All = reason
+	}
+}
+
 func (s *scanner) warn(msg string) { s.r.Warnings = append(s.r.Warnings, msg) }
 
 // resolve maps "M:m" to the kernel name of that device and to the whole
@@ -90,8 +97,9 @@ func (s *scanner) leaves(dir string, seen map[string]bool) []string {
 	for _, sl := range slaves {
 		sub, err := filepath.EvalSymlinks(filepath.Join(s.o.Sys, "class/block", sl.Name()))
 		if err != nil {
-			// Unknown slave: fall back to its name so it is not lost.
-			out = append(out, sl.Name())
+			// A slave sysfs does not know cannot be attributed to a disk:
+			// naming it would put a partition among the disks, so refuse all.
+			s.setAll(fmt.Sprintf("the stacked device %s has a member (%s) that could not be resolved to a disk; no disk is offered", filepath.Base(dir), sl.Name()))
 			continue
 		}
 		out = append(out, s.leaves(sub, seen)...)
@@ -179,13 +187,23 @@ func (s *scanner) scanMounts() {
 			if rdev, found := s.sourceRdev(m.Source); found {
 				name, leaves, ok = s.resolve(mmOf(rdev))
 			}
-			if !ok {
+			if ok {
+				// Only the disk named in the source is known; the other
+				// members of a multi-device filesystem are caught by
+				// their signature.
 				switch m.FSType {
-				case "zfs", "btrfs", "bcachefs":
+				case "btrfs", "bcachefs":
+					s.warn(fmt.Sprintf("%s %s (%s) may span more disks than the one named; disks with a %s signature are not offered", m.FSType, m.Point, m.Source, m.FSType))
+				}
+			} else {
+				switch m.FSType {
+				case "btrfs":
+					s.warn(fmt.Sprintf("cannot tell which disks hold %s (%s %s); disks with a btrfs, ZFS, LVM or md signature are not offered", m.Point, m.FSType, m.Source))
+				case "zfs", "bcachefs":
 					s.warn(fmt.Sprintf("cannot tell which disks hold %s (%s %s); disks with a ZFS, LVM or md signature are not offered", m.Point, m.FSType, m.Source))
 				}
 				if m.Point == "/" {
-					s.r.All = fmt.Sprintf("the disk holding the root filesystem could not be determined (%s %s); no disk is offered", m.FSType, m.Source)
+					s.setAll(fmt.Sprintf("the disk holding the root filesystem could not be determined (%s %s); no disk is offered", m.FSType, m.Source))
 				}
 				continue
 			}
@@ -193,7 +211,7 @@ func (s *scanner) scanMounts() {
 			name, leaves, ok = s.resolve(m.MajMin)
 			if !ok {
 				if m.Point == "/" {
-					s.r.All = fmt.Sprintf("the disk holding the root filesystem could not be determined (%s %s); no disk is offered", m.FSType, m.Source)
+					s.setAll(fmt.Sprintf("the disk holding the root filesystem could not be determined (%s %s); no disk is offered", m.FSType, m.Source))
 				}
 				continue
 			}
@@ -221,8 +239,9 @@ func (s *scanner) scanSwaps() {
 		}
 		file := decodeOctal(f[0])
 		dev, rdev, err := s.o.Stat(file)
+		unattributed := fmt.Sprintf("an active swap area (%s) could not be attributed to a disk; no disk can be offered", file)
 		if err != nil {
-			s.warn(fmt.Sprintf("cannot stat swap %s: %v", file, err))
+			s.setAll(unattributed)
 			continue
 		}
 		switch f[1] {
@@ -232,7 +251,7 @@ func (s *scanner) scanSwaps() {
 					s.add(l, fmt.Sprintf("active swap (%s)", file))
 				}
 			} else {
-				s.warn(fmt.Sprintf("cannot tell which disk holds the swap %s", file))
+				s.setAll(unattributed)
 			}
 		case "file":
 			if _, leaves, ok := s.devLeaves(dev); ok {
@@ -240,7 +259,7 @@ func (s *scanner) scanSwaps() {
 					s.add(l, fmt.Sprintf("holds an active swap file (%s)", file))
 				}
 			} else {
-				s.warn(fmt.Sprintf("cannot tell which disk holds the swap file %s", file))
+				s.setAll(unattributed)
 			}
 		}
 	}
@@ -255,12 +274,12 @@ func (s *scanner) scanPaths() {
 	for _, p := range paths {
 		dev, _, err := s.o.Stat(p)
 		if err != nil {
-			s.warn(fmt.Sprintf("cannot tell which disk holds %s (%s): %v", s.o.Paths[p], p, err))
+			s.setAll(fmt.Sprintf("%s (%s) could not be attributed to a disk (%v); no disk can be offered", s.o.Paths[p], p, err))
 			continue
 		}
 		_, leaves, ok := s.devLeaves(dev)
 		if !ok {
-			s.warn(fmt.Sprintf("cannot tell which disk holds %s (%s)", s.o.Paths[p], p))
+			s.setAll(fmt.Sprintf("%s (%s) could not be attributed to a disk; no disk can be offered", s.o.Paths[p], p))
 			continue
 		}
 		for _, l := range leaves {
@@ -377,6 +396,10 @@ func (s *scanner) scanSignatures() {
 				if !hasPV {
 					s.add(name, "is an LVM physical volume")
 				}
+			case "btrfs":
+				s.add(name, "has a btrfs filesystem label (member of a btrfs filesystem; check with btrfs filesystem show)")
+			case "bcachefs":
+				s.add(name, "has a bcachefs filesystem label (member of a bcachefs filesystem)")
 			case "crypto_LUKS":
 				s.add(name, "is LUKS encrypted")
 			}
