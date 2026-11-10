@@ -337,7 +337,7 @@ func TestArrayFlush_NoRequestEventsShowsZeroFlushNote(t *testing.T) {
 // layout backend: backends live behind settings.Backend.
 func TestCoreDoesNotNameTheBackend(t *testing.T) {
 	var files []string
-	for _, pat := range []string{"*.go", "../../internal/rungroup/*.go", "../../internal/inuse/*.go", "../../internal/diskinfo/*.go"} {
+	for _, pat := range []string{"*.go", "../../internal/rungroup/*.go", "../../internal/inuse/*.go", "../../internal/diskinfo/*.go", "../../internal/diskstat/*.go"} {
 		m, err := filepath.Glob(pat)
 		if err != nil {
 			t.Fatal(err)
