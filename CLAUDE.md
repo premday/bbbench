@@ -190,11 +190,21 @@ All components are sanitized using `util.SanitizeFilename()`.
 
 ### What the hardware-RAID branch plugs into
 
-The next branch adds hardware RAID controllers to the same setting, without touching the core:
+The next branch adds hardware RAID controllers (`perccli`/`storcli`, `ssacli`) to the same setting. The `settings.Backend` methods are enough for the virtual drive itself; several core pieces assume Linux block-device members and must change in that branch.
 
-- A controller backend (`perccli`/`storcli`, `ssacli`) implements `settings.Backend` (every method: `Name`, `Available`, `Levels`, `Roles`, `Options`, `Validate`, `Label`, `Parse`, `Prepare`, `Apply`, `WaitSteady`, `Read`, `Undo`, `UndoCommand`) and is passed to `NewLayout` in `All`; nothing else needs a case for it.
-- Its levels are the controller's RAID levels and JBOD/passthrough, its `Options` the controller's (stripe size, read and write cache policy), its `Roles` data and hot spare.
-- `Apply` creates the virtual drive and returns it as `BenchTarget{Kind: TargetArray}` with the physical disks as `Members` (found from `diskinfo.Controller` and the vendor tool, run through `Env.Run`); `Read` verifies it through the vendor tool; `Undo` deletes it. The controller and virtual-drive ids go in `ArrayUndo.Extra`, which the recovery file stores as it is (`Prepare` must already put everything `Undo` needs in the record, it is saved before `Apply`).
-- `inuse` applies to the physical disks.
+What already fits:
+
+- A controller backend implements `settings.Backend` (`Name`, `Available`, `Levels`, `Roles`, `Options`, `Validate`, `Label`, `Parse`, `Prepare`, `Apply`, `WaitSteady`, `Read`, `Undo`, `UndoCommand`) and is passed to `NewLayout` in `All`. Its levels are the controller's RAID levels and JBOD/passthrough, its `Options` the controller's (stripe size, read and write cache policy), its `Roles` data and hot spare.
+- `Apply` creates the virtual drive and returns it as `BenchTarget{Kind: TargetArray}` with the physical disks as `Members` (found from `diskinfo.Controller` and the vendor tool, run through `Env.Run`); `WaitSteady` waits for its initialization; `Read` verifies it through the vendor tool; `Undo` deletes it. The controller and virtual-drive ids go in `ArrayUndo.Extra`, which the recovery file stores as it is (`Prepare` must already put everything `Undo` needs in the record: it is saved before `Apply`).
+- The group loop, the undo ledger, the recovery offer, the layout TUI and the pages never name a backend and never branch on one.
+
+What assumes Linux block-device members and must change:
+
+- Disk candidates: the layout screens offer only the discovered `/sys/block` drives. In RAID mode a controller's physical disks are not in `/sys/block`; this needs something like `Backend.Candidates` or a `Disk` with an empty `Path`.
+- `layout.Prepare` runs the `inuse` check by kernel name for every backend. A controller needs a per-backend hook for its own view (disk already a member of a virtual drive, foreign configuration).
+- `checkLayoutDisks` (and `reidentify` before each build) require every member to be one of `cfg.Drives`, by kernel name, serial, model, path and capacity.
+- `Recovery.Undos` resolves members only against block `Target`s by serial and model.
+- `arrayDrive` requires each member in the discovered drives map and derives HDD/SSD from it; a backend must be able to supply the media type.
+- `maxArrayName = 32` and `ArrayName` are a core constant; PERC virtual-drive names are about 15 characters, so the name rule must become the backend's.
 - A controller mode the user sets in the BIOS (RAID vs HBA) is a separate `Manual` setting and needs the multi-invocation groups of the first spec, which `runGroup` refuses today.
-- The core (`internal/rungroup`, the group loop, the undo ledger, the recovery offer, `arrayDrive`, the layout TUI, the pages) never names a backend and never branches on one. `TestCoreDoesNotNameTheBackend` (`group_targets_test.go`) lists the names to keep out (`mdadm|lvm|pvcreate|vgcreate|lvcreate`); the next branch adds its tools (`perccli`, `storcli`, `ssacli`) to that list.
+- `TestCoreDoesNotNameTheBackend` (`group_targets_test.go`) keeps the backend names out of the core (`mdadm|lvm|pvcreate|vgcreate|lvcreate`); the controller tool names (`perccli`, `storcli`, `ssacli`) must be added to it.
