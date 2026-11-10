@@ -499,6 +499,16 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .chart-wrap { position: relative; height: 160px; margin-top: 6px; }
+        .md-badge {
+            font-size: 9px; font-weight: 600; vertical-align: middle;
+            padding: 0 5px; border-radius: 8px; border: 1px solid #fcd34d;
+            color: #b45309; background: #fffbeb; cursor: help;
+        }
+        .md-badge.md-degraded { color: #be123c; border-color: #fda4af; background: #fff1f2; }
+        .md-note { font-size: 10px; color: #b45309; margin-top: 2px; }
+        .modal-md { margin-top: 4px; }
+        .modal-md .md-badge { font-size: 11px; }
+        .modal-md .md-note { font-size: 12px; }
         .ts-warn {
             font-size: 10px; color: #92400e; background: #fef3c7;
             border: 1px solid #fcd34d; border-radius: 3px;
@@ -554,6 +564,7 @@ __NAVBAR_HTML__
     <div class="modal-card" id="modal-card">
         <div class="modal-card-title" id="modal-title"></div>
         <div class="modal-card-subtitle" id="modal-subtitle"></div>
+        <div class="modal-md" id="modal-md"></div>
         <div class="modal-hint">Press Esc or click outside to close</div>
         <div id="modal-ts-warn"></div>
         <div class="modal-chart-wrap">
@@ -1013,12 +1024,13 @@ __NAVBAR_HTML__
             return -1;
         };
         return new Chart(canvas, {
-            type: 'line', data: { datasets }, plugins: [rampPlugin],
+            type: 'line', data: { datasets }, plugins: chartPlugins(d, metric),
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 interaction: { mode: 'index', intersect: false },
                 plugins: {
                     rampZone: { sec: rampOf(d) },
+                    mdTrack: mdOptions(d, metric),
                     legend: { display: true, position: 'top',
                         labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                     tooltip: {
@@ -1030,8 +1042,8 @@ __NAVBAR_HTML__
                             beforeLabel: ctx => stacked && ctx.dataset.array && firstArray(ctx.chart, ctx.dataIndex) === ctx.datasetIndex
                                 ? totalLines(ctx.dataIndex) : '',
                             label: ctx => ctx.dataset.label + ': ' + fmt(ctx.raw.y),
-                            afterBody: items => stacked && items.length && firstArray(items[0].chart, items[0].dataIndex) === -1
-                                ? totalLines(items[0].dataIndex) : [],
+                            afterBody: items => (stacked && items.length && firstArray(items[0].chart, items[0].dataIndex) === -1
+                                ? totalLines(items[0].dataIndex) : []).concat(mdTipLines(d, items)),
                         },
                     },
                 },
@@ -1046,6 +1058,199 @@ __NAVBAR_HTML__
             }
         });
     }
+
+    // ── md track (begin) ──
+    // An md array phase carries ts_md (per window: action, pct, speed KiB/s,
+    // degraded, state; t = window start on the phase clock, like ts_members)
+    // and md_events ({t, text}: every change of the md state). The IOPS,
+    // bandwidth and latency charts of such a phase shade the windows of a sync
+    // (any action but idle), mark the events, add the window's md state to the
+    // tooltip, and the card header gets badges and the "array busy" note. A
+    // phase without md data takes none of this. Everything up to "md track
+    // (end)" belongs to it.
+    const MD_BAND = 'rgba(245,158,11,0.16)', MD_INK = '#b45309', MD_EVENT = '#be123c';
+    // mdPlugin draws the sync bands under the datasets and the event markers
+    // over them (options: {bands, markers}, from mdOptions).
+    const mdPlugin = {
+        id: 'mdTrack',
+        beforeDatasetsDraw(chart, args, opts) {
+            if (!opts || !opts.bands || !opts.bands.length) return;
+            const x = chart.scales.x, a = chart.chartArea, c = chart.ctx;
+            c.save();
+            c.font = '9px sans-serif';
+            c.textBaseline = 'top';
+            opts.bands.forEach(b => {
+                const x0 = Math.max(a.left, x.getPixelForValue(b.x0));
+                const x1 = Math.min(a.right, x.getPixelForValue(b.x1));
+                if (x1 <= x0) return;
+                c.fillStyle = MD_BAND;
+                c.fillRect(x0, a.top, x1 - x0, a.bottom - a.top);
+                if (c.measureText(b.action).width + 6 <= x1 - x0) {
+                    c.fillStyle = MD_INK;
+                    c.fillText(b.action, x0 + 3, a.top + 14);
+                }
+            });
+            c.restore();
+        },
+        afterDatasetsDraw(chart, args, opts) {
+            if (!opts || !opts.markers || !opts.markers.length) return;
+            const x = chart.scales.x, a = chart.chartArea, c = chart.ctx;
+            c.save();
+            c.font = '9px sans-serif';
+            c.textBaseline = 'top';
+            const vis = opts.markers.map(m => ({m, x: x.getPixelForValue(m.t)}))
+                .filter(v => v.x >= a.left && v.x <= a.right);
+            const lay = mdLabelLayout(vis.map(v => ({x: v.x, w: c.measureText(v.m.text).width})), a.right);
+            vis.forEach((v, i) => {
+                c.strokeStyle = MD_EVENT;
+                c.lineWidth = 1;
+                c.setLineDash([3, 2]);
+                c.beginPath();
+                c.moveTo(v.x, a.top);
+                c.lineTo(v.x, a.bottom);
+                c.stroke();
+                c.setLineDash([]);
+                const s = mdFit(c, v.m.text, lay[i].maxW - 2);
+                if (!s) return;
+                const y = a.top + 25 + lay[i].row * 11;
+                c.fillStyle = 'rgba(255,255,255,0.8)';
+                c.fillRect(v.x + 1, y - 1, c.measureText(s).width + 3, 11);
+                c.fillStyle = MD_EVENT;
+                c.fillText(s, v.x + 2, y);
+            });
+            c.restore();
+        }
+    };
+    function mdMetric(d, metric) {
+        return ['iops', 'bw', 'lat'].indexOf(metric.key) !== -1 && hasMD(d);
+    }
+    function hasMD(d) {
+        return !!(d.ts_md && d.ts_md.length) || !!(d.md_events && d.md_events.length);
+    }
+    // mdBusy: the window runs an administrative operation (sync_action not
+    // idle; '' = unreadable).
+    function mdBusy(p) {
+        return !!p.action && p.action !== 'idle';
+    }
+    // mdActions is the action of each window, an unreadable one ('') taking
+    // the last known (idle at the start), as the events do.
+    function mdActions(d) {
+        let last = 'idle';
+        return (d.ts_md || []).map(p => (last = p.action || last));
+    }
+    // mdBands: consecutive windows of one non-idle action, as one band from
+    // the first window's start to the last window's end.
+    function mdBands(d) {
+        const pts = d.ts_md || [], acts = mdActions(d), step = memberStep(d), out = [];
+        let cur = null;
+        pts.forEach((p, i) => {
+            const a = acts[i];
+            if (a === 'idle') { cur = null; return; }
+            if (cur && cur.action === a) { cur.x1 = p.t + step; return; }
+            cur = {action: a, x0: p.t, x1: p.t + step};
+            out.push(cur);
+        });
+        return out;
+    }
+    // mdBadges: per action, its progress at its first and last window; then
+    // the highest degraded count ('degraded' for 1).
+    function mdBadges(d) {
+        const order = [], first = {}, last = {};
+        let deg = 0;
+        (d.ts_md || []).forEach(p => {
+            if (mdBusy(p)) {
+                if (!(p.action in first)) { order.push(p.action); first[p.action] = p.pct || 0; }
+                last[p.action] = p.pct || 0;
+            }
+            deg = Math.max(deg, p.degraded || 0);
+        });
+        const out = order.map(a => {
+            const f = Math.round(first[a]), l = Math.round(last[a]);
+            return {text: a + ' ' + f + '%' + (f === l ? '' : ' -> ' + l + '%'), kind: 'sync'};
+        });
+        if (deg > 0) out.push({text: deg === 1 ? 'degraded' : 'degraded ' + deg, kind: 'degraded'});
+        return out;
+    }
+    // mdBusyNote: the phase ran a sync or its md state changed.
+    function mdBusyNote(d) {
+        return (d.ts_md || []).some(mdBusy) || !!(d.md_events && d.md_events.length);
+    }
+    // mdIndex keys the md windows like the member grid (memberKey).
+    function mdIndex(d) {
+        const step = memberStep(d), idx = {};
+        (d.ts_md || []).forEach(p => { idx[memberKey(p.t, step)] = p; });
+        return idx;
+    }
+    // mdTipLines: the hovered window's md state and its events, for a
+    // tooltip's afterBody; [] without md data or without an md window there.
+    function mdTipLines(d, items) {
+        if (!hasMD(d) || !items || !items.length) return [];
+        const step = memberStep(d), k = memberKey(items[0].raw.x, step), out = [];
+        const p = mdIndex(d)[k];
+        if (p) {
+            out.push('md: ' + (mdBusy(p)
+                ? p.action + ' ' + Math.round(p.pct || 0) + '% ' + ((p.speed || 0) / 1024).toFixed(1) + ' MiB/s'
+                : (p.action || 'unknown')) + ', degraded ' + (p.degraded || 0));
+        }
+        (d.md_events || []).forEach(e => {
+            if (memberKey(e.t, step) === k) out.push('md event: ' + e.text);
+        });
+        return out;
+    }
+    // mdMarkers: one marker per event time, its texts joined, by time.
+    function mdMarkers(d) {
+        const out = [];
+        (d.md_events || []).slice().sort((a, b) => a.t - b.t).forEach(e => {
+            const m = out[out.length - 1];
+            if (m && m.t === e.t) m.text += '; ' + e.text;
+            else out.push({t: e.t, text: e.text});
+        });
+        return out;
+    }
+    // mdLabelLayout staggers the marker labels (items by x, in pixels) over
+    // three rows; each may use the room up to the next label of its row (or
+    // right). The full text is in the tooltip.
+    function mdLabelLayout(items, right) {
+        const rows = 3;
+        return items.map((it, i) => {
+            const next = items[i + rows];
+            return {row: i % rows, maxW: (next ? next.x : right) - it.x - 4};
+        });
+    }
+    // mdFit cuts s to w pixels with an ellipsis; '' when not even that fits.
+    function mdFit(c, s, w) {
+        if (c.measureText(s).width <= w) return s;
+        while (s.length && c.measureText(s + '…').width > w) s = s.slice(0, -1);
+        return s ? s + '…' : '';
+    }
+    function mdOptions(d, metric) {
+        return mdMetric(d, metric) ? {bands: mdBands(d), markers: mdMarkers(d)} : false;
+    }
+    function chartPlugins(d, metric) {
+        return mdMetric(d, metric) ? [rampPlugin, mdPlugin] : [rampPlugin];
+    }
+    // mdHeader: the card header's badges and the busy note of an md phase;
+    // null without md data.
+    function mdHeader(d, metric) {
+        if (!mdMetric(d, metric)) return null;
+        const badges = mdBadges(d).map(b => {
+            const s = document.createElement('span');
+            s.className = 'md-badge md-' + b.kind;
+            s.textContent = b.text;
+            s.title = b.kind === 'sync'
+                ? 'md sync_action during this phase, progress at its first and last window'
+                : 'md degraded count during this phase';
+            return s;
+        });
+        let note = null;
+        if (mdBusyNote(d)) {
+            note = document.createElement('div');
+            note.className = 'md-note';
+            note.textContent = 'array busy: results include administrative work';
+        }
+        return {badges, note};
+    }
+    // ── md track (end) ──
 
     // makeChart renders a Chart.js instance onto canvas for (d, metric).
     // Returns the Chart instance. warnEl (optional) will receive a ts-warn message.
@@ -1070,17 +1275,19 @@ __NAVBAR_HTML__
                 fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
             });
             return new Chart(canvas, {
-                type: 'line', data: { datasets }, plugins: [rampPlugin],
+                type: 'line', data: { datasets }, plugins: chartPlugins(d, metric),
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
                         rampZone: { sec: ramp },
+                        mdTrack: mdOptions(d, metric),
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
                             title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
-                                          fmtTick(Math.abs(ctx.raw.y)) + ' ' + metric.unit
+                                          fmtTick(Math.abs(ctx.raw.y)) + ' ' + metric.unit,
+                            afterBody: items => mdTipLines(d, items)
                         }}
                     },
                     scales: {
@@ -1124,6 +1331,13 @@ __NAVBAR_HTML__
         const tech = d.technology ? d.technology.toUpperCase() : '';
         document.getElementById('modal-subtitle').textContent =
             [d.vendor, d.model, d.serial, tech, metric.label, 'source: ' + metric.source].filter(Boolean).join('  \u00b7  ');
+        const mdEl = document.getElementById('modal-md');
+        mdEl.innerHTML = '';
+        const mdh = mdHeader(d, metric);
+        if (mdh) {
+            mdh.badges.forEach(b => { mdEl.appendChild(b); mdEl.appendChild(document.createTextNode(' ')); });
+            if (mdh.note) mdEl.appendChild(mdh.note);
+        }
 
         if (modalChart) { modalChart.destroy(); modalChart = null; }
 
@@ -1161,6 +1375,8 @@ __NAVBAR_HTML__
         t1.textContent = d.disk + settingTag(d, RPV);
         t1.appendChild(document.createTextNode(' '));
         t1.appendChild(srcBadge(metric));
+        const mdh = mdHeader(d, metric);
+        if (mdh) mdh.badges.forEach(b => { t1.appendChild(document.createTextNode(' ')); t1.appendChild(b); });
         card.appendChild(t1);
 
         const t2 = document.createElement('div');
@@ -1168,6 +1384,7 @@ __NAVBAR_HTML__
         const tech = d.technology ? d.technology.toUpperCase() : '';
         t2.textContent = [d.vendor, d.model, d.serial, tech, membersText(d)].filter(Boolean).join('  \u00b7  ');
         card.appendChild(t2);
+        if (mdh && mdh.note) card.appendChild(mdh.note);
 
         const wrap = document.createElement('div');
         wrap.className = 'chart-wrap';
