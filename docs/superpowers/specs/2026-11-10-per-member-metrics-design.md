@@ -41,22 +41,28 @@ it is latency, with the array's own value on the same chart.
 ## Design (the builder's contract; items marked "call" are the author's choices)
 
 - **Sampler** (new package `internal/diskstat`): reads `/sys/block/<name>/stat`
-  (`Options.SysBlock` replaces the root for tests) for the array and every
-  member (all roles, so a spare shows as an idle band). Every `log_avg_msec`
-  (the phase's polling interval) it takes the counter deltas and turns them into
-  read/write IOPS, MB/s and mean latency (call: `ticks` delta / `ios` delta;
-  0 when no I/O). The kernel's tick counters have 1 ms resolution, so latency is
+  (`NewSampler(names, sysBlock)`, `sysBlock` replaces the root for tests) for
+  every member (all roles, so a spare shows as an idle band); the array itself
+  is not sampled, its line is fio's own series. Every `log_avg_msec`
+  (the phase's polling interval) it keeps the raw counter delta of each member
+  (`Window`); `Window.Rates` turns it at load time into read/write IOPS, MiB/s
+  and mean latency (call: `ticks` delta / `ios` delta; 0 when no I/O). The kernel's tick counters have 1 ms resolution, so latency is
   coarse at low load; the docs say so. The sampler starts and stops next to
   fio in `executePhase` (as the Flush trace does) and only when the drive has
   `Members`.
 - **Log**: `<fio log prefix>_members.1.log` next to fio's logs: `#` header lines
   (`avg_msec`, `offset_ms` = fio's ramp, one `device <name> <role>` per member and
-  `array <name>`), then one line per window and device:
-  `end_ms, device, read_iops, write_iops, read_mbps, write_mbps, read_lat_us, write_lat_us`.
+  `array <name>`), then one line per window and member holding the raw
+  per-window deltas, not rates (the array has no line, only its members do):
+  `end_ms, span_ms, device, read_ios, write_ios, read_sectors, write_sectors, read_ticks_ms, write_ticks_ms`,
+  followed by the `md` and `mdmember` lines of the addendum for an md array.
+  The persisted run summary JSON (`run_*_summary.json`) also carries
+  `member_series` and `md_series` per phase (N members x 3 series; same
+  precedent as `flush_series`).
   Window ends are stamped like fio's and the Flush log; loading drops windows
   that ended inside the ramp-up and stamps points at the window start.
   Member names are stored in the log, so a later kernel renaming does not matter.
-- **Load**: `loadMembersLog(logPrefix)` (new, like `loadFlushLog`) fills
+- **Load**: `loadMembersAndMD(logPrefix)` (new, like `loadFlushLog`) fills
   `DiskPhaseData.TSmembers` (JSON `ts_members`: member name -> `{role, iops, bw,
   lat}` where each is a `[]TimePoint` using R and W like fio's series). Absent or
   unreadable log = field omitted.
@@ -113,11 +119,16 @@ scheduled `check`, a rebuild after a member failure, a reshape).
   the action, array_state, degraded, raid_disks or any member's state, as
   `{t, text}` (e.g. `sdb: in_sync -> faulty`, `degraded 0 -> 1`, `sync_action
   idle -> check`). A phase that starts with a non-idle action or a degraded
-  array gets an event at its first window.
+  count above 0 gets an event marked `(at phase start)` at its first window; a
+  faulty member or non-clean array_state already present at the start is not
+  reported until it changes. An unreadable `degraded` is -1 (unknown): it is
+  not a change and never creates an event.
 - **Charts** (IOPS, bandwidth and latency charts of an array phase): windows
   where `sync_action` is not idle are shaded and labelled with the action;
   events are vertical markers with their text; hover adds action, progress
-  percent, speed and the degraded count for that window. The card header shows a
+  percent, speed and the degraded count for that window (`md: <action> <pct>%
+  <speed> MiB/s, degraded <n>` for a busy window, `md: idle, degraded <n>` for an
+  idle one, `unknown` when the count was unreadable). The card header shows a
   badge such as `resync 43% -> 61%` (progress at the first and last window of
   the activity) or `degraded`. A phase with a sync or a change of state is also
   flagged in its card as "array busy: results include administrative work".

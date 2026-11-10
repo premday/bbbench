@@ -13,7 +13,7 @@ import (
 
 // MemberSeries is the I/O of one member disk of an array over a phase,
 // sampled from its kernel counters. R is read, W is write; IOPS per second,
-// BW in MB/s, Lat the mean per I/O in µs (0 when the direction did no I/O).
+// BW in MiB/s, Lat the mean per I/O in µs (0 when the direction did no I/O).
 type MemberSeries struct {
 	Role string      `json:"role,omitempty"` // "" = data disk
 	IOPS []TimePoint `json:"iops,omitempty"`
