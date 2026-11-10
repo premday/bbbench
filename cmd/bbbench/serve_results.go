@@ -52,6 +52,9 @@ type PhaseResult struct {
 	// MemberSeries is the I/O of each member of an array over time (device ->
 	// member -> series), read back from the stored <prefix>_members.1.log.
 	MemberSeries map[string]map[string]MemberSeries `json:"member_series,omitempty"`
+	// MDSeries is the md state and its changes per array device, read back
+	// from the same members log.
+	MDSeries map[string]MDInfo `json:"md_series,omitempty"`
 }
 
 // JobResult represents results for a single fio job.

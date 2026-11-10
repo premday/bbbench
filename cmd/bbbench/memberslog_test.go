@@ -129,3 +129,97 @@ func TestStartMemberSamplerWritesLog(t *testing.T) {
 		t.Errorf("meta %+v windows %d", m, len(ws))
 	}
 }
+
+func mdw(end int64, s diskstat.MDState) diskstat.MDWindow {
+	return diskstat.MDWindow{EndMs: end, SpanMs: 1000, S: s}
+}
+
+func TestMDEventsFromWindows(t *testing.T) {
+	idle := diskstat.MDState{Action: "idle", ArrayState: "clean", RaidDisks: 4, Members: map[string]string{"sda": "in_sync", "sdb": "in_sync"}}
+	chg := idle
+	chg.Action, chg.ArrayState, chg.Degraded, chg.RaidDisks = "check", "active", 1, 5
+	chg.Members = map[string]string{"sda": "in_sync", "sdb": "faulty"}
+	ev := mdEventsFrom(nil, []diskstat.MDWindow{mdw(1000, idle), mdw(2000, idle), mdw(3000, chg), mdw(4000, chg)})
+	want := []string{"sync_action idle -> check", "array_state clean -> active", "degraded 0 -> 1", "raid_disks 4 -> 5", "sdb: in_sync -> faulty"}
+	if len(ev) != len(want) {
+		t.Fatalf("events %+v", ev)
+	}
+	for i, w := range want {
+		if ev[i].Text != w || ev[i].T != 2 {
+			t.Errorf("event %d = %+v, want %q at 2", i, ev[i], w)
+		}
+	}
+	start := chg
+	ev = mdEventsFrom(nil, []diskstat.MDWindow{mdw(1000, start)})
+	if len(ev) != 2 || ev[0].Text != "sync_action check (at phase start)" || ev[1].Text != "degraded 1 (at phase start)" {
+		t.Errorf("first window events %+v", ev)
+	}
+	if ev := mdEventsFrom(nil, []diskstat.MDWindow{mdw(1000, idle)}); len(ev) != 0 {
+		t.Errorf("idle start: %+v", ev)
+	}
+	// a change inside the ramp-up is the baseline of the first visible window
+	info, ok := loadMDLog([]diskstat.MDWindow{mdw(1000, idle), mdw(2000, idle), mdw(3000, chg)}, 2000)
+	if !ok || len(info.Points) != 1 || len(info.Events) != 5 || info.Events[0].T != 2 {
+		t.Errorf("ramp baseline: %+v", info)
+	}
+}
+
+func TestLoadMembersLogMD(t *testing.T) {
+	prefix := filepath.Join(t.TempDir(), "md0_p_log")
+	f, _ := os.Create(diskstat.LogName(prefix))
+	meta := diskstat.Meta{AvgMsec: 1000, OffsetMs: 1000, Array: "md0", Members: []diskstat.MemberMeta{{Name: "sda", Role: "data"}}}
+	md := []diskstat.MDWindow{
+		mdw(1000, diskstat.MDState{Action: "idle"}),
+		mdw(2000, diskstat.MDState{Action: "check", Completed: 25, Total: 100, SpeedKiBps: 500, Degraded: 1, ArrayState: "active"}),
+		mdw(3000, diskstat.MDState{Action: "check", Completed: 5, Total: 0}),
+	}
+	if err := diskstat.WriteLog(f, meta, nil, md); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	_, info, ok := loadMembersAndMD(prefix)
+	if !ok || len(info.Points) != 2 {
+		t.Fatalf("%+v", info)
+	}
+	p := info.Points[0]
+	if p.T != 1 || p.Action != "check" || p.Pct != 25 || p.SpeedKiBps != 500 || p.Degraded != 1 || p.State != "active" || info.Points[1].Pct != 0 {
+		t.Errorf("points %+v", info.Points)
+	}
+	var ph PhaseResult
+	applyMembersLog(&ph, "md0", prefix)
+	if len(ph.MDSeries["md0"].Points) != 2 {
+		t.Errorf("not applied: %+v", ph.MDSeries)
+	}
+}
+
+func TestMDJSONOmittedWithoutMD(t *testing.T) {
+	b, _ := json.Marshal(DiskPhaseData{})
+	if strings.Contains(string(b), "ts_md") || strings.Contains(string(b), "md_events") {
+		t.Errorf("%s", b)
+	}
+	b, _ = json.Marshal(PhaseResult{})
+	if strings.Contains(string(b), "md_series") {
+		t.Errorf("%s", b)
+	}
+}
+
+func TestStartMemberSamplerRecordsMD(t *testing.T) {
+	sys := t.TempDir()
+	for _, n := range []string{"sda", "md0"} {
+		os.MkdirAll(filepath.Join(sys, n), 0o755)
+	}
+	os.WriteFile(filepath.Join(sys, "sda", "stat"), []byte("1 0 8 1 1 0 8 1 0 0 0\n"), 0o644)
+	md := filepath.Join(sys, "md0", "md")
+	os.MkdirAll(filepath.Join(md, "dev-sda"), 0o755)
+	os.WriteFile(filepath.Join(md, "sync_action"), []byte("check\n"), 0o644)
+	os.WriteFile(filepath.Join(md, "dev-sda", "state"), []byte("in_sync\n"), 0o644)
+	drive := DriveInfo{Device: blockdev.Device{Name: "md0"}, Members: []rungroup.Member{{Name: "sda"}}}
+	prefix := filepath.Join(t.TempDir(), "md0_p_log")
+	stop := startMemberSamplerAt(drive, prefix, 20, 0, sys)
+	time.Sleep(100 * time.Millisecond)
+	stop()
+	_, info, ok := loadMembersAndMD(prefix)
+	if !ok || len(info.Points) == 0 || info.Points[0].Action != "check" || len(info.Events) == 0 {
+		t.Errorf("%+v", info)
+	}
+}

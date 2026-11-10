@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -36,7 +38,7 @@ func startMemberSamplerAt(drive DriveInfo, logPrefix string, avgMsec, rampMs int
 		names = append(names, m.Name)
 		meta.Members = append(meta.Members, diskstat.MemberMeta{Name: m.Name, Role: string(m.Role)})
 	}
-	s := diskstat.NewSampler(names, sysBlock)
+	s := diskstat.NewSampler(names, sysBlock).WithArray(drive.Device.Name, names)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -48,19 +50,19 @@ func startMemberSamplerAt(drive DriveInfo, logPrefix string, avgMsec, rampMs int
 		once.Do(func() {
 			cancel()
 			<-done
-			if err := writeMembersLog(logPrefix, meta, s.Windows()); err != nil && logger != nil {
+			if err := writeMembersLog(logPrefix, meta, s.Windows(), s.MDWindows()); err != nil && logger != nil {
 				logger.Warn("storing member counters", "array", drive.Device.Name, "err", err)
 			}
 		})
 	}
 }
 
-func writeMembersLog(logPrefix string, meta diskstat.Meta, ws []diskstat.Window) error {
+func writeMembersLog(logPrefix string, meta diskstat.Meta, ws []diskstat.Window, md []diskstat.MDWindow) error {
 	f, err := os.Create(diskstat.LogName(logPrefix))
 	if err != nil {
 		return err
 	}
-	if err := diskstat.WriteLog(f, meta, ws, nil); err != nil {
+	if err := diskstat.WriteLog(f, meta, ws, md); err != nil {
 		f.Close()
 		return err
 	}
@@ -72,17 +74,128 @@ func writeMembersLog(logPrefix string, meta diskstat.Meta, ws []diskstat.Window)
 // ended inside fio's ramp-up are left out and points are stamped at the window
 // START. ok is false when there is no usable log.
 func loadMembersLog(logPrefix string) (map[string]MemberSeries, bool) {
+	series, _, ok := loadMembersAndMD(logPrefix)
+	return series, ok
+}
+
+// MDPoint is the md state of an array at the start of one sampling window.
+// Pct is the sync_completed progress (0 when the total is unknown), SpeedKiBps
+// the kernel's sync speed in KiB/s as stored.
+type MDPoint struct {
+	T          float64 `json:"t"`
+	Action     string  `json:"action"`
+	Pct        float64 `json:"pct"`
+	SpeedKiBps uint64  `json:"speed"`
+	Degraded   int     `json:"degraded"`
+	State      string  `json:"state"`
+}
+
+// MDEvent is one change of the md state, stamped at the start of the window
+// in which it was first seen.
+type MDEvent struct {
+	T    float64 `json:"t"`
+	Text string  `json:"text"`
+}
+
+// MDInfo is the md state series and its events for one array phase.
+type MDInfo struct {
+	Points []MDPoint `json:"points,omitempty"`
+	Events []MDEvent `json:"events,omitempty"`
+}
+
+func mdPoint(w diskstat.MDWindow) MDPoint {
+	p := MDPoint{T: float64(w.EndMs-w.SpanMs) / 1000, Action: w.S.Action, SpeedKiBps: w.S.SpeedKiBps,
+		Degraded: w.S.Degraded, State: w.S.ArrayState}
+	if w.S.Total > 0 {
+		p.Pct = float64(w.S.Completed) / float64(w.S.Total) * 100
+	}
+	return p
+}
+
+// mdEventsFrom derives the events of consecutive md windows. base is the
+// state before the first window (nil = the phase start: a non-idle action or a
+// degraded array is then reported with "(at phase start)").
+func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
+	var ev []MDEvent
+	prev := base
+	for _, w := range wins {
+		t := float64(w.EndMs-w.SpanMs) / 1000
+		add := func(f string, a ...any) { ev = append(ev, MDEvent{T: t, Text: fmt.Sprintf(f, a...)}) }
+		cur := w.S
+		if prev == nil {
+			if cur.Action != "" && cur.Action != "idle" {
+				add("sync_action %s (at phase start)", cur.Action)
+			}
+			if cur.Degraded > 0 {
+				add("degraded %d (at phase start)", cur.Degraded)
+			}
+		} else {
+			if cur.Action != prev.Action {
+				add("sync_action %s -> %s", prev.Action, cur.Action)
+			}
+			if cur.ArrayState != prev.ArrayState {
+				add("array_state %s -> %s", prev.ArrayState, cur.ArrayState)
+			}
+			if cur.Degraded != prev.Degraded {
+				add("degraded %d -> %d", prev.Degraded, cur.Degraded)
+			}
+			if cur.RaidDisks != prev.RaidDisks {
+				add("raid_disks %d -> %d", prev.RaidDisks, cur.RaidDisks)
+			}
+			names := make([]string, 0, len(cur.Members))
+			for n := range cur.Members {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			for _, n := range names {
+				if o, ok := prev.Members[n]; ok && o != cur.Members[n] {
+					add("%s: %s -> %s", n, o, cur.Members[n])
+				}
+			}
+		}
+		c := cur
+		prev = &c
+	}
+	return ev
+}
+
+// loadMDLog turns the stored md windows into points and events. Windows that
+// ended inside the ramp-up are not shown; the last of them is the baseline of
+// the first visible window, so a change that happened there is not lost.
+func loadMDLog(md []diskstat.MDWindow, offsetMs int64) (MDInfo, bool) {
+	var base *diskstat.MDState
+	var vis []diskstat.MDWindow
+	for _, w := range md {
+		if w.EndMs <= offsetMs {
+			s := w.S
+			base = &s
+			continue
+		}
+		vis = append(vis, w)
+	}
+	if len(vis) == 0 {
+		return MDInfo{}, false
+	}
+	var info MDInfo
+	for _, w := range vis {
+		info.Points = append(info.Points, mdPoint(w))
+	}
+	info.Events = mdEventsFrom(base, vis)
+	return info, true
+}
+
+func loadMembersAndMD(logPrefix string) (map[string]MemberSeries, MDInfo, bool) {
 	f, err := os.Open(diskstat.LogName(logPrefix))
 	if err != nil {
-		return nil, false
+		return nil, MDInfo{}, false
 	}
 	defer f.Close()
-	meta, windows, _, err := diskstat.ReadLog(f)
+	meta, windows, md, err := diskstat.ReadLog(f)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("unreadable members log", "prefix", logPrefix, "err", err)
 		}
-		return nil, false
+		return nil, MDInfo{}, false
 	}
 	out := make(map[string]MemberSeries, len(meta.Members))
 	for _, m := range meta.Members {
@@ -107,15 +220,22 @@ func loadMembersLog(logPrefix string) (map[string]MemberSeries, bool) {
 		ms.Lat = append(ms.Lat, TimePoint{T: t, R: rL, W: wL})
 		out[w.Device] = ms
 	}
-	return out, true
+	info, _ := loadMDLog(md, int64(meta.OffsetMs))
+	return out, info, true
 }
 
 // applyMembersLog fills the phase's member series for one device from the
 // stored log; nothing when the device has none.
 func applyMembersLog(phase *PhaseResult, device, logPrefix string) {
-	series, ok := loadMembersLog(logPrefix)
+	series, info, ok := loadMembersAndMD(logPrefix)
 	if !ok || len(series) == 0 {
 		return
+	}
+	if len(info.Points) > 0 {
+		if phase.MDSeries == nil {
+			phase.MDSeries = make(map[string]MDInfo)
+		}
+		phase.MDSeries[device] = info
 	}
 	if phase.MemberSeries == nil {
 		phase.MemberSeries = make(map[string]map[string]MemberSeries)
