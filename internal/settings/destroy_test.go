@@ -362,6 +362,7 @@ func TestLayout_DestroyRefusals(t *testing.T) {
 		{name: "kind changed", listed: []Existing{changed(func(e *Existing) { delete(e.Extra, ExtraKind) })}, want: "changed"},
 		{name: "stack changed", listed: []Existing{changed(func(e *Existing) { e.Stack = append([]string{"lv data/new"}, e.Stack...) })}, want: "changed"},
 		{name: "listed twice", listed: []Existing{md127(), md127()}, want: "listed twice"},
+		{name: "blocked since shown", listed: []Existing{changed(func(e *Existing) { e.Blocked = "now firmware RAID" })}, want: "now firmware RAID"},
 		{name: "no serial", shown: ptr(changed(func(e *Existing) { e.Disks[0].Serial = "" })),
 			listed: []Existing{changed(func(e *Existing) { e.Disks[0].Serial = "" })}, want: "no serial"},
 		{name: "no disks", shown: ptr(changed(func(e *Existing) { e.Disks = nil })), want: "lists no disks"},
@@ -435,9 +436,46 @@ func TestLayout_DestroyProviderError(t *testing.T) {
 	r.reports = []*inuse.Report{reportOf(heldBy())}
 	r.d.destroyErr = errors.New("mdadm --stop: device busy")
 	err := r.s.Destroy(context.Background(), md127())
-	if err == nil || !strings.Contains(err.Error(), "device busy") ||
-		!strings.Contains(err.Error(), "to finish by hand: tear down "+mdUUID+" by hand") {
+	// The provider's message owns the manual instructions: the gate adds no
+	// command of its own (it would repeat steps already done).
+	if err == nil || !strings.Contains(err.Error(), "device busy") || strings.Contains(err.Error(), "by hand") {
 		t.Errorf("error %v", err)
+	}
+}
+
+func TestLayout_DestroyLeftoverCommandFromAFreshListing(t *testing.T) {
+	sys := sysHolders(t, map[string][]string{"md127": nil})
+	r := newDestroyRig(t, sys, md127())
+	r.reports = []*inuse.Report{reportOf(heldBy()), reportOf(map[string][]inuse.Cause{"sdc": heldBy()["sdc"]})}
+	// Gone from the listing after the provider ran: no command to give.
+	r.d.onDestroy = func() { r.d.existing = nil; os.RemoveAll(filepath.Join(sys, "block", "md127")) }
+	err := r.s.Destroy(context.Background(), md127())
+	if err == nil || !strings.Contains(err.Error(), "member of md127") || strings.Contains(err.Error(), "tear down") ||
+		!strings.Contains(err.Error(), "list the configurations again") {
+		t.Errorf("error %v", err)
+	}
+	if n := strings.Count(strings.Join(r.log, "|"), "aa existing"); n != 2 {
+		t.Errorf("not re-listed for the command: %v", r.log)
+	}
+}
+
+func TestLayout_DestroyBlockedEntry(t *testing.T) {
+	blocked := md127()
+	blocked.Blocked = "firmware RAID: use the vendor tool"
+	r := newDestroyRig(t, sysHolders(t, map[string][]string{"md127": nil}), blocked)
+	r.reports = []*inuse.Report{reportOf(heldBy())}
+	bs, err := r.s.DestroyBlockers(context.Background(), blocked)
+	if err != nil || !slices.Equal(bs, []string{blocked.Blocked}) {
+		t.Errorf("blockers %v %v", bs, err)
+	}
+	if len(r.log) != 0 {
+		t.Errorf("a blocked entry was looked at further: %v", r.log)
+	}
+	if err := r.s.Destroy(context.Background(), blocked); err == nil || !strings.Contains(err.Error(), blocked.Blocked) {
+		t.Errorf("destroy %v", err)
+	}
+	if len(r.d.destroyed) != 0 {
+		t.Error("the provider was called")
 	}
 }
 

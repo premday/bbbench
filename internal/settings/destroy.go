@@ -37,6 +37,10 @@ type Existing struct {
 	Stack []string
 	// Extra is the provider's; see the convention above.
 	Extra map[string]string
+	// Blocked is set by a provider for a configuration it recognises but
+	// must not or cannot destroy: the entry is listed, shown grayed with
+	// this reason, and every gate path refuses it.
+	Blocked string
 }
 
 const (
@@ -65,6 +69,12 @@ const maxStackDepth = 16
 // closed itself: use the tool's own refusals (mdadm --stop refusing an open
 // array, lvremove refusing an open LV, never a force flag), act only on the
 // members of the entry it was given and stop at the first step that fails.
+//
+// A Destroy error must say what is done, what is left and the command for
+// what is left: the gate adds no command of its own to it. DestroyCommand
+// is shown by the gate only when Destroy succeeded and the re-scan still
+// finds part of the configuration, built from a fresh listing. A provider
+// lists what it recognises but must not destroy with Blocked set.
 type Destroyer interface {
 	Existing(ctx context.Context) ([]Existing, error)
 	Destroy(ctx context.Context, e Existing) error
@@ -160,11 +170,35 @@ func (s *layout) Destroy(ctx context.Context, e Existing) error {
 	} else if len(left) > 0 {
 		what = append(what, fmt.Sprintf("%s is not fully gone: %s", fresh.Name, strings.Join(left, "; ")))
 	}
-	if len(what) > 0 {
-		return fmt.Errorf("%s; to finish by hand: %s", strings.Join(what, "; "), g.d.DestroyCommand(fresh))
+	if len(what) == 0 {
+		slog.Info("destroyed an existing configuration", "backend", fresh.Backend, "name", fresh.Name, "disks", diskNames(fresh.Disks))
+		return nil
 	}
-	slog.Info("destroyed an existing configuration", "backend", fresh.Backend, "name", fresh.Name, "disks", diskNames(fresh.Disks))
-	return nil
+	// A provider that failed says itself what is done and what to run by
+	// hand; a command built here would repeat steps already done.
+	if perr != nil {
+		return errors.New(strings.Join(what, "; "))
+	}
+	// The provider succeeded but something is left: the command comes from
+	// what is listed now, not from what was there before.
+	return fmt.Errorf("%s; %s", strings.Join(what, "; "), s.finishCommand(bg, g.d, fresh))
+}
+
+// finishCommand is the manual command for what is left of e, from a fresh
+// listing.
+func (s *layout) finishCommand(ctx context.Context, d Destroyer, e Existing) string {
+	es, err := d.Existing(ctx)
+	if err != nil {
+		return fmt.Sprintf("cannot list the configurations again (%v); list the configurations again to see what is left", err)
+	}
+	for _, x := range es {
+		if x.Backend == e.Backend && x.ID == e.ID {
+			if c := d.DestroyCommand(x); c != "" {
+				return "to finish by hand: " + c
+			}
+		}
+	}
+	return "it is no longer listed; list the configurations again to see what is left"
 }
 
 // leftOver re-scans and lists what the configuration owned that is still
@@ -201,6 +235,9 @@ func (s *layout) destroyGate(ctx context.Context, e Existing) (*gated, []string,
 	refuse := func(format string, a ...any) (*gated, []string, error) {
 		return nil, []string{fmt.Sprintf(format, a...)}, nil
 	}
+	if e.Blocked != "" {
+		return nil, []string{e.Blocked}, nil
+	}
 	b := s.backend(e.Backend)
 	if b == nil {
 		return refuse("unknown provider %q", e.Backend)
@@ -232,6 +269,9 @@ func (s *layout) destroyGate(ctx context.Context, e Existing) (*gated, []string,
 	}
 	if fresh == nil {
 		return refuse("%s is no longer present", e.Name)
+	}
+	if fresh.Blocked != "" {
+		return nil, []string{fresh.Blocked}, nil
 	}
 	if why := sameExisting(e, *fresh); why != "" {
 		return refuse("%s changed since it was shown (%s); list it again", e.Name, why)
@@ -352,8 +392,8 @@ func safeNode(n string) bool {
 
 // sameExisting says how fresh differs from what the user saw, "" when it
 // does not: name, disk set (kernel name, path, serial, model), what it is
-// made of (owned nodes, VG, kind, orphan flag) and the stack the user
-// confirmed. Summary is not compared (resync progress changes it).
+// made of (owned nodes, VG, kind, orphan flag), Blocked and the stack the
+// user confirmed. Summary is not compared (resync progress changes it).
 func sameExisting(saw, fresh Existing) string {
 	if saw.Name != fresh.Name {
 		return fmt.Sprintf("name %s is now %s", saw.Name, fresh.Name)
@@ -377,6 +417,9 @@ func sameExisting(saw, fresh Existing) string {
 	}
 	if saw.Extra[ExtraKind] != fresh.Extra[ExtraKind] || (saw.Extra[ExtraOrphanPV] == "yes") != (fresh.Extra[ExtraOrphanPV] == "yes") {
 		return "its kind differs"
+	}
+	if saw.Blocked != fresh.Blocked {
+		return "whether it may be destroyed differs"
 	}
 	if !slices.Equal(saw.Stack, fresh.Stack) {
 		return fmt.Sprintf("what goes with it is now %s", strings.Join(fresh.Stack, ", "))

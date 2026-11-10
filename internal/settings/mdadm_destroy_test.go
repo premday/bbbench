@@ -122,6 +122,9 @@ func (d *mdDestroySim) array(md, uuid, level, state string, detail bool) {
 	d.write(filepath.Join(dir, "metadata_version"), "1.2")
 	d.write(filepath.Join(dir, "degraded"), "0")
 	d.write(filepath.Join("block", md, "size"), "4000000000") // 2.0 TB
+	if err := os.MkdirAll(filepath.Join(d.sys, "block", md, "holders"), 0o755); err != nil {
+		d.t.Fatal(err)
+	}
 	if detail {
 		d.arrays[md] = uuid
 	}
@@ -180,7 +183,7 @@ func TestMdExistingAssembledArrays(t *testing.T) {
 	want1 := Existing{Backend: "mdadm", ID: mdU2, Name: "md126",
 		Summary: "md126 raid1 2 disks, 2.0 TB, clean",
 		Disks:   []Target{tgt("sdb"), tgt("sdc")},
-		Stack:   []string{"md126 (raid1, clean)", "md superblock of /dev/sdb1", "md superblock of /dev/sdc1"},
+		Stack:   []string{"md126 (raid1)", "md superblock of /dev/sdb1", "md superblock of /dev/sdc1"},
 		Extra: map[string]string{ExtraKind: KindMDValue, ExtraOwnedNodes: "md126,md126p1",
 			"assembled": "yes", "member_devs": "/dev/sdb1,/dev/sdc1"}}
 	if !reflect.DeepEqual(r1, want1) {
@@ -199,7 +202,7 @@ func TestMdExistingAssembledArrays(t *testing.T) {
 	if r5.Extra["member_devs"] != "/dev/sdd,/dev/sde,/dev/sdf,/dev/sdx" || r5.Extra[ExtraOwnedNodes] != "md127" {
 		t.Errorf("raid5 extra %+v", r5.Extra)
 	}
-	if r5.Stack[0] != "md127 (raid5, clean)" {
+	if r5.Stack[0] != "md127 (raid5)" {
 		t.Errorf("raid5 stack %v", r5.Stack)
 	}
 	for _, c := range s.calls {
@@ -230,12 +233,12 @@ func TestMdExistingInactiveArrayTakesTheUUIDOfItsMembers(t *testing.T) {
 	if e.Name != "md125" || e.ID != mdU1 || e.Extra["assembled"] != "yes" {
 		t.Errorf("inactive entry %+v", e)
 	}
-	if e.Stack[0] != "md125 (inactive)" || !strings.HasSuffix(e.Summary, "inactive") {
+	if e.Stack[0] != "md125" || !strings.HasSuffix(e.Summary, "inactive") {
 		t.Errorf("inactive stack %v summary %q", e.Stack, e.Summary)
 	}
 }
 
-func TestMdExistingLeavesOutAnArrayWithoutAUUID(t *testing.T) {
+func TestMdExistingListsAnArrayWithoutAUUIDAsBlocked(t *testing.T) {
 	s := newMdDestroySim(t)
 	s.disk("sdb")
 	s.disk("sdc")
@@ -246,9 +249,13 @@ func TestMdExistingLeavesOutAnArrayWithoutAUUID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Neither the array nor its members' superblocks are offered.
-	if len(es) != 0 {
-		t.Fatalf("want nothing, got %+v", es)
+	// Listed, blocked; its members' superblocks are not a second entry.
+	if len(es) != 1 {
+		t.Fatalf("want the blocked array only, got %+v", es)
+	}
+	if e := es[0]; e.Name != "md125" || !strings.Contains(e.Blocked, "uuid") || e.ID == "" ||
+		!reflect.DeepEqual(e.Disks, []Target{tgt("sdb"), tgt("sdc")}) {
+		t.Errorf("blocked entry %+v", e)
 	}
 }
 
@@ -264,7 +271,7 @@ func TestMdExistingUnassembledPair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Existing{{Backend: "mdadm", ID: mdU2, Name: "unassembled e5f6a7b8",
+	want := []Existing{{Backend: "mdadm", ID: mdU2, Name: "md-e5f6a7b8",
 		Summary: "unassembled raid1 md superblocks (uuid " + mdU2 + ") on /dev/sdb1, /dev/sdc1",
 		Disks:   []Target{tgt("sdb"), tgt("sdc")},
 		Stack:   []string{"md superblock of /dev/sdb1", "md superblock of /dev/sdc1"},
@@ -297,7 +304,10 @@ func TestMdExistingAssembledWinsOverAStaleMember(t *testing.T) {
 	if !reflect.DeepEqual(a.Disks, []Target{tgt("sdb"), tgt("sdc")}) {
 		t.Errorf("md127 disks %+v", a.Disks)
 	}
-	u := findExisting(t, es, "unassembled e5f6a7b8")
+	u := findExisting(t, es, "md-e5f6a7b8")
+	if !strings.Contains(a.Summary, "stale md superblock of md127 on /dev/sdd") {
+		t.Errorf("md127 summary does not name the stale member: %q", a.Summary)
+	}
 	if u.Extra["member_devs"] != "/dev/sde,/dev/sdf" {
 		t.Errorf("unassembled devs %q", u.Extra["member_devs"])
 	}
@@ -335,13 +345,18 @@ ARRAY /dev/md0 level=raid1 num-devices=2 UUID=e5f6a7b8:33333333:44444444:5555555
 ARRAY metadata=imsm UUID=11111111:22222222:33333333:44444444
    devices=/dev/sdg,/dev/sdh
 ARRAY /dev/md/Volume0 container=11111111:22222222:33333333:44444444 member=0 UUID=55555555:66666666:77777777:88888888
+ARRAY /dev/md/odd metadata=1.2 UUID=garbage
+   devices=/dev/sdi
+some line mdadm might print
 `
 
 func TestParseExamineScan(t *testing.T) {
 	got := parseExamineScan([]byte(examineScanSample))
 	want := []mdSuperGroup{
+		{uuid: "11111111:22222222:33333333:44444444", devs: []string{"/dev/sdg", "/dev/sdh"}, blocked: mdFirmwareBlocked},
 		{uuid: mdU1, level: "raid5", devs: []string{"/dev/sdb1", "/dev/sdc1", "/dev/sdd1"}},
 		{uuid: mdU2, level: "raid1", devs: []string{"/dev/sde", "/dev/sdf"}},
+		{devs: []string{"/dev/sdi"}, blocked: "its superblock has no readable uuid"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("\n got %+v\nwant %+v", got, want)
@@ -417,10 +432,13 @@ func TestMdDestroyUUIDMismatchLeavesTheMember(t *testing.T) {
 		t.Errorf("did not zero the first member: %q", s.calls)
 	}
 	msg := err.Error()
-	for _, w := range []string{"/dev/sdc", mdU2, "mdadm --zero-superblock /dev/sdc /dev/sdd"} {
+	for _, w := range []string{"/dev/sdc carries", mdU2, "do not zero it", "mdadm --zero-superblock /dev/sdd", "mdadm --examine"} {
 		if !strings.Contains(msg, w) {
 			t.Errorf("error %q lacks %q", msg, w)
 		}
+	}
+	if strings.Contains(msg, "--zero-superblock /dev/sdc") {
+		t.Errorf("the manual command zeroes the foreign device: %q", msg)
 	}
 	if s.supers["/dev/sdc"] != mdU2 {
 		t.Errorf("the other array's superblock was touched")
@@ -566,8 +584,224 @@ func TestMdDestroyCommand(t *testing.T) {
 	if got := m.DestroyCommand(e); got != "mdadm --stop /dev/md127 && mdadm --zero-superblock /dev/sdb /dev/sdc" {
 		t.Errorf("assembled: %q", got)
 	}
-	e = Existing{Name: "unassembled e5f6a7b8", Extra: map[string]string{"assembled": "no", "member_devs": "/dev/sdb1,/dev/it's"}}
+	e = Existing{Name: "md-e5f6a7b8", Extra: map[string]string{"assembled": "no", "member_devs": "/dev/sdb1,/dev/it's"}}
 	if got := m.DestroyCommand(e); got != `mdadm --zero-superblock /dev/sdb1 '/dev/it'"'"'s'` {
 		t.Errorf("unassembled: %q", got)
+	}
+}
+
+func TestMdDestroyUnexaminableMemberIsLeftOutOfTheCommand(t *testing.T) {
+	s, e := raid5Sim(t)
+	s.fail["mdadm --examine --export /dev/sdc"] = exitErr("mdadm: cannot open /dev/sdc: Input/output error")
+	err := s.mdadm().Destroy(context.Background(), e)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	msg := err.Error()
+	for _, w := range []string{"/dev/sdc could not be examined", "mdadm --zero-superblock /dev/sdd"} {
+		if !strings.Contains(msg, w) {
+			t.Errorf("error %q lacks %q", msg, w)
+		}
+	}
+	if strings.Contains(msg, "--zero-superblock /dev/sdc") || slices.Contains(s.calls, "mdadm --zero-superblock /dev/sdc") {
+		t.Errorf("zeroes, or tells to zero, an unproven device: %q", msg)
+	}
+}
+
+func TestMdDestroyStopErrorSaysWhatTheArrayIs(t *testing.T) {
+	s, e := raid5Sim(t)
+	s.fail["mdadm --stop"] = exitErr("mdadm: Cannot get exclusive access to /dev/md127")
+	err := s.mdadm().Destroy(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "md127 is still assembled") || !strings.Contains(err.Error(), "exclusive access") {
+		t.Fatalf("error %v", err)
+	}
+	if strings.Contains(err.Error(), "nothing done") {
+		t.Errorf("claims nothing done without looking: %v", err)
+	}
+	// mdadm failed but the array is gone after all: say so.
+	s, e = raid5Sim(t)
+	inner := s.mdSim.run
+	m := s.mdadm()
+	m.env.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "--stop" {
+			s.calls = append(s.calls, name+" "+strings.Join(args, " "))
+			s.remove("block/md127")
+			delete(s.arrays, "md127")
+			return nil, exitErr("mdadm: odd")
+		}
+		return inner(ctx, name, args...)
+	}
+	err = m.Destroy(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "md127 is no longer assembled") || !strings.Contains(err.Error(), "no superblock zeroed") {
+		t.Errorf("stopped despite the error: %v", err)
+	}
+	if slices.ContainsFunc(s.calls, func(c string) bool { return strings.Contains(c, "--zero-superblock") }) {
+		t.Errorf("zeroed after a failed stop: %q", s.calls)
+	}
+}
+
+func TestMdDestroyAcceptsAClearedArrayNode(t *testing.T) {
+	s, e := raid5Sim(t)
+	s.stopKeeps = true
+	s.onStop = func() {
+		for _, n := range []string{"sdb", "sdc", "sdd"} {
+			s.remove("block/md127/md/dev-" + n)
+		}
+		s.write("block/md127/md/array_state", "clear")
+		delete(s.arrays, "md127")
+	}
+	if err := s.mdadm().Destroy(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.supers) != 0 {
+		t.Errorf("superblocks left: %v", s.supers)
+	}
+}
+
+func TestMdDestroyUnassembledFailsClosedOnAnUnreadableArray(t *testing.T) {
+	s := newMdDestroySim(t)
+	s.disk("sdb")
+	s.disk("sdc")
+	s.supers["/dev/sdb"] = mdU2
+	s.supers["/dev/sdc"] = mdU2
+	m := s.mdadm()
+	es, err := m.Existing(context.Background())
+	if err != nil || len(es) != 1 {
+		t.Fatalf("listing: %v %+v", err, es)
+	}
+	// An md node whose members cannot be read: it may carry the uuid.
+	if err := os.MkdirAll(filepath.Join(s.sys, "block", "md9", "md", "dev-sdz"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.calls = nil
+	err = m.Destroy(context.Background(), es[0])
+	if err == nil || !strings.Contains(err.Error(), "md9") {
+		t.Fatalf("want a refusal naming md9, got %v", err)
+	}
+	if slices.ContainsFunc(s.calls, func(c string) bool { return strings.Contains(c, "--zero-superblock") }) {
+		t.Errorf("acted: %q", s.calls)
+	}
+}
+
+func TestMdExistingUnassembledNamesAreUnique(t *testing.T) {
+	s := newMdDestroySim(t)
+	s.disk("sdb")
+	s.disk("sdc")
+	s.supers["/dev/sdb"] = "e5f6a7b8:11111111:00000000:00000000"
+	s.supers["/dev/sdc"] = "e5f6a7b8:22222222:00000000:00000000"
+	es, err := s.mdadm().Existing(context.Background())
+	if err != nil || len(es) != 2 {
+		t.Fatalf("listing: %v %+v", err, es)
+	}
+	if es[0].Name != "md-e5f6a7b81" || es[1].Name != "md-e5f6a7b82" {
+		t.Errorf("names %q %q", es[0].Name, es[1].Name)
+	}
+}
+
+func TestMdExistingBlocksFirmwareAndUnknownMetadata(t *testing.T) {
+	s := newMdDestroySim(t)
+	for _, n := range []string{"sdb", "sdc", "sdd", "sde", "sdf"} {
+		s.disk(n)
+	}
+	s.array("md126", "11111111:22222222:33333333:44444444", "container", "inactive", true)
+	s.write("block/md126/md/metadata_version", "external:imsm")
+	s.member("md126", "sdb", "sdb", "spare", "11111111:22222222:33333333:44444444")
+	s.member("md126", "sdc", "sdc", "spare", "11111111:22222222:33333333:44444444")
+	s.array("md125", mdU1, "raid1", "clean", true)
+	s.write("block/md125/md/metadata_version", "none")
+	s.member("md125", "sdd", "sdd", "in_sync", mdU1)
+	es, err := s.mdadm().Existing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := findExisting(t, es, "md126 (IMSM container)")
+	if c.Blocked != mdFirmwareBlocked || !reflect.DeepEqual(c.Disks, []Target{tgt("sdb"), tgt("sdc")}) {
+		t.Errorf("container %+v", c)
+	}
+	n := findExisting(t, es, "md125")
+	if !strings.Contains(n.Blocked, "metadata") {
+		t.Errorf("metadata none: %+v", n)
+	}
+	if len(es) != 2 {
+		t.Errorf("want only the two blocked arrays, got %+v", es)
+	}
+}
+
+// layoutOver is the layout setting with the mdadm backend of s.
+func layoutOver(s *mdDestroySim) LayoutSetting {
+	env := s.env()
+	return NewLayout(env, &mdadm{env: env.fill()})
+}
+
+func TestMdDestroyBlockedEntryThroughTheGate(t *testing.T) {
+	s := newMdDestroySim(t)
+	s.disk("sdb")
+	s.disk("sdc")
+	s.array("md126", "11111111:22222222:33333333:44444444", "container", "inactive", true)
+	s.write("block/md126/md/metadata_version", "external:imsm")
+	s.member("md126", "sdb", "sdb", "spare", "11111111:22222222:33333333:44444444")
+	s.member("md126", "sdc", "sdc", "spare", "11111111:22222222:33333333:44444444")
+	l := layoutOver(s)
+	es, errs := l.Existing(context.Background())
+	if len(errs) != 0 || len(es) != 1 || es[0].Blocked == "" {
+		t.Fatalf("listing %+v %v", es, errs)
+	}
+	bs, err := l.DestroyBlockers(context.Background(), es[0])
+	if err != nil || len(bs) != 1 || bs[0] != mdFirmwareBlocked {
+		t.Errorf("blockers %v %v", bs, err)
+	}
+	s.calls = nil
+	if err := l.Destroy(context.Background(), es[0]); err == nil || !strings.Contains(err.Error(), mdFirmwareBlocked) {
+		t.Errorf("destroy %v", err)
+	}
+	if len(s.calls) != 0 {
+		t.Errorf("ran %q", s.calls)
+	}
+}
+
+func TestMdDestroyThroughTheGateIgnoresTheArrayState(t *testing.T) {
+	s, e := raid5Sim(t)
+	l := layoutOver(s)
+	s.write("block/md127/md/array_state", "active") // a write since it was shown
+	if bs, err := l.DestroyBlockers(context.Background(), e); err != nil || len(bs) != 0 {
+		t.Fatalf("clean -> active refused: %v %v", bs, err)
+	}
+	if err := l.Destroy(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.supers) != 0 {
+		t.Errorf("superblocks left: %v", s.supers)
+	}
+
+	// A member added since it was shown still is a change.
+	s, e = raid5Sim(t)
+	l = layoutOver(s)
+	s.disk("sde")
+	s.member("md127", "sde", "sde", "spare", mdU1)
+	bs, err := l.DestroyBlockers(context.Background(), e)
+	if err != nil || len(bs) != 1 || !strings.Contains(bs[0], "changed") {
+		t.Errorf("member added: %v %v", bs, err)
+	}
+}
+
+func TestMdExistingNestedOnLVHasNoSerial(t *testing.T) {
+	s := newMdDestroySim(t)
+	for _, n := range []string{"dm-0", "dm-1"} {
+		s.write(filepath.Join("block", n, "size"), "2000") // an LV: no device/serial
+	}
+	s.array("md127", mdU1, "raid1", "clean", true)
+	s.member("md127", "dm-0", "dm-0", "in_sync", mdU1)
+	s.member("md127", "dm-1", "dm-1", "in_sync", mdU1)
+	l := layoutOver(s)
+	es, errs := l.Existing(context.Background())
+	if len(errs) != 0 || len(es) != 1 {
+		t.Fatalf("listing %+v %v", es, errs)
+	}
+	if d := es[0].Disks; len(d) != 2 || d[0].Name != "dm-0" || d[0].Serial != "" {
+		t.Errorf("disks %+v", d)
+	}
+	bs, err := l.DestroyBlockers(context.Background(), es[0])
+	if err != nil || len(bs) != 1 || !strings.Contains(bs[0], "no serial") {
+		t.Errorf("blockers %v %v", bs, err)
 	}
 }
