@@ -336,20 +336,28 @@ func TestArrayFlush_NoRequestEventsShowsZeroFlushNote(t *testing.T) {
 // The core (the group loop, the targets, the web pages) must not name a
 // layout backend: backends live behind settings.Backend.
 func TestCoreDoesNotNameTheBackend(t *testing.T) {
-	files, err := filepath.Glob("../../internal/rungroup/*.go")
-	if err != nil {
-		t.Fatal(err)
+	var files []string
+	for _, pat := range []string{"*.go", "../../internal/rungroup/*.go", "../../internal/inuse/*.go", "../../internal/diskinfo/*.go"} {
+		m, err := filepath.Glob(pat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, m...)
 	}
-	serve, err := filepath.Glob("serve_*.go")
-	if err != nil {
-		t.Fatal(err)
+	for _, f := range []string{"backend", "layout", "perdrive", "settings"} {
+		files = append(files, "../../internal/settings/"+f+".go")
 	}
-	files = append(files, "group_run.go", "group_flow.go", "group_undo.go", "group_targets.go", "group_layout_tui.go")
-	files = append(files, serve...)
+	// The places that name the backends on purpose.
+	allowed := map[string]string{
+		"deps.go":                             "the external programs bbbench checks for",
+		"../../internal/settings/settings.go": "All registers the backends",
+		"../../internal/inuse/lvm.go":         "lists the LVM physical volumes so they are never offered",
+		"../../internal/inuse/inuse.go":       "detects LVM and md signatures and stacks on disks, for every backend",
+	}
 	banned := regexp.MustCompile(`(?i)mdadm|lvm|pvcreate|vgcreate|lvcreate`)
 	checked := 0
 	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
+		if strings.HasSuffix(f, "_test.go") || allowed[f] != "" {
 			continue
 		}
 		fh, err := os.Open(f)
@@ -369,7 +377,9 @@ func TestCoreDoesNotNameTheBackend(t *testing.T) {
 		fh.Close()
 		checked++
 	}
-	if checked < 7 {
+	// 50 core files of cmd/bbbench and internal/{rungroup,inuse,diskinfo}
+	// plus 4 of internal/settings were checked when this was written.
+	if checked < 54 {
 		t.Errorf("only %d files checked", checked)
 	}
 }
