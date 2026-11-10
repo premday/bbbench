@@ -834,7 +834,7 @@ __NAVBAR_HTML__
         }
     }
 
-    // \u2500\u2500 Members of an array \u2500\u2500
+    // ── members (begin) ──
     // An array phase carries ts_members (member -> {role, iops, bw, lat}, each
     // a series of {t, r, w}), stamped at window starts on the phase clock like
     // the Flush series: no fioShift. IOPS and bandwidth stack the members
@@ -1058,6 +1058,8 @@ __NAVBAR_HTML__
             }
         });
     }
+
+    // ── members (end) ──
 
     // ── md track (begin) ──
     // An md array phase carries ts_md (per window: action, pct, speed KiB/s,
