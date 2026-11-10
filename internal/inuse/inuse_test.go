@@ -586,3 +586,86 @@ func TestScan_Carries(t *testing.T) {
 		t.Errorf("carries %v\nwant    %v", r.Carries, want)
 	}
 }
+
+func TestCausesMirrorBusy(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sda", "8:0")
+	h.part("sda", "sda2", "8:2")
+	h.mount("8:2", "/data", "ext4", "/dev/sda2")
+	h.disk("sdd", "8:48")
+	h.part("sdd", "sdd1", "8:49")
+	h.stats["/dev/sdd1"] = [2]uint64{dev(0, 5), dev(8, 49)}
+	h.swap("/dev/sdd1\tpartition\t100\t0\t-2")
+	h.disk("sdf", "8:80")
+	h.stats["/usr/local/bin/bbbench"] = [2]uint64{dev(8, 80), 0}
+	h.paths = map[string]string{"/usr/local/bin/bbbench": "the bbbench binary"}
+	h.disk("sdg", "8:96")
+	h.holder("sdg", "md127")
+	h.disk("sdb", "8:16")
+	h.stack("dm-0", "253:0", "sdb")
+	h.holder("sdb", "dm-0")
+	h.disk("sdk", "8:160")
+	h.part("sdk", "sdk1", "8:161")
+	h.stats["/dev/sdk1"] = [2]uint64{dev(0, 5), dev(8, 161)}
+	h.pvs = []PV{{"/dev/sdk1", "vg0"}}
+	h.udevType("8:161", "LVM2_member") // also signature, deduped against the PV
+	h.disk("sdh", "8:112")
+	h.part("sdh", "sdh1", "8:113")
+	h.udevType("8:113", "linux_raid_member")
+	h.disk("sdi", "8:128")
+	h.udevType("8:128", "zfs_member")
+	r := h.scan()
+
+	want := map[string][]Cause{
+		"sda": {{KindMount, "sda", "/data", "mounted at /data (sda2)"}},
+		"sdd": {{KindSwap, "sdd", "/dev/sdd1", "active swap (/dev/sdd1)"}},
+		"sdf": {{KindPath, "sdf", "/usr/local/bin/bbbench", "holds the bbbench binary (/usr/local/bin/bbbench)"}},
+		"sdg": {{KindHolder, "sdg", "md127", "member of md127 (md RAID)"}},
+		"sdb": {{KindHolder, "sdb", "dm-0", "used by dm-0 (device mapper: LVM, LUKS or multipath)"}},
+		"sdk": {{KindPV, "sdk", "vg0", "is an LVM physical volume of volume group vg0"}},
+		"sdh": {{KindMD, "sdh", "", "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)"}},
+		"sdi": {{KindSignature, "sdi", "", "has a ZFS pool label"}},
+	}
+	for disk, w := range want {
+		got := r.Causes[disk]
+		if len(got) != len(w) {
+			t.Fatalf("%s: causes %v want %v", disk, got, w)
+		}
+		for i := range w {
+			if got[i] != w[i] {
+				t.Errorf("%s[%d]: %+v want %+v", disk, i, got[i], w[i])
+			}
+		}
+	}
+	for disk, reasons := range r.Busy {
+		if len(r.Causes[disk]) != len(reasons) {
+			t.Fatalf("%s: %d causes for %d reasons", disk, len(r.Causes[disk]), len(reasons))
+		}
+		for i, text := range reasons {
+			if r.Causes[disk][i].Text != text || r.Causes[disk][i].Disk != disk {
+				t.Errorf("%s[%d]: %+v does not mirror %q", disk, i, r.Causes[disk][i], text)
+			}
+		}
+	}
+}
+
+func TestBlockersFiltersOwned(t *testing.T) {
+	r := &Report{Causes: map[string][]Cause{
+		"sda": {{Kind: KindHolder, Disk: "sda", Via: "md127", Text: "a"}, {Kind: KindMount, Disk: "sda", Via: "/x", Text: "b"}},
+		"sdb": {{Kind: KindHolder, Disk: "sdb", Via: "md127", Text: "c"}},
+		"sdc": {{Kind: KindSwap, Disk: "sdc", Text: "d"}},
+	}}
+	owned := func(c Cause) bool { return c.Kind == KindHolder && c.Via == "md127" }
+	got := r.Blockers([]string{"sdb", "sda", "sdz"}, owned)
+	if len(got) != 1 || got[0].Text != "b" {
+		t.Fatalf("got %+v", got)
+	}
+	if got := r.Blockers([]string{"sda", "sdb"}, func(Cause) bool { return true }); len(got) != 0 {
+		t.Fatalf("all owned: %+v", got)
+	}
+	r.All = "no disk can be offered"
+	got = r.Blockers([]string{"sdb"}, func(Cause) bool { return true })
+	if len(got) != 1 || got[0].Kind != KindAll || got[0].Text != "no disk can be offered" {
+		t.Fatalf("All case: %+v", got)
+	}
+}

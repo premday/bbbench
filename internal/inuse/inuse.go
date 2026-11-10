@@ -36,6 +36,49 @@ type Report struct {
 	// "gpt partition table, ext4 on sdb1". Such a disk can be offered, and
 	// a layout erases it. No udev data means no entry.
 	Carries map[string]string
+	// Causes has, for every disk in Busy, one Cause per reason, in the same
+	// order: the reason in a form a program can act on.
+	Causes map[string][]Cause
+}
+
+// Kind says what a Cause is.
+type Kind string
+
+const (
+	KindMount     Kind = "mount"     // a mounted filesystem; Via is the mount point
+	KindSwap      Kind = "swap"      // active swap; Via is the swap file or device
+	KindPath      Kind = "path"      // bbbench or its output; Via is the path
+	KindHolder    Kind = "holder"    // md, dm or another holder; Via is its node name
+	KindMD        Kind = "md"        // an md RAID superblock
+	KindPV        Kind = "pv"        // an LVM physical volume; Via is the VG, "" when orphan
+	KindSignature Kind = "signature" // ZFS, btrfs, bcachefs, LUKS, Ceph, DRBD, VMFS
+	KindAll       Kind = "all"       // no disk can be judged (Report.All)
+)
+
+// Cause is one reason a disk is busy. Text equals the string in Busy.
+type Cause struct {
+	Kind Kind
+	Disk string
+	Via  string
+	Text string
+}
+
+// Blockers returns the causes, for the given disks in order, that owned
+// reports false for. When Report.All is set no disk can be judged, so it
+// returns a single KindAll cause and the caller cannot proceed.
+func (r *Report) Blockers(disks []string, owned func(Cause) bool) []Cause {
+	if r.All != "" {
+		return []Cause{{Kind: KindAll, Text: r.All}}
+	}
+	var out []Cause
+	for _, d := range disks {
+		for _, c := range r.Causes[d] {
+			if !owned(c) {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
 }
 
 // Reason is why the disk may not be erased, "" when it is free.
@@ -59,13 +102,17 @@ type scanner struct {
 	mounts []mount
 }
 
-func (s *scanner) add(disk, reason string) {
+func (s *scanner) add(disk, reason string, kind Kind, via string) {
 	for _, have := range s.r.Busy[disk] {
 		if have == reason {
 			return
 		}
 	}
 	s.r.Busy[disk] = append(s.r.Busy[disk], reason)
+	if s.r.Causes == nil {
+		s.r.Causes = map[string][]Cause{}
+	}
+	s.r.Causes[disk] = append(s.r.Causes[disk], Cause{Kind: kind, Disk: disk, Via: via, Text: reason})
 }
 
 // setAll marks that no disk can be offered; the first reason wins.
@@ -228,7 +275,7 @@ func (s *scanner) scanMounts() {
 			reason = "holds the root filesystem (/)"
 		}
 		for _, l := range leaves {
-			s.add(l, reason)
+			s.add(l, reason, KindMount, m.Point)
 		}
 	}
 }
@@ -255,7 +302,7 @@ func (s *scanner) scanSwaps() {
 		case "partition":
 			if _, leaves, ok := s.resolve(mmOf(rdev)); ok {
 				for _, l := range leaves {
-					s.add(l, fmt.Sprintf("active swap (%s)", file))
+					s.add(l, fmt.Sprintf("active swap (%s)", file), KindSwap, file)
 				}
 			} else {
 				s.setAll(unattributed)
@@ -263,7 +310,7 @@ func (s *scanner) scanSwaps() {
 		case "file":
 			if _, leaves, ok := s.devLeaves(dev); ok {
 				for _, l := range leaves {
-					s.add(l, fmt.Sprintf("holds an active swap file (%s)", file))
+					s.add(l, fmt.Sprintf("holds an active swap file (%s)", file), KindSwap, file)
 				}
 			} else {
 				s.setAll(unattributed)
@@ -290,7 +337,7 @@ func (s *scanner) scanPaths() {
 			continue
 		}
 		for _, l := range leaves {
-			s.add(l, fmt.Sprintf("holds %s (%s)", s.o.Paths[p], p))
+			s.add(l, fmt.Sprintf("holds %s (%s)", s.o.Paths[p], p), KindPath, p)
 		}
 	}
 }
@@ -342,11 +389,11 @@ func (s *scanner) scanHolders() {
 			for _, h := range hs {
 				switch {
 				case strings.HasPrefix(h.Name(), "md"):
-					s.add(name, fmt.Sprintf("member of %s (md RAID)", h.Name()))
+					s.add(name, fmt.Sprintf("member of %s (md RAID)", h.Name()), KindHolder, h.Name())
 				case strings.HasPrefix(h.Name(), "dm-"):
-					s.add(name, fmt.Sprintf("used by %s (device mapper: LVM, LUKS or multipath)", h.Name()))
+					s.add(name, fmt.Sprintf("used by %s (device mapper: LVM, LUKS or multipath)", h.Name()), KindHolder, h.Name())
 				default:
-					s.add(name, fmt.Sprintf("used by %s", h.Name()))
+					s.add(name, fmt.Sprintf("used by %s", h.Name()), KindHolder, h.Name())
 				}
 			}
 		}
@@ -375,7 +422,7 @@ func (s *scanner) scanPVs() {
 			reason = fmt.Sprintf("is an LVM physical volume of volume group %s", pv.VG)
 		}
 		for _, l := range leaves {
-			s.add(l, reason)
+			s.add(l, reason, KindPV, pv.VG)
 		}
 	}
 }
@@ -403,25 +450,25 @@ func (s *scanner) scanSignatures() {
 			fs := udevProp(udev, "ID_FS_TYPE")
 			switch fs {
 			case "linux_raid_member":
-				s.add(name, "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)")
+				s.add(name, "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)", KindMD, "")
 			case "zfs_member":
-				s.add(name, "has a ZFS pool label")
+				s.add(name, "has a ZFS pool label", KindSignature, "")
 			case "LVM2_member":
 				if !hasPV {
-					s.add(name, "is an LVM physical volume")
+					s.add(name, "is an LVM physical volume", KindPV, "")
 				}
 			case "btrfs":
-				s.add(name, "has a btrfs filesystem label (member of a btrfs filesystem; check with btrfs filesystem show)")
+				s.add(name, "has a btrfs filesystem label (member of a btrfs filesystem; check with btrfs filesystem show)", KindSignature, "")
 			case "bcachefs":
-				s.add(name, "has a bcachefs filesystem label (member of a bcachefs filesystem)")
+				s.add(name, "has a bcachefs filesystem label (member of a bcachefs filesystem)", KindSignature, "")
 			case "crypto_LUKS":
-				s.add(name, "is LUKS encrypted")
+				s.add(name, "is LUKS encrypted", KindSignature, "")
 			case "ceph_bluestore":
-				s.add(name, "has a Ceph BlueStore label (an OSD of a Ceph cluster; check with ceph-volume lvm list)")
+				s.add(name, "has a Ceph BlueStore label (an OSD of a Ceph cluster; check with ceph-volume lvm list)", KindSignature, "")
 			case "drbd":
-				s.add(name, "has DRBD metadata (a backing device of a DRBD replicated volume)")
+				s.add(name, "has DRBD metadata (a backing device of a DRBD replicated volume)", KindSignature, "")
 			case "VMFS_volume_member":
-				s.add(name, "is a VMware VMFS volume member")
+				s.add(name, "is a VMware VMFS volume member", KindSignature, "")
 			case "":
 			default:
 				carries = append(carries, fs+" on "+filepath.Base(d.dir))
