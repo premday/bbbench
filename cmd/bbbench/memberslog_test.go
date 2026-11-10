@@ -223,3 +223,31 @@ func TestStartMemberSamplerRecordsMD(t *testing.T) {
 		t.Errorf("%+v", info)
 	}
 }
+
+func TestMDStartEventsWithRamp(t *testing.T) {
+	idle := diskstat.MDState{Action: "idle", ArrayState: "clean"}
+	chk := diskstat.MDState{Action: "check", ArrayState: "clean", Degraded: 1}
+	texts := func(i MDInfo) []string {
+		var o []string
+		for _, e := range i.Events {
+			o = append(o, e.Text)
+		}
+		return o
+	}
+	eq := func(got, want []string) bool { return strings.Join(got, "|") == strings.Join(want, "|") }
+	// starts non-idle, ramp drops windows, unchanged: reported once at the first visible window
+	info, _ := loadMDLog([]diskstat.MDWindow{mdw(1000, chk), mdw(2000, chk), mdw(3000, chk)}, 2000)
+	if w := []string{"sync_action check (at phase start)", "degraded 1 (at phase start)"}; !eq(texts(info), w) || info.Events[0].T != 2 {
+		t.Errorf("non-idle+ramp: %+v", info.Events)
+	}
+	// starts idle, change in the ramp: a change event only
+	info, _ = loadMDLog([]diskstat.MDWindow{mdw(1000, idle), mdw(2000, chk), mdw(3000, chk)}, 2000)
+	if w := []string{"sync_action idle -> check", "degraded 0 -> 1"}; !eq(texts(info), w) || info.Events[0].T != 2 {
+		t.Errorf("idle+change in ramp: %+v", info.Events)
+	}
+	// starts non-idle, no ramp: unchanged behaviour
+	info, _ = loadMDLog([]diskstat.MDWindow{mdw(1000, chk)}, 0)
+	if w := []string{"sync_action check (at phase start)", "degraded 1 (at phase start)"}; !eq(texts(info), w) || info.Events[0].T != 0 {
+		t.Errorf("no ramp: %+v", info.Events)
+	}
+}

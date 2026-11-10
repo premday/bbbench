@@ -160,18 +160,16 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 }
 
 // loadMDLog turns the stored md windows into points and events. Windows that
-// ended inside the ramp-up are not shown; the last of them is the baseline of
-// the first visible window, so a change that happened there is not lost.
+// ended inside the ramp-up are not shown as points, but the events are derived
+// from every window (the phase start state comes from the very first one) and
+// those that happened in the ramp are stamped at the start of the first visible
+// window, so nothing is lost and nothing is reported twice.
 func loadMDLog(md []diskstat.MDWindow, offsetMs int64) (MDInfo, bool) {
-	var base *diskstat.MDState
 	var vis []diskstat.MDWindow
 	for _, w := range md {
-		if w.EndMs <= offsetMs {
-			s := w.S
-			base = &s
-			continue
+		if w.EndMs > offsetMs {
+			vis = append(vis, w)
 		}
-		vis = append(vis, w)
 	}
 	if len(vis) == 0 {
 		return MDInfo{}, false
@@ -180,7 +178,13 @@ func loadMDLog(md []diskstat.MDWindow, offsetMs int64) (MDInfo, bool) {
 	for _, w := range vis {
 		info.Points = append(info.Points, mdPoint(w))
 	}
-	info.Events = mdEventsFrom(base, vis)
+	t0 := info.Points[0].T
+	for _, e := range mdEventsFrom(nil, md) {
+		if e.T < t0 {
+			e.T = t0
+		}
+		info.Events = append(info.Events, e)
+	}
 	return info, true
 }
 
