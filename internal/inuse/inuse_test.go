@@ -222,6 +222,9 @@ func TestScan_UdevSignatures(t *testing.T) {
 		{"zfs_member", "has a ZFS pool label"},
 		{"LVM2_member", "is an LVM physical volume"},
 		{"crypto_LUKS", "is LUKS encrypted"},
+		{"ceph_bluestore", "has a Ceph BlueStore label (an OSD of a Ceph cluster; check with ceph-volume lvm list)"},
+		{"drbd", "has DRBD metadata (a backing device of a DRBD replicated volume)"},
+		{"VMFS_volume_member", "is a VMware VMFS volume member"},
 		{"ext4", ""},
 	}
 	for _, c := range cases {
@@ -554,4 +557,32 @@ func TestListPVs(t *testing.T) {
 			t.Fatal(pvs, err)
 		}
 	})
+}
+
+// TestScan_Carries: an unmounted filesystem or a partition table does not
+// make a disk busy, but the report says what the disk carries.
+func TestScan_Carries(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdb", "8:16")
+	h.write(filepath.Join(h.udev, "b8:16"), "E:ID_PART_TABLE_TYPE=gpt\n")
+	h.part("sdb", "sdb1", "8:17")
+	h.udevType("8:17", "ext4")
+	h.part("sdb", "sdb2", "8:18")
+	h.udevType("8:18", "swap")
+	h.disk("sdc", "8:32")
+	h.udevType("8:32", "xfs")
+	h.disk("sdd", "8:48") // no udev data: nothing to say
+	h.disk("sde", "8:64")
+	h.part("sde", "sde1", "8:65")
+	h.udevType("8:65", "zfs_member") // busy, said by Busy, not Carries
+	r := h.scan()
+	for _, d := range []string{"sdb", "sdc", "sdd"} {
+		if why := r.Reason(d); why != "" {
+			t.Errorf("%s busy: %s", d, why)
+		}
+	}
+	want := map[string]string{"sdb": "gpt partition table, ext4 on sdb1, swap on sdb2", "sdc": "xfs on sdc"}
+	if fmt.Sprint(r.Carries) != fmt.Sprint(want) {
+		t.Errorf("carries %v\nwant    %v", r.Carries, want)
+	}
 }

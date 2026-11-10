@@ -233,6 +233,35 @@ func TestLayout_BusyDiskGrayedWithReason(t *testing.T) {
 	}
 }
 
+// TestLayout_CarriesDataSelectableAndMarked: a disk with an unmounted
+// filesystem is offered, marked in the editor, on each confirmation line and
+// in the erased list.
+func TestLayout_CarriesDataSelectableAndMarked(t *testing.T) {
+	s, _ := bothBackends("mdadm", "lvm")
+	drives, targets := testDrives("sdb", "sdc")
+	rep := freeReport()
+	rep.Carries = map[string]string{"sdb": "gpt partition table, ext4 on sdb1"}
+	m := lpress(newLayoutModel(s, drives, targets, rep, nil), "a", "enter")
+	if v := m.View(); !strings.Contains(v, "sdb  V M1  1099 GB  carries data: gpt partition table, ext4 on sdb1") {
+		t.Fatalf("editor lacks the mark:\n%s", v)
+	}
+	m = setRole(t, m, "sdb", settings.RoleData)
+	m = setRole(t, m, "sdc", settings.RoleData)
+	m = lpress(m, "enter", "b", "c")
+	if m.step != layoutStepConfirm {
+		t.Fatalf("not on the confirmation (%s):\n%s", m.msg, m.View())
+	}
+	v := m.View()
+	for _, want := range []string{
+		"sdb  V M1 (S/N SN-sdb)  data  carries data: gpt partition table, ext4 on sdb1",
+		"Disks erased: sdb (carries data: gpt partition table, ext4 on sdb1), sdc",
+	} {
+		if !strings.Contains(v, want) {
+			t.Errorf("confirmation lacks %q:\n%s", want, v)
+		}
+	}
+}
+
 func TestLayout_InUseCheckFailedGraysAll(t *testing.T) {
 	s, _ := bothBackends("mdadm", "lvm")
 	drives, targets := testDrives("sdb", "sdc")

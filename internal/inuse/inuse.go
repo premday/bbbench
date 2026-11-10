@@ -1,7 +1,10 @@
 // Package inuse decides which disks must not be erased: it finds disks that
 // are mounted, used as swap, hold bbbench itself or its output, are held by
-// md, device mapper or another stacked device, or carry an md, ZFS, LVM or
-// LUKS signature. It only reads; when unsure it reports the disk busy.
+// md, device mapper or another stacked device, or carry an md, ZFS, LVM,
+// btrfs, bcachefs, LUKS, Ceph BlueStore, DRBD or VMFS signature (from udev).
+// Any other filesystem or a partition table does not make a disk busy: it is
+// reported in Carries. It only reads; a mount, swap area or path it cannot
+// attribute to a disk makes it offer no disk at all.
 package inuse
 
 import (
@@ -29,6 +32,10 @@ type Report struct {
 	Busy     map[string][]string // whole-disk kernel name -> reasons
 	All      string              // non-empty: no disk can be offered, and why
 	Warnings []string
+	// Carries says what a disk that is not busy still carries, from udev:
+	// "gpt partition table, ext4 on sdb1". Such a disk can be offered, and
+	// a layout erases it. No udev data means no entry.
+	Carries map[string]string
 }
 
 // Reason is why the disk may not be erased, "" when it is free.
@@ -382,11 +389,18 @@ func (s *scanner) scanSignatures() {
 				hasPV = true
 			}
 		}
-		for _, d := range disks[name] {
+		var carries []string
+		for i, d := range disks[name] {
 			if d.mm == "" {
 				continue
 			}
-			fs := udevFSType(filepath.Join(s.o.Udev, "b"+d.mm))
+			udev := filepath.Join(s.o.Udev, "b"+d.mm)
+			if i == 0 {
+				if pt := udevProp(udev, "ID_PART_TABLE_TYPE"); pt != "" {
+					carries = append(carries, pt+" partition table")
+				}
+			}
+			fs := udevProp(udev, "ID_FS_TYPE")
 			switch fs {
 			case "linux_raid_member":
 				s.add(name, "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)")
@@ -402,18 +416,35 @@ func (s *scanner) scanSignatures() {
 				s.add(name, "has a bcachefs filesystem label (member of a bcachefs filesystem)")
 			case "crypto_LUKS":
 				s.add(name, "is LUKS encrypted")
+			case "ceph_bluestore":
+				s.add(name, "has a Ceph BlueStore label (an OSD of a Ceph cluster; check with ceph-volume lvm list)")
+			case "drbd":
+				s.add(name, "has DRBD metadata (a backing device of a DRBD replicated volume)")
+			case "VMFS_volume_member":
+				s.add(name, "is a VMware VMFS volume member")
+			case "":
+			default:
+				carries = append(carries, fs+" on "+filepath.Base(d.dir))
 			}
+		}
+		if len(carries) > 0 && len(s.r.Busy[name]) == 0 {
+			if s.r.Carries == nil {
+				s.r.Carries = map[string]string{}
+			}
+			s.r.Carries[name] = strings.Join(carries, ", ")
 		}
 	}
 }
 
-func udevFSType(path string) string {
+// udevProp is the property key of a udev database entry, "" when it or the
+// entry is missing.
+func udevProp(path, key string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
 	for _, line := range strings.Split(string(b), "\n") {
-		if v, ok := strings.CutPrefix(line, "E:ID_FS_TYPE="); ok {
+		if v, ok := strings.CutPrefix(line, "E:"+key+"="); ok {
 			return strings.TrimSpace(v)
 		}
 	}

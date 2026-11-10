@@ -85,6 +85,9 @@ type layoutModel struct {
 	busy     map[string]bool
 	all      string // non-empty: no disk can be used, and why
 	warnings []string
+	// carries maps a selectable disk to the data it still carries
+	// (inuse.Report.Carries): shown, never blocking.
+	carries map[string]string
 
 	layouts []layoutEntry
 	step    layoutStep
@@ -114,6 +117,7 @@ func newLayoutModel(s settings.LayoutSetting, drives []DriveInfo, targets map[st
 	default:
 		m.all = busy.All
 		m.warnings = busy.Warnings
+		m.carries = busy.Carries
 	}
 	for _, d := range drives {
 		name := d.Device.Name
@@ -663,7 +667,7 @@ func (m layoutModel) editorView(b *strings.Builder) {
 				fmt.Fprintf(b, "  %s  -       %s  %s %s  %s\n", c, d.Name, d.Vendor, d.Model, why)
 				continue
 			}
-			fmt.Fprintf(b, "  %s%s %s  %s %s  %d GB\n", c, roleBox(m.edit.roles[d.Name]), d.Name, d.Vendor, d.Model, d.CapacityGB())
+			fmt.Fprintf(b, "  %s%s %s  %s %s  %d GB%s\n", c, roleBox(m.edit.roles[d.Name]), d.Name, d.Vendor, d.Model, d.CapacityGB(), m.carriesNote(d.Name))
 		}
 	}
 	if v, err := m.check(m.edit); err != nil {
@@ -699,6 +703,15 @@ func (m layoutModel) capacityWarning() string {
 	return fmt.Sprintf("members differ in capacity (%s): the layout uses the smallest", strings.Join(parts, ", "))
 }
 
+// carriesNote is "  carries data: <what>" for a disk that still carries a
+// filesystem or a partition table, else "".
+func (m layoutModel) carriesNote(name string) string {
+	if what := m.carries[name]; what != "" {
+		return "  carries data: " + what
+	}
+	return ""
+}
+
 func (m layoutModel) confirmView(b *strings.Builder) {
 	b.WriteString("\n  Confirm the layout test: THE DISKS BELOW WILL BE ERASED\n  (y to start, Esc to go back, q to quit)\n\n")
 	byName := drivesByName(m.drives)
@@ -707,7 +720,7 @@ func (m layoutModel) confirmView(b *strings.Builder) {
 	for i, e := range m.layouts {
 		fmt.Fprintf(b, "  Run %d: %s\n", i+1, e.value.Label)
 		for _, d := range e.disks {
-			fmt.Fprintf(b, "      %s  %s %s (S/N %s)  %s\n", d.Name, d.Vendor, d.Model, d.Serial, d.Role)
+			fmt.Fprintf(b, "      %s  %s %s (S/N %s)  %s%s\n", d.Name, d.Vendor, d.Model, d.Serial, d.Role, m.carriesNote(d.Name))
 		}
 		// A layout is one target: its first data disk stands for it. The
 		// baseline benchmarks all its disks.
@@ -725,7 +738,13 @@ func (m layoutModel) confirmView(b *strings.Builder) {
 		unknown = max(unknown, u)
 		missing += mi
 	}
-	fmt.Fprintf(b, "\n  Disks erased: %s\n", strings.Join(m.erased(), ", "))
+	erased := m.erased()
+	for i, name := range erased {
+		if what := m.carries[name]; what != "" {
+			erased[i] = name + " (carries data: " + what + ")"
+		}
+	}
+	fmt.Fprintf(b, "\n  Disks erased: %s\n", strings.Join(erased, ", "))
 	n := len(m.layouts)
 	fmt.Fprintf(b, "\n  %d %s of the full test plan", n, plural(n, "run", "runs"))
 	if missing > 0 && per == 0 {
