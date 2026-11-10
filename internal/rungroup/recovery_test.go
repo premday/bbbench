@@ -140,3 +140,40 @@ func TestRecovery_ArrayUndosResolveMembers(t *testing.T) {
 		t.Errorf("missing %+v", missing)
 	}
 }
+
+func TestRecovery_LVMRecordRoundTrip(t *testing.T) {
+	// The shape NewLVM's Prepare records: backend lvm, the VG/LV name, no
+	// uuid, the devices-file entries pvcreate will add in Extra.
+	arr := &settings.ArrayUndo{Backend: "lvm", Name: "bbbench_1_1",
+		Members: []settings.Disk{
+			{Target: settings.Target{Name: "sdb", Path: "/dev/sdb", Serial: "S1", Model: "M"}, Role: settings.RoleData},
+			{Target: settings.Target{Name: "sdc", Path: "/dev/sdc", Serial: "S2", Model: "M"}, Role: settings.RoleData},
+		},
+		Extra: map[string]string{"devicesfile_added": "S2"},
+	}
+	path := filepath.Join(t.TempDir(), "rec.json")
+	if err := RecoveryOf("software layout", []settings.Undo{{Array: arr}}).Save(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadRecovery(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// After a reboot the members are sde and sdd.
+	now := []settings.Target{
+		{Name: "sdd", Path: "/dev/sdd", Serial: "S2", Model: "M"},
+		{Name: "sde", Path: "/dev/sde", Serial: "S1", Model: "M"},
+	}
+	found, missing := got.Undos(now)
+	if len(missing) != 0 || len(found) != 1 || found[0].Array == nil {
+		t.Fatalf("found %+v missing %+v", found, missing)
+	}
+	a := found[0].Array
+	want := settings.ArrayUndo{Backend: "lvm", Name: "bbbench_1_1",
+		Members: []settings.Disk{{Target: now[1], Role: settings.RoleData}, {Target: now[0], Role: settings.RoleData}},
+		Extra:   map[string]string{"devicesfile_added": "S2"},
+	}
+	if !reflect.DeepEqual(*a, want) {
+		t.Errorf("\n got %+v\nwant %+v", *a, want)
+	}
+}

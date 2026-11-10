@@ -28,6 +28,22 @@ type Layout struct {
 // Backend builds, reads and tears down layouts with one tool. It is the
 // plug-in point of the software-layout setting: everything specific to a
 // tool lives in its backend.
+//
+// Safety contract (every backend must meet it):
+//   - Prepare changes nothing and refuses a name that already exists on the
+//     machine. The record it returns is saved to the recovery file before
+//     Apply and is not saved again afterwards, so it must already hold
+//     everything Undo needs to find and remove what Apply creates (name,
+//     uuid when the tool takes one up front, members, Extra).
+//   - Apply builds only on the recorded members; on a failure it returns
+//     and leaves what was built to Undo.
+//   - Undo touches nothing it cannot prove belongs to the record: it
+//     refuses an array, volume group or name it cannot prove is its own
+//     (one that has a member or physical volume that is not a present
+//     recorded member, or that it cannot list), it never touches a member
+//     whose Path is empty (not found again; reported as not present), and it
+//     only wipes signatures that the record says it created. Each removal is
+//     verified by reading back.
 type Backend interface {
 	// Name is the first word of every value; it is recorded on targets
 	// and undo records.

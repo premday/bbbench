@@ -257,7 +257,7 @@ func (e Env) fill() Env {
 // All lists the settings bbbench knows: the drive write cache, then the
 // software layout with its backends.
 func All(env Env) []Setting {
-	return []Setting{NewWriteCache(env), NewLayout(env, NewMdadm(env))}
+	return []Setting{NewWriteCache(env), NewLayout(env, NewMdadm(env), NewLVM(env))}
 }
 
 // Verify reads the setting every 200 ms until it equals t.Want or settle has

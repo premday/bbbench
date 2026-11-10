@@ -384,7 +384,7 @@ func TestAll_RegistersLayout(t *testing.T) {
 	for _, b := range ls.Backends() {
 		names = append(names, b.Name())
 	}
-	if !slices.Equal(names, []string{"mdadm"}) {
+	if !slices.Equal(names, []string{"mdadm", "lvm"}) {
 		t.Errorf("backends %v", names)
 	}
 }
