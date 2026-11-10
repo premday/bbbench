@@ -42,7 +42,7 @@
   - `func ReadCounters(sysBlock, name string) (Counters, error)` (fields 0,2,3,4,6,7 of `<sysBlock>/<name>/stat`; sysBlock "" = /sys/block)
   - `type Window struct{ EndMs, SpanMs int64; Device string; D Counters }` where `D` is the delta of the window, backwards counter = 0
   - `type Sampler`; `func NewSampler(names []string, sysBlock string) *Sampler`; `func (s *Sampler) Sample(now time.Time)` (first call sets time zero and the baseline; each later call appends one Window per device, EndMs = ms since the first call); `func (s *Sampler) Run(ctx context.Context, every time.Duration)` (calls Sample at start and every `every` until ctx is done, plus one last Sample on stop); `func (s *Sampler) Windows() []Window` (safe after Run returned)
-  - `func (w Window) Rates() (readIOPS, writeIOPS, readMBps, writeMBps, readLatUs, writeLatUs float64)`: per second over SpanMs, MB = 1e6? **No: MiB/1024 convention of the page is KiB/1024 = MiB/s; use sectors*512/1048576** per second; latency µs = ticks*1000/ios, 0 when ios == 0.
+  - `func (w Window) Rates() (readIOPS, writeIOPS, readMBps, writeMBps, readLatUs, writeLatUs float64)`: per second over SpanMs, "MB/s" is MiB/s like the page's other bandwidth values: sectors*512/1048576 per second; latency µs = ticks*1000/ios, 0 when ios == 0.
 
 - [ ] **Step 1: tests** `TestReadCounters` (fake sysfs tree, fields parsed), `TestSampleDeltas` (stepping `time.Time`, two devices, EndMs and SpanMs, deltas), `TestCounterBackwardsIsZero`, `TestMissingDeviceKeepsWindows` (file removed after the 2nd sample: earlier windows kept, no later ones for it, others continue), `TestRatesZeroIO` (all zero, no NaN), `TestRatesValues` (known deltas -> exact IOPS, MiB/s, µs).
 - [ ] **Step 2: run, expect FAIL** `go test ./internal/diskstat`
