@@ -125,9 +125,11 @@ cache at all, and `nvme set-feature /dev/nvme0 -f 6 -V 1` enables it (capital
 Flush tracing and a plain run only **read** the drive's state (`queue/write_cache`,
 tracefs): they do not enable or disable the write cache, set NVMe features,
 or touch queue settings or the I/O scheduler. The Flush numbers describe the
-drive as you left it. The one exception is a *setting test* of the write cache
-policy (see the README): after an explicit confirmation it applies each value,
-verifies it before and after each run and restores the original. The only kernel state Flush tracing creates is its
+drive as you left it. The one exception is a *setting test* (see the README):
+of the write cache policy, after an explicit confirmation it applies each value,
+verifies it before and after each run and restores the original; a *layout*
+setting test builds md arrays or LVM volumes on the chosen disks and erases them
+(also after one confirmation, with the arrays torn down on every exit). The only kernel state Flush tracing creates is its
 private ftrace instance, removed when the phase ends.
 
 So before a run, put the device in the state you want to measure, and note it
@@ -135,6 +137,15 @@ next to the results: write cache enabled or disabled, kernel (stock or patched),
 firmware. To compare setups, change them yourself and run once per setup, or let a
 setting test do it for the write cache. The warning for write-through devices
 lists the commands, but runs nothing for you.
+
+## Arrays and logical volumes
+
+In a layout setting test (md array or LVM logical volume) the generic block
+collector runs on the md or dm device: the mean is exact and no percentiles are
+reported, as for any non-NVMe device. This is not verified on hardware yet: md
+and dm devices are bio-based, so the block request events may never fire for
+them, and a phase can show 0 Flushes ("ftrace saw 0 Flush commands") even
+though the array's member disks received Flushes.
 
 ## Limits
 

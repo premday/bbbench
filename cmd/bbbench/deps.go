@@ -25,6 +25,9 @@ var dependencies = []dependency{
 	{"hdparm", []string{"-V"}, false, "the SATA identify report in the disk dump, and changing the write cache of SATA drives in a setting test", "hdparm"},
 	{"sdparm", []string{"--version"}, false, "changing the write cache of SAS/SCSI drives in a setting test", "sdparm"},
 	{"lspci", []string{"--version"}, false, "the storage controller's name on the status page", "pciutils"},
+	{"mdadm", []string{"--version"}, false, "building software RAID arrays in a layout setting test (mdadm backend)", "mdadm"},
+	{"lvm", []string{"version"}, false, "building logical volumes in a layout setting test (LVM backend), and listing LVM physical volumes so that they are never offered", "lvm2"},
+	{"udevadm", []string{"--version"}, false, "waiting for udev after a layout teardown", "udev (systemd)"},
 }
 
 // depReport is the outcome of checking the external programs.
