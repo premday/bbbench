@@ -49,6 +49,9 @@ type PhaseResult struct {
 	// FlushSeries is the Flush latency over time (mean µs per second, W
 	// column) per device, read back from the stored <prefix>_flush.1.log.
 	FlushSeries map[string][]TimePoint `json:"flush_series,omitempty"`
+	// MemberSeries is the I/O of each member of an array over time (device ->
+	// member -> series), read back from the stored <prefix>_members.1.log.
+	MemberSeries map[string]map[string]MemberSeries `json:"member_series,omitempty"`
 }
 
 // JobResult represents results for a single fio job.

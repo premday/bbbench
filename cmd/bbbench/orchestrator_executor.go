@@ -564,6 +564,7 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 				if result.LogPrefix != "" {
 					// Same path as reloading a saved run: from the stored log.
 					applyFlushLog(&phaseResult, deviceName, result.LogPrefix)
+					applyMembersLog(&phaseResult, deviceName, result.LogPrefix)
 				}
 				if len(result.JsonOutput) > 0 {
 					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)
@@ -1058,6 +1059,9 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		}
 	}
 
+	// Sample the members of an array (no-op for a drive) while fio runs.
+	stopMembers := startMemberSampler(drive, logPrefix, logAvgMsec, rampMs)
+
 	// Execute fio with context for cancellation support
 	cmd := exec.CommandContext(ec.ctx, "fio",
 		"--output-format=json",
@@ -1086,6 +1090,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 
 	output, err := cmd.CombinedOutput()
 	stopTrace()
+	stopMembers()
 	if err != nil {
 		// Check if it was cancelled
 		if ec.ctx.Err() != nil {

@@ -49,8 +49,10 @@ type DiskPhaseData struct {
 	// Device Flush latency (µs, W column), from the kernel trace samples
 	// stored with the run; nil when the phase did not fsync or tracing was
 	// unavailable.
-	TSflush []TimePoint         `json:"ts_flush,omitempty"`
-	Flush   *flushtrace.Summary `json:"flush,omitempty"`
+	TSflush []TimePoint `json:"ts_flush,omitempty"`
+	// TSmembers is the I/O of each member of an array (member -> series).
+	TSmembers map[string]MemberSeries `json:"ts_members,omitempty"`
+	Flush     *flushtrace.Summary     `json:"flush,omitempty"`
 	// RampSec is the length of fio's ramp-up at the start of the phase; fio's
 	// series (t) start after it, the Flush series (t) include it.
 	RampSec int `json:"ramp_sec,omitempty"`
@@ -186,6 +188,7 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 					}
 				}
 				dp.TSflush = phase.FlushSeries[name]
+				dp.TSmembers = phase.MemberSeries[name]
 				dp.RampSec = phase.RampSec
 				dp.LogAvgMsec = phase.LogAvgMsec
 				dp.Flush = phase.FlushTrace[name]
