@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -49,8 +50,8 @@ const (
 	KindSwap      Kind = "swap"      // active swap; Via is the swap file or device
 	KindPath      Kind = "path"      // bbbench or its output; Via is the path
 	KindHolder    Kind = "holder"    // md, dm or another holder; Via is its node name
-	KindMD        Kind = "md"        // an md RAID superblock
-	KindPV        Kind = "pv"        // an LVM physical volume; Via is the VG, "" when orphan
+	KindMD        Kind = "md"        // an md RAID superblock; Via is its array uuid (udev ID_FS_UUID), "" when unknown
+	KindPV        Kind = "pv"        // an LVM physical volume; Via is the VG, "" when orphan or unknown (udev only)
 	KindSignature Kind = "signature" // ZFS, btrfs, bcachefs, LUKS, Ceph, DRBD, VMFS
 	KindAll       Kind = "all"       // no disk can be judged (Report.All)
 )
@@ -61,8 +62,9 @@ type Cause struct {
 	Disk string
 	Via  string
 	// Device is the kernel node the mount, swap area or path sits on (md127,
-	// dm-3, sda1, sdb; no /dev/), the holder node for KindHolder, "" when it
-	// cannot be named or the kind has none.
+	// dm-3, sda1, sdb; no /dev/), the holder node for KindHolder, the node
+	// carrying the superblock, PV or signature for KindMD, KindPV and
+	// KindSignature, "" when it cannot be named or the kind has none.
 	Device string
 	Text   string
 }
@@ -95,7 +97,13 @@ func (r *Report) Reason(disk string) string {
 	if r.All != "" {
 		return r.All
 	}
-	return strings.Join(r.Busy[disk], "; ")
+	var texts []string
+	for _, t := range r.Busy[disk] {
+		if !slices.Contains(texts, t) {
+			texts = append(texts, t)
+		}
+	}
+	return strings.Join(texts, "; ")
 }
 
 // DevNumbers splits a Linux dev_t into major and minor.
@@ -111,9 +119,13 @@ type scanner struct {
 	mounts []mount
 }
 
+// add records a reason once per cause: the same text from two nodes (an md
+// superblock on sdb1 and another on sdb2) is two causes, so that a caller
+// judging causes sees each one; Reason names the text once.
 func (s *scanner) add(disk, reason string, kind Kind, via, device string) {
-	for _, have := range s.r.Busy[disk] {
-		if have == reason {
+	c := Cause{Kind: kind, Disk: disk, Via: via, Device: device, Text: reason}
+	for _, have := range s.r.Causes[disk] {
+		if have == c {
 			return
 		}
 	}
@@ -121,7 +133,7 @@ func (s *scanner) add(disk, reason string, kind Kind, via, device string) {
 	if s.r.Causes == nil {
 		s.r.Causes = map[string][]Cause{}
 	}
-	s.r.Causes[disk] = append(s.r.Causes[disk], Cause{Kind: kind, Disk: disk, Via: via, Device: device, Text: reason})
+	s.r.Causes[disk] = append(s.r.Causes[disk], c)
 }
 
 // setAll marks that no disk can be offered; the first reason wins.
@@ -421,7 +433,7 @@ func (s *scanner) scanPVs() {
 			s.warn(fmt.Sprintf("cannot tell which disk holds the LVM physical volume %s: %v", pv.Device, err))
 			continue
 		}
-		_, leaves, ok := s.resolve(mmOf(rdev))
+		node, leaves, ok := s.resolve(mmOf(rdev))
 		if !ok {
 			s.warn(fmt.Sprintf("cannot tell which disk holds the LVM physical volume %s", pv.Device))
 			continue
@@ -431,7 +443,7 @@ func (s *scanner) scanPVs() {
 			reason = fmt.Sprintf("is an LVM physical volume of volume group %s", pv.VG)
 		}
 		for _, l := range leaves {
-			s.add(l, reason, KindPV, pv.VG, "")
+			s.add(l, reason, KindPV, pv.VG, node)
 		}
 	}
 }
@@ -457,27 +469,28 @@ func (s *scanner) scanSignatures() {
 				}
 			}
 			fs := udevProp(udev, "ID_FS_TYPE")
+			node := filepath.Base(d.dir)
 			switch fs {
 			case "linux_raid_member":
-				s.add(name, "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)", KindMD, "", "")
+				s.add(name, "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)", KindMD, udevProp(udev, "ID_FS_UUID"), node)
 			case "zfs_member":
-				s.add(name, "has a ZFS pool label", KindSignature, "", "")
+				s.add(name, "has a ZFS pool label", KindSignature, "", node)
 			case "LVM2_member":
 				if !hasPV {
-					s.add(name, "is an LVM physical volume", KindPV, "", "")
+					s.add(name, "is an LVM physical volume", KindPV, "", node)
 				}
 			case "btrfs":
-				s.add(name, "has a btrfs filesystem label (member of a btrfs filesystem; check with btrfs filesystem show)", KindSignature, "", "")
+				s.add(name, "has a btrfs filesystem label (member of a btrfs filesystem; check with btrfs filesystem show)", KindSignature, "", node)
 			case "bcachefs":
-				s.add(name, "has a bcachefs filesystem label (member of a bcachefs filesystem)", KindSignature, "", "")
+				s.add(name, "has a bcachefs filesystem label (member of a bcachefs filesystem)", KindSignature, "", node)
 			case "crypto_LUKS":
-				s.add(name, "is LUKS encrypted", KindSignature, "", "")
+				s.add(name, "is LUKS encrypted", KindSignature, "", node)
 			case "ceph_bluestore":
-				s.add(name, "has a Ceph BlueStore label (an OSD of a Ceph cluster; check with ceph-volume lvm list)", KindSignature, "", "")
+				s.add(name, "has a Ceph BlueStore label (an OSD of a Ceph cluster; check with ceph-volume lvm list)", KindSignature, "", node)
 			case "drbd":
-				s.add(name, "has DRBD metadata (a backing device of a DRBD replicated volume)", KindSignature, "", "")
+				s.add(name, "has DRBD metadata (a backing device of a DRBD replicated volume)", KindSignature, "", node)
 			case "VMFS_volume_member":
-				s.add(name, "is a VMware VMFS volume member", KindSignature, "", "")
+				s.add(name, "is a VMware VMFS volume member", KindSignature, "", node)
 			case "":
 			default:
 				carries = append(carries, fs+" on "+filepath.Base(d.dir))

@@ -100,6 +100,10 @@ func (h *host) udevType(mm, fstype string) {
 	h.write(filepath.Join(h.udev, "b"+mm), "S:disk/x\nE:ID_FS_TYPE="+fstype+"\nE:FOO=bar\n")
 }
 
+func (h *host) udevTypeUUID(mm, fstype, uuid string) {
+	h.write(filepath.Join(h.udev, "b"+mm), "S:disk/x\nE:ID_FS_TYPE="+fstype+"\nE:ID_FS_UUID="+uuid+"\n")
+}
+
 func (h *host) opts() Options {
 	if _, err := os.Stat(filepath.Join(h.proc, "self/mountinfo")); err != nil {
 		h.write(filepath.Join(h.proc, "self/mountinfo"), "")
@@ -611,7 +615,7 @@ func TestCausesMirrorBusy(t *testing.T) {
 	h.udevType("8:161", "LVM2_member") // also signature, deduped against the PV
 	h.disk("sdh", "8:112")
 	h.part("sdh", "sdh1", "8:113")
-	h.udevType("8:113", "linux_raid_member")
+	h.udevTypeUUID("8:113", "linux_raid_member", "a1b2c3d4-0000-1111-2222-333344445555")
 	h.disk("sdi", "8:128")
 	h.udevType("8:128", "zfs_member")
 	r := h.scan()
@@ -622,9 +626,9 @@ func TestCausesMirrorBusy(t *testing.T) {
 		"sdf": {{KindPath, "sdf", "/usr/local/bin/bbbench", "sdf", "holds the bbbench binary (/usr/local/bin/bbbench)"}},
 		"sdg": {{KindHolder, "sdg", "md127", "md127", "member of md127 (md RAID)"}},
 		"sdb": {{KindHolder, "sdb", "dm-0", "dm-0", "used by dm-0 (device mapper: LVM, LUKS or multipath)"}},
-		"sdk": {{KindPV, "sdk", "vg0", "", "is an LVM physical volume of volume group vg0"}},
-		"sdh": {{KindMD, "sdh", "", "", "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)"}},
-		"sdi": {{KindSignature, "sdi", "", "", "has a ZFS pool label"}},
+		"sdk": {{KindPV, "sdk", "vg0", "sdk1", "is an LVM physical volume of volume group vg0"}},
+		"sdh": {{KindMD, "sdh", "a1b2c3d4-0000-1111-2222-333344445555", "sdh1", "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)"}},
+		"sdi": {{KindSignature, "sdi", "", "sdi", "has a ZFS pool label"}},
 	}
 	for disk, w := range want {
 		got := r.Causes[disk]
@@ -705,7 +709,7 @@ func TestCausesDevice(t *testing.T) {
 	for _, c := range r.Causes["sda"] {
 		got = append(got, string(c.Kind)+":"+c.Via+":"+c.Device)
 	}
-	want := []string{"mount:/:md127", "mount:/srv:md128", "holder:md127:md127", "holder:md128:md128", "md::"}
+	want := []string{"mount:/:md127", "mount:/srv:md128", "holder:md127:md127", "holder:md128:md128", "md::sda1"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("sda causes %v want %v", got, want)
 	}
@@ -725,5 +729,36 @@ func TestBlockersAllWinsAndDedupes(t *testing.T) {
 	got = r.Blockers([]string{"sda", "sda"}, func(Cause) bool { return false })
 	if len(got) != 1 {
 		t.Fatalf("repeated disk repeated causes: %+v", got)
+	}
+}
+
+// Two partitions with the same kind of signature are two causes (each with
+// its node and uuid), while Reason still names the reason once.
+func TestCausesKeepEveryNode(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdb", "8:16")
+	h.part("sdb", "sdb1", "8:17")
+	h.part("sdb", "sdb2", "8:18")
+	h.udevTypeUUID("8:17", "linux_raid_member", "uuid-a")
+	h.udevTypeUUID("8:18", "linux_raid_member", "uuid-b")
+	h.disk("sdc", "8:32")
+	h.part("sdc", "sdc1", "8:33")
+	h.part("sdc", "sdc2", "8:34")
+	h.udevType("8:33", "LVM2_member")
+	h.udevType("8:34", "crypto_LUKS")
+	r := h.scan()
+	var got []string
+	for _, c := range append(r.Causes["sdb"], r.Causes["sdc"]...) {
+		got = append(got, string(c.Kind)+":"+c.Via+":"+c.Device)
+	}
+	want := []string{"md:uuid-a:sdb1", "md:uuid-b:sdb2", "pv::sdc1", "signature::sdc2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("causes %v want %v", got, want)
+	}
+	if got := r.Reason("sdb"); got != "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)" {
+		t.Errorf("reason %q", got)
+	}
+	if len(r.Busy["sdb"]) != len(r.Causes["sdb"]) {
+		t.Errorf("busy %v causes %v", r.Busy["sdb"], r.Causes["sdb"])
 	}
 }
