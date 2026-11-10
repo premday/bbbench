@@ -547,3 +547,12 @@ func TestResume_UnresumableGroupNamesTheFile(t *testing.T) {
 		t.Fatalf("err = %v, want the file name and the way out", err)
 	}
 }
+
+func TestTargetsFor_Rotational(t *testing.T) {
+	drives, _ := testDrives("sda")
+	drives[0].Device.Rotational = true
+	o := fwTree(t, nil, nil)
+	if !targetsFor(drives, o)["sda"].Rotational {
+		t.Error("Rotational not carried to the target")
+	}
+}

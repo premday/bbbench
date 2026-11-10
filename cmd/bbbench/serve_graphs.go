@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/rungroup"
+	"bbbench/internal/settings"
 )
 
 // DiskPhaseData holds metrics for one disk × one phase combination.
@@ -28,6 +30,9 @@ type DiskPhaseData struct {
 	// Round is the 1-based round of the run in its group (set only in a
 	// group's data, /api/groups/graphs).
 	Round int `json:"round,omitempty"`
+	// Kind is "" for a drive, "array" for a composite target with Members.
+	Kind    string            `json:"kind,omitempty"`
+	Members []rungroup.Member `json:"members,omitempty"`
 	// Summary stats (averages for the full phase)
 	ReadIOPS    float64 `json:"read_iops"`
 	WriteIOPS   float64 `json:"write_iops"`
@@ -81,6 +86,8 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 	// Build ordered unique disk list and info lookup.
 	type diskInfo struct {
 		path, vendor, model, serial, technology string
+		kind                                    string
+		members                                 []rungroup.Member
 	}
 	seen := map[string]bool{}
 	diskOrder := []string{}
@@ -102,6 +109,12 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 			model:      strings.TrimSpace(drive.Device.Model),
 			serial:     strings.TrimSpace(drive.Device.Serial),
 			technology: tech,
+			members:    drive.Members,
+		}
+		if drive.IsArray() {
+			d := info[n]
+			d.kind = string(settings.TargetArray)
+			info[n] = d
 		}
 	}
 
@@ -125,6 +138,8 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 					Technology: di.technology,
 					PhaseNum:   phase.PhaseNumber,
 					PhaseName:  phase.PhaseName,
+					Kind:       di.kind,
+					Members:    di.members,
 				}
 				byDisk[job.Device] = dp
 			}
@@ -157,6 +172,7 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 				Serial: di.serial, Technology: di.technology,
 				PhaseNum: phase.PhaseNumber, PhaseName: phase.PhaseName,
 				Skipped: reason,
+				Kind:    di.kind, Members: di.members,
 			}
 		}
 		// Emit in disk order, attaching time-series if available.

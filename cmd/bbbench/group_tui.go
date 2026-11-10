@@ -20,12 +20,13 @@ func targetsFor(drives []DriveInfo, opts diskinfo.Options) map[string]settings.T
 	targets := make(map[string]settings.Target, len(drives))
 	for _, d := range drives {
 		targets[d.Device.Name] = settings.Target{
-			Name:      d.Device.Name,
-			Path:      d.Device.Path,
-			Serial:    d.Device.Serial,
-			Model:     d.Device.Model,
-			Vendor:    d.Device.Vendor,
-			Interface: diskinfo.InterfaceOf(d.Device.Name, opts),
+			Name:       d.Device.Name,
+			Path:       d.Device.Path,
+			Serial:     d.Device.Serial,
+			Model:      d.Device.Model,
+			Vendor:     d.Device.Vendor,
+			Interface:  diskinfo.InterfaceOf(d.Device.Name, opts),
+			Rotational: d.Device.Rotational,
 		}
 	}
 	return targets

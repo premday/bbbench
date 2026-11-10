@@ -628,3 +628,25 @@ h = run('settingBadgesHTML(' + d + ',' + group + ')');
 assert(!h.includes('<img') && !h.includes('<script') && !h.includes('<i>'), h);
 console.log('ok');
 `
+
+func TestNewDriveStatuses_ArrayMembers(t *testing.T) {
+	got := newDriveStatuses(arrayDrives(), nil)
+	if got[0].Kind != "array" || len(got[0].Members) != 2 || got[0].Members[1].Name != "sdc" || got[0].Members[1].Serial != "S2" || got[0].Members[1].Role != settings.RoleData {
+		t.Errorf("array status = %+v", got[0])
+	}
+	if got[1].Kind != "" || got[1].Members != nil {
+		t.Errorf("drive status = %+v", got[1])
+	}
+}
+
+func TestDriveInfo_JSONUnchangedForDrives(t *testing.T) {
+	data, err := json.Marshal(DriveInfo{Device: blockdev.Device{Name: "sda"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"Members"`, `"UUID"`} {
+		if strings.Contains(string(data), k) {
+			t.Errorf("drive JSON has %s: %s", k, data)
+		}
+	}
+}

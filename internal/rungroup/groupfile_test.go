@@ -57,3 +57,44 @@ func TestLoadGroups_SkipsGarbage(t *testing.T) {
 		t.Errorf("got %+v", gs)
 	}
 }
+
+func TestGroupFile_ArrayRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	members := []Member{{Name: "sdb", Serial: "S1", Model: "M", Role: settings.RoleData}, {Name: "sdc", Serial: "S2", Model: "M", Role: settings.RoleData}}
+	g := &GroupFile{
+		ID: "g2", Setting: "layout", Strategy: Sequential,
+		Variants: []GroupVariant{{Value: "mdadm raid1 · 2 disks", Disks: members}},
+		Runs: []GroupRun{{
+			RunID: "r1", Status: RunDone,
+			Drives: []GroupDrive{{
+				Device: "md127", Serial: "0a:0b:0c:0d", Model: "raid1", Kind: settings.TargetArray,
+				UUID: "0a:0b:0c:0d", Members: members,
+			}},
+			Teardown: &GroupRestore{Status: RestoreDone},
+		}},
+	}
+	if err := g.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadGroup(filepath.Join(dir, FileName("g2")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(g, got) {
+		t.Errorf("got %+v want %+v", got, g)
+	}
+}
+
+func TestGroupFile_DriveFileHasNoTargetKeys(t *testing.T) {
+	dir := t.TempDir()
+	g := &GroupFile{ID: "g3", Runs: []GroupRun{{RunID: "r", Drives: []GroupDrive{{Device: "sda"}}}}}
+	if err := g.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, FileName("g3")))
+	for _, k := range []string{`"variants"`, `"teardown"`, `"kind"`, `"uuid"`, `"members"`} {
+		if strings.Contains(string(data), k) {
+			t.Errorf("drive group file contains %s:\n%s", k, data)
+		}
+	}
+}

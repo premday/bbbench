@@ -9,6 +9,7 @@ import (
 
 	"bbbench/internal/blockdev"
 	"bbbench/internal/rungroup"
+	"bbbench/internal/settings"
 )
 
 func makeTestResult() *BenchmarkResult {
@@ -258,5 +259,44 @@ func TestGenerateDiskPhaseData_Labels(t *testing.T) {
 		if d.Disk == "sdb" && d.Invalid {
 			t.Errorf("valid label marked invalid: %+v", d)
 		}
+	}
+}
+
+func arrayDrives() []DriveInfo {
+	return []DriveInfo{
+		{Device: blockdev.Device{Name: "md127", Model: "raid1", Serial: "0a:0b"}, UUID: "0a:0b", Members: []rungroup.Member{
+			{Name: "sdb", Serial: "S1", Model: "M", Role: settings.RoleData},
+			{Name: "sdc", Serial: "S2", Model: "M", Role: settings.RoleData},
+		}},
+		{Device: blockdev.Device{Name: "sdd", Model: "M", Serial: "S3"}},
+	}
+}
+
+func TestGenerateDiskPhaseData_ArrayMembers(t *testing.T) {
+	r := &BenchmarkResult{
+		ID: "x", Drives: arrayDrives(),
+		Phases: []PhaseResult{{PhaseNumber: 1, PhaseName: "p", Jobs: []JobResult{
+			{Device: "md127", ReadStats: &IOStats{IOPS: 1, Bandwidth: 1}},
+			{Device: "sdd", ReadStats: &IOStats{IOPS: 1, Bandwidth: 1}},
+		}}},
+	}
+	var md, sdd *DiskPhaseData
+	for _, d := range generateDiskPhaseData(r) {
+		d := d
+		switch d.Disk {
+		case "md127":
+			md = &d
+		case "sdd":
+			sdd = &d
+		}
+	}
+	if md == nil || sdd == nil {
+		t.Fatalf("entries: md=%v sdd=%v", md, sdd)
+	}
+	if md.Kind != "array" || len(md.Members) != 2 || md.Members[0].Role != settings.RoleData || md.Model != "raid1" || md.Serial != "0a:0b" {
+		t.Errorf("md127 = %+v", md)
+	}
+	if sdd.Kind != "" || sdd.Members != nil {
+		t.Errorf("sdd = %+v", sdd)
 	}
 }

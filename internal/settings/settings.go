@@ -42,14 +42,41 @@ const (
 	InputVariants Input = "variants"
 )
 
+// Role is what a disk does in a layout.
+type Role string
+
+const (
+	RoleData    Role = "data"
+	RoleSpare   Role = "spare"
+	RoleJournal Role = "journal"
+)
+
+// TargetKind says what a target is.
+type TargetKind string
+
+const (
+	// TargetDrive is a physical drive.
+	TargetDrive TargetKind = "drive"
+	// TargetArray is any composite: an md array, an LV, later a
+	// controller's virtual drive.
+	TargetArray TargetKind = "array"
+)
+
+// Disk is a drive with its role in a layout.
+type Disk struct {
+	Target
+	Role Role
+}
+
 // Target is the drive a setting is applied to.
 type Target struct {
-	Name      string // kernel name, "nvme0n1", "sda"
-	Path      string // device node, "/dev/sda"
-	Serial    string
-	Model     string
-	Vendor    string
-	Interface string // diskinfo.Info.Interface: "NVMe (PCIe)", "SATA", "SAS", "USB", "virtio"
+	Name       string // kernel name, "nvme0n1", "sda"
+	Path       string // device node, "/dev/sda"
+	Serial     string
+	Model      string
+	Vendor     string
+	Interface  string // diskinfo.Info.Interface: "NVMe (PCIe)", "SATA", "SAS", "USB", "virtio"
+	Rotational bool
 }
 
 // Value is one value a setting can take.

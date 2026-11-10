@@ -131,3 +131,13 @@ func PlanRuns(drives []DriveRef, values []string, s Strategy) ([]RunPlan, error)
 	}
 	return nil, fmt.Errorf("unknown strategy %q", s)
 }
+
+// PlanVariants builds one run per variant, in the order given; each variant
+// keeps its drive order.
+func PlanVariants(vs []Variant) []RunPlan {
+	runs := make([]RunPlan, 0, len(vs))
+	for i, v := range vs {
+		runs = append(runs, RunPlan{Round: i, Variants: []Variant{{Value: v.Value, Drives: append([]string(nil), v.Drives...)}}})
+	}
+	return runs
+}

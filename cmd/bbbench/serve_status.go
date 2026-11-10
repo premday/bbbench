@@ -107,6 +107,15 @@ type DriveStatus struct {
 	// Setting is the run group setting of the drive (nil for a single run).
 	// It is replaced, never mutated, so snapshots can share it.
 	Setting *DriveSetting `json:"setting,omitempty"`
+	// Kind is "" for a drive, "array" for a composite target with Members.
+	Kind    string         `json:"kind,omitempty"`
+	Members []MemberStatus `json:"members,omitempty"`
+}
+
+// MemberStatus is a member disk of an array target.
+type MemberStatus struct {
+	rungroup.Member
+	Config *diskinfo.Info `json:"config,omitempty"`
 }
 
 // newDriveStatuses is the pending status of each drive at the start of a
@@ -127,6 +136,12 @@ func newDriveStatuses(drives []DriveInfo, prev []DriveStatus) []DriveStatus {
 			Capacity: drive.Device.CapacityBytes / (1024 * 1024 * 1024),
 			Type:     driveType,
 			Status:   "pending",
+		}
+		if drive.IsArray() {
+			out[i].Kind = string(settings.TargetArray)
+			for _, m := range drive.Members {
+				out[i].Members = append(out[i].Members, MemberStatus{Member: m})
+			}
 		}
 		for _, p := range prev {
 			if p.Name == drive.Device.Name {

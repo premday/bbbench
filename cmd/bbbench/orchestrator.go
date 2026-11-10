@@ -60,7 +60,13 @@ type DriveInfo struct {
 	FioFilePath string
 	FioExists   bool
 	Selected    bool
+	// Members are the disks of a composite target (an array); none for a drive.
+	Members []rungroup.Member `json:"Members,omitempty"`
+	UUID    string            `json:"UUID,omitempty"`
 }
+
+// IsArray reports whether the target is a composite of member disks.
+func (d DriveInfo) IsArray() bool { return len(d.Members) > 0 }
 
 func runOrchestrator(args []string) error {
 	fs := flag.NewFlagSet("orchestrator", flag.ExitOnError)
