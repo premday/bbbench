@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** From the layout list screen the user selects one existing md/LVM configuration, confirms by typing its name, and bbbench tears it down safely so its disks become selectable.
+**Goal:** From the layout list screen the user selects one existing md/LVM configuration, confirms with `y`, and bbbench tears it down safely so its disks become selectable.
 
 **Architecture:** An optional `settings.Destroyer` provider interface (`Existing`, `Destroy`, `DestroyCommand`); a provider-neutral safety gate in the layout setting backed by machine-readable `inuse` reasons; mdadm and LVM implement it by generalising their `Undo` helpers; the layout TUI gets the `x` flow with injected callbacks.
 
@@ -15,9 +15,9 @@
 - Destroys only the single configuration the user selected, re-found by `Backend`+`ID` and re-checked (disk serial/model) immediately before; refuses when the gate says so; never touches ZFS/btrfs/bcachefs/LUKS/Ceph/DRBD/VMFS, partition tables or plain filesystems.
 - Refuses anything mounted, used as swap, holding the bbbench binary or its output, or stacked under/over something that is not part of the selected configuration.
 - Top-down, every step verified by reading back; a failure returns what is left and the manual command; success is only reported when the disks are verified free of the configuration's signature and holders.
-- Typed-name confirmation (the configuration's name + Enter); Esc cancels; nothing runs before it.
+- Single `y` confirmation (user's decision; Enter does nothing, any other key cancels); nothing runs before it.
 - The core (cmd/bbbench, serve_*.go) never names mdadm/lvm (`TestCoreDoesNotNameTheBackend`).
-- Code that writes to a drive lives in `internal/settings` only (CLAUDE.md rule); it only runs after the typed confirmation.
+- Code that writes to a drive lives in `internal/settings` only (CLAUDE.md rule); it only runs after the `y` confirmation.
 - Needs the tools of the provider (`Available()` false => lists nothing, screen says why).
 - Atomic commits with intent in the message, ending `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. No push, no PR.
 
@@ -72,13 +72,13 @@
 
 **Files:** Modify `cmd/bbbench/group_layout_tui.go`, `cmd/bbbench/orchestrator.go` (~line 256, the `runLayoutSetupTUI` call, and the `inuse.Scan` closure ~line 209), `cmd/bbbench/group_layout_tui_test.go`.
 
-**Interfaces:** `runLayoutSetupTUI` gets a `destroy layoutDestroyer` argument: `type layoutDestroyer struct{ List func(ctx) ([]settings.Existing, []error); Blockers func(ctx, settings.Existing) ([]string, error); Destroy func(ctx, settings.Existing) error; Rescan func() (*inuse.Report, error) }` (nil = key `x` disabled, and a one-line hint says so). New steps `layoutStepDestroyPick`, `layoutStepDestroyConfirm`, `layoutStepDestroyRun`. Key `x` on the list screen; picker (up/down, Enter, Esc) with summary, disks and blockers (blocked entries grayed with the first reason and not selectable); confirmation lists `Stack` and every disk under a red "THIS DESTROYS DATA" header and takes the configuration's name typed + Enter (anything else keeps waiting, Esc cancels, wrong name shows "name does not match"); the run step executes `Destroy` as a `tea.Cmd` (spinner, no key except ctrl-c ignored while running), then calls `Rescan` and rebuilds `grayed`/`busy`/`carries`/`warnings` through `newLayoutModel`'s logic (factor it, do not duplicate; layouts already in the list that now use disks that became busy are kept untouched, and the existing per-layout checks at confirm time still apply); success message "<name> destroyed; <disks> are free"; failure shows the error and the manual command. The list screen help line gets "x destroy an existing RAID configuration".
-- [ ] Tests (bubbletea model driven by key messages): `x` opens the picker; blocked entries are grayed and not selectable; wrong typed name does nothing; right name calls Destroy once; list refreshes (freed disks no longer grayed); failure keeps the config in the list and shows the manual command; nil destroyer disables `x`; `TestCoreDoesNotNameTheBackend` green.
+**Interfaces:** `runLayoutSetupTUI` gets a `destroy layoutDestroyer` argument: `type layoutDestroyer struct{ List func(ctx) ([]settings.Existing, []error); Blockers func(ctx, settings.Existing) ([]string, error); Destroy func(ctx, settings.Existing) error; Rescan func() (*inuse.Report, error) }` (nil = key `x` disabled, and a one-line hint says so). New steps `layoutStepDestroyPick`, `layoutStepDestroyConfirm`, `layoutStepDestroyRun`. Key `x` on the list screen; picker (up/down, Enter, Esc) with summary, disks and blockers (blocked entries grayed with the first reason and not selectable); confirmation lists `Stack` and every disk under a red "THIS DESTROYS DATA" header and takes a single `y` (Enter does nothing, any other key or Esc cancels back to the list); the run step executes `Destroy` as a `tea.Cmd` (spinner, no key except ctrl-c ignored while running), then calls `Rescan` and rebuilds `grayed`/`busy`/`carries`/`warnings` through `newLayoutModel`'s logic (factor it, do not duplicate; layouts already in the list that now use disks that became busy are kept untouched, and the existing per-layout checks at confirm time still apply); success message "<name> destroyed; <disks> are free"; failure shows the error and the manual command. The list screen help line gets "x destroy an existing RAID configuration".
+- [ ] Tests (bubbletea model driven by key messages): `x` opens the picker; blocked entries are grayed and not selectable; Enter does nothing; any key but y cancels; y calls Destroy once; list refreshes (freed disks no longer grayed); failure keeps the config in the list and shows the manual command; nil destroyer disables `x`; `TestCoreDoesNotNameTheBackend` green.
 - [ ] Commit "Add the x action to the layout list screen to destroy a selected existing RAID configuration"
 
 ### Task 6: Docs
 
 **Files:** `README.md`, `CHANGELOG.md`, `CLAUDE.md`.
 
-- [ ] State: what `x` does, the typed confirmation, the erase warning first, exactly what is touched (md arrays and their superblocks, LVM LVs/VGs/PVs) and never (ZFS, btrfs, bcachefs, LUKS, Ceph, DRBD, VMFS, partition tables, filesystems), the refusal list (mounted, swap, bbbench/output, foreign stack), that it writes no recovery record, the unverified-on-hardware commands. CLAUDE.md: `Destroyer`, the gate, `inuse.Report.Causes`, the new TUI steps. `make check` passes.
+- [ ] State: what `x` does, the `y` confirmation, the erase warning first, exactly what is touched (md arrays and their superblocks, LVM LVs/VGs/PVs) and never (ZFS, btrfs, bcachefs, LUKS, Ceph, DRBD, VMFS, partition tables, filesystems), the refusal list (mounted, swap, bbbench/output, foreign stack), that it writes no recovery record, the unverified-on-hardware commands. CLAUDE.md: `Destroyer`, the gate, `inuse.Report.Causes`, the new TUI steps. `make check` passes.
 - [ ] Commit "Document destroying an existing RAID configuration from the layout screen"

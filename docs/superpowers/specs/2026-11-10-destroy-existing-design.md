@@ -80,9 +80,8 @@ configuration, see exactly what goes, confirm, and have it torn down properly.
   provider, with summary and disks; entries the safety gate would refuse are
   grayed with the reason, from a dry gate check). Enter on one opens the
   confirmation screen: everything in `Stack` and every disk is listed under a
-  red "THIS DESTROYS DATA" header and the user must **type the configuration's
-  name** (e.g. `md127`, the VG name) and press Enter (author's call: this is
-  data that bbbench did not create, so one `y` is too easy to hit); Esc cancels.
+  red "THIS DESTROYS DATA" header and the user confirms with a single `y` (user's decision, like the layout
+  confirmation: Enter does nothing, anything else cancels); Esc cancels.
   Then the teardown runs (the screen shows progress and the provider's error with
   its manual command on failure), the in-use report and the grayed disks are
   recomputed, and the list screen shows "<name> destroyed; sdb, sdc are free".
