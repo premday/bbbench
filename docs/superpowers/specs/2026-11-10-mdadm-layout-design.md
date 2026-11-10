@@ -23,6 +23,14 @@ interface; the run-group core must not learn the word "mdadm".
   size (default 512K), and optional extras (hot spare, write-intent bitmap,
   write-journal). The screen rejects impossible combinations (RAID 5 needs 3
   disks, RAID 6 needs 4, RAID 10 needs 4 here, RAID 1 needs 2, ...).
+- **A "no array" baseline variant** (decided by the user): a layout group can
+  include the value *none*: the selected disks tested individually, as plain
+  drive targets (one target per disk, all at once like a single run), next to
+  array variants. Its label is `none · N disks`. So one group may hold variants
+  that yield N drive targets and variants that yield one array target; the target
+  model, group file, labels and pages must handle both from the start (this is
+  also what hardware RAID needs later: JBOD / passthrough against a virtual
+  drive).
 - A disk may appear in several layouts (variants run one after the other). No
   parallel or swap strategy for layouts.
 - bbbench **builds** the array, waits for the initial resync to finish (steady
