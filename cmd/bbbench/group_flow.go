@@ -45,6 +45,7 @@ func settingByName(available []settings.Setting, name string) settings.Setting {
 // restore its drives, and offers to restore them (answer read from in). The
 // file is removed only after every drive was restored. An error means the
 // run must stop: the file could not be read, or a drive was not restored.
+// A file with layouts goes to offerLayoutCleanup, where declining also stops.
 func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string, available []settings.Setting, targets map[string]settings.Target) error {
 	rec, err := rungroup.LoadRecovery(path)
 	if err != nil {
@@ -56,6 +57,9 @@ func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string
 	s := settingByName(available, rec.Setting)
 	if s == nil {
 		return fmt.Errorf("the recovery file %s is for the unknown setting %q; restore the drives by hand and remove it", path, rec.Setting)
+	}
+	if len(rec.Arrays) > 0 {
+		return offerLayoutCleanup(ctx, in, out, path, s, rec, targets)
 	}
 	fmt.Fprintf(out, "\nA previous setting test changed the %s of %d drive(s) and did not restore them:\n", s.Name(), len(rec.Drives))
 	for _, e := range rec.Drives {
@@ -78,6 +82,43 @@ func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string
 		return fmt.Errorf("restored, but could not remove the recovery file %s: %w", path, err)
 	}
 	fmt.Fprintf(out, "Restored the original values.\n\n")
+	return nil
+}
+
+// offerLayoutCleanup offers to tear down the layouts of rec (and to restore
+// any drive it lists). Declining is an error: bbbench does not start while a
+// layout it built is left, since its members' superblocks are still there.
+// Only the recorded layouts are touched, found by their members' serials.
+func offerLayoutCleanup(ctx context.Context, in io.Reader, out io.Writer, path string, s settings.Setting, rec *rungroup.Recovery, targets map[string]settings.Target) error {
+	fmt.Fprintf(out, "\nA previous setting test (%s) built %d layout(s) and did not tear them down:\n", s.Name(), len(rec.Arrays))
+	descs := make([]string, 0, len(rec.Arrays))
+	for _, a := range rec.Arrays {
+		d := layoutDesc(settings.ArrayUndo{Backend: a.Backend, Name: a.Name, UUID: a.UUID})
+		ms := make([]rungroup.Member, 0, len(a.Members))
+		for _, m := range a.Members {
+			ms = append(ms, rungroup.Member{Name: m.Name, Serial: m.Serial, Model: m.Model, Role: m.Role})
+		}
+		fmt.Fprintf(out, "  %s: members %s\n", d, membersDesc(ms))
+		descs = append(descs, d)
+	}
+	for _, e := range rec.Drives {
+		fmt.Fprintf(out, "  %s (%s, S/N %s): original value %q\n", e.Name, e.Model, e.Serial, e.Original.Value)
+	}
+	if !askYes(in, out, "Tear down these layouts and wipe their members now? [y/n] ") {
+		return fmt.Errorf("not cleaned up: bbbench does not start while layouts it built are left (%s); run it again and accept, or tear them down and wipe their members by hand, then remove %s", strings.Join(descs, ", "), path)
+	}
+	failed := restoreFromRecovery(ctx, s, rec, path, targets)
+	if len(failed) > 0 {
+		fmt.Fprintf(out, "\nNot cleaned up: %s. The recovery file %s is kept. Tear them down and wipe their members by hand (the command is printed above when known), then remove it.\n", strings.Join(failed, ", "), path)
+		return fmt.Errorf("could not clean up %s", strings.Join(failed, ", "))
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			err = errors.New("it is still there")
+		}
+		return fmt.Errorf("cleaned up, but could not remove the recovery file %s: %w", path, err)
+	}
+	fmt.Fprintf(out, "Tore down the layouts and wiped their members.\n\n")
 	return nil
 }
 
@@ -208,6 +249,12 @@ func printGroupSummary(w io.Writer, g *rungroup.GroupFile) {
 				state = "not verified"
 			}
 			fmt.Fprintf(w, "    %-10s %-12s %s\n", d.Device, d.Value, state)
+			if d.Kind == settings.TargetArray && len(d.Members) > 0 {
+				fmt.Fprintf(w, "      members: %s\n", membersDesc(d.Members))
+			}
+		}
+		if r.Teardown != nil && r.Teardown.Status == rungroup.RestoreFailed {
+			fmt.Fprintf(w, "  run %d teardown FAILED on: %s\n", i+1, strings.Join(r.Teardown.Failed, ", "))
 		}
 	}
 	switch g.Restore.Status {

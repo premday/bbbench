@@ -55,6 +55,10 @@ const (
 	stepVerifyingAfter  = "verifying-after"
 	stepRestoring       = "restoring"
 	stepDone            = "done"
+	// Layout groups: before stepVerifyingBefore, then after stepVerifyingAfter.
+	stepBuilding    = "building"
+	stepResyncing   = "resyncing"
+	stepTearingDown = "tearing-down"
 )
 
 // GroupStatus is where a run group is: run Run (1-based) of Runs, at Step.
@@ -65,6 +69,10 @@ type GroupStatus struct {
 	Run      int               `json:"run"`
 	Runs     int               `json:"runs"`
 	Step     string            `json:"step"`
+	// Progress is the resync progress in percent while Step is resyncing.
+	Progress float64 `json:"progress,omitempty"`
+	// Variant is the label of the current layout (layout groups only).
+	Variant string `json:"variant,omitempty"`
 }
 
 // DriveSetting is a drive's setting value in the current run of a group and

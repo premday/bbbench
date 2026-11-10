@@ -3,15 +3,37 @@ package rungroup
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 
 	"bbbench/internal/settings"
 )
 
-// Recovery records the original values so a crashed run can be undone.
+// Recovery records what a run group changed so a crash can be undone: the
+// original values of drives, and the layouts built (before each build).
 type Recovery struct {
 	Setting string          `json:"setting"`
 	Drives  []RecoveryDrive `json:"drives"`
+	Arrays  []RecoveryArray `json:"arrays,omitempty"`
+}
+
+// RecoveryArray is a layout bbbench built: what tears it down. Backend and
+// Extra are the backend's, stored as they are.
+type RecoveryArray struct {
+	Backend string            `json:"backend"`
+	Name    string            `json:"name"`
+	UUID    string            `json:"uuid,omitempty"`
+	Members []RecoveryMember  `json:"members"`
+	Extra   map[string]string `json:"extra,omitempty"`
+}
+
+// RecoveryMember is a disk of a recorded layout, found again by serial and
+// model (Name is the kernel name when it was recorded).
+type RecoveryMember struct {
+	Serial string        `json:"serial"`
+	Model  string        `json:"model"`
+	Name   string        `json:"name"`
+	Role   settings.Role `json:"role"`
 }
 
 type RecoveryDrive struct {
@@ -74,10 +96,21 @@ func (r *Recovery) Match(devices []DriveRef) (found map[string]RecoveryDrive, mi
 }
 
 // RecoveryOf is the recovery file of setting holding undos: each drive undo
-// becomes a Drives entry.
+// becomes a Drives entry, each layout undo an Arrays entry.
 func RecoveryOf(setting string, undos []settings.Undo) *Recovery {
 	r := &Recovery{Setting: setting}
 	for _, u := range undos {
+		if a := u.Array; a != nil {
+			ra := RecoveryArray{Backend: a.Backend, Name: a.Name, UUID: a.UUID, Members: make([]RecoveryMember, 0, len(a.Members))}
+			if a.Extra != nil {
+				ra.Extra = maps.Clone(a.Extra)
+			}
+			for _, d := range a.Members {
+				ra.Members = append(ra.Members, RecoveryMember{Serial: d.Serial, Model: d.Model, Name: d.Name, Role: d.Role})
+			}
+			r.Arrays = append(r.Arrays, ra)
+			continue
+		}
 		if u.Drive == nil || u.Original == nil {
 			continue
 		}
@@ -87,9 +120,12 @@ func RecoveryOf(setting string, undos []settings.Undo) *Recovery {
 }
 
 // Undos are the entries as undo records, matched to the current targets by
-// serial and model (Match), in the order of the file. A found entry carries
-// its current target; a missing one keeps its recorded name, serial and
-// model as an unresolved target.
+// serial and model (Match), in the order of the file: the drives, then the
+// layouts. A found drive carries its current target; a missing one keeps its
+// recorded name, serial and model as an unresolved target. Each member of a
+// layout is resolved the same way; an unresolved member keeps its recorded
+// name with an empty Path. A layout is missing when none of its members is
+// present.
 func (r *Recovery) Undos(targets []settings.Target) (found, missing []settings.Undo) {
 	refs := make([]DriveRef, 0, len(targets))
 	byName := make(map[string]settings.Target, len(targets))
@@ -111,6 +147,29 @@ func (r *Recovery) Undos(targets []settings.Target) (found, missing []settings.U
 		}
 		t := settings.Target{Name: e.Name, Serial: e.Serial, Model: e.Model}
 		missing = append(missing, settings.Undo{Drive: &t, Original: &orig})
+	}
+	for _, e := range r.Arrays {
+		a := &settings.ArrayUndo{Backend: e.Backend, Name: e.Name, UUID: e.UUID, Members: make([]settings.Disk, 0, len(e.Members))}
+		if e.Extra != nil {
+			a.Extra = maps.Clone(e.Extra)
+		}
+		resolved := 0
+		for _, m := range e.Members {
+			t := settings.Target{Name: m.Name, Serial: m.Serial, Model: m.Model}
+			for _, c := range targets {
+				if m.Serial != "" && c.Serial == m.Serial && c.Model == m.Model {
+					t = c
+					resolved++
+					break
+				}
+			}
+			a.Members = append(a.Members, settings.Disk{Target: t, Role: m.Role})
+		}
+		if resolved == 0 && len(e.Members) > 0 {
+			missing = append(missing, settings.Undo{Array: a})
+			continue
+		}
+		found = append(found, settings.Undo{Array: a})
 	}
 	return found, missing
 }
