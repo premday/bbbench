@@ -89,6 +89,15 @@ type LayoutSetting interface {
 	// LayoutValue validates l and returns its value; ID == Label.
 	LayoutValue(l Layout, disks []Disk) (Value, error)
 	ParseLayout(id string) (Layout, error)
+	// Existing lists the configurations of every backend that is a
+	// Destroyer; a failing provider is an error "<name>: <err>".
+	Existing(ctx context.Context) ([]Existing, []error)
+	// Destroy destroys the selected configuration after the safety gate
+	// and verifies it is gone.
+	Destroy(ctx context.Context, e Existing) error
+	// DestroyBlockers is the gate's dry check: why e may not be destroyed
+	// now, empty when it may.
+	DestroyBlockers(ctx context.Context, e Existing) ([]string, error)
 }
 
 // WithDefaults returns l with exactly the options b lists for its level:
