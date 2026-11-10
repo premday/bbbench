@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -298,5 +299,86 @@ func TestGenerateDiskPhaseData_ArrayMembers(t *testing.T) {
 	}
 	if sdd.Kind != "" || sdd.Members != nil {
 		t.Errorf("sdd = %+v", sdd)
+	}
+}
+
+// graphsPageBody renders the graphs page for a stored result.
+func graphsPageBody(t *testing.T) string {
+	t.Helper()
+	globalResultsStore.AddResult(&BenchmarkResult{ID: "members-page", Timestamp: time.Now(), Phases: []PhaseResult{{}}})
+	defer globalResultsStore.Clear()
+	w := httptest.NewRecorder()
+	handleGraphsPage(w, httptest.NewRequest("GET", "/graphs?id=members-page", nil))
+	return w.Body.String()
+}
+
+// jsFunction returns the source of the page function name, up to the next
+// function or comment at the same indentation.
+func jsFunction(t *testing.T, body, name string) string {
+	t.Helper()
+	start := strings.Index(body, "function "+name+"(")
+	if start < 0 {
+		t.Fatalf("page has no function %s", name)
+	}
+	rest := body[start+1:]
+	end := len(rest)
+	for _, next := range []string{"\n    function ", "\n    //"} {
+		if i := strings.Index(rest, next); i >= 0 && i < end {
+			end = i
+		}
+	}
+	return rest[:end]
+}
+
+func TestGraphsPageStacksMembers(t *testing.T) {
+	body := graphsPageBody(t)
+	// Read and write stack separately: Chart.js adds a 0 to every earlier
+	// value of its stack, whatever their sign.
+	for _, want := range []string{"'members'", "'members-write'", "stack = 'array'", "y: { stacked: stacked,",
+		"mode: 'index', intersect: false", "Stack total", "'Array '", "ts_members", "fill: first ? 'origin' : '-1'"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graphs page lacks %q", want)
+		}
+	}
+	// The array line is not filled, so it is drawn over the stack, not into it.
+	arr := jsFunction(t, body, "arrayDatasets")
+	if !strings.Contains(arr, "fill: false") {
+		t.Errorf("array datasets are filled:\n%s", arr)
+	}
+}
+
+func TestGraphsPageLatencyNotStacked(t *testing.T) {
+	body := graphsPageBody(t)
+	lat := jsFunction(t, body, "memberLatencyDatasets")
+	if strings.Contains(lat, "stack") {
+		t.Errorf("member latency datasets are stacked:\n%s", lat)
+	}
+	if !strings.Contains(lat, "fill: false") {
+		t.Errorf("member latency lines are filled:\n%s", lat)
+	}
+	// The scale stacks only for IOPS and bandwidth.
+	if !strings.Contains(body, "metric.key !== 'lat'") {
+		t.Error("page does not keep latency off the stacked scale")
+	}
+}
+
+func TestGraphsPageNoMembersUnchanged(t *testing.T) {
+	body := graphsPageBody(t)
+	// The plain Read/Write series of a drive, as before.
+	for _, want := range []string{
+		"const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));",
+		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));",
+		"label: 'Read',  data: readPts,",
+		"label: 'Write', data: writePts,",
+		"if (memberMetric(d, metric)) return makeMembersChart(",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graphs page lacks %q", want)
+		}
+	}
+	// Only phases with members take the member path.
+	mm := jsFunction(t, body, "memberMetric")
+	if !strings.Contains(mm, "d.ts_members") {
+		t.Errorf("memberMetric does not test ts_members:\n%s", mm)
 	}
 }
