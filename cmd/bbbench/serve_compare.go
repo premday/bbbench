@@ -231,7 +231,7 @@ __NAVBAR_HTML__
     let RPV = {};
 
     function getEntries() {
-        return visibleEntries(allData, SHOW_INVALID).filter(d => selDisks.has(d.disk) && selPhases.has(d.phase_name) &&
+        return visibleEntries(allData, SHOW_INVALID).filter(d => selDisks.has(diskKey(d)) && selPhases.has(d.phase_name) &&
             (!HAS_SETTING || selValues.has(d.setting_value || '')));
     }
 
@@ -302,11 +302,19 @@ __NAVBAR_HTML__
         updateCount();
     }
 
+    // diskKey tells disks apart by name and serial: successive layouts of a
+    // group can get the same kernel name (md127, dm-0), each with its own
+    // uuid (its serial) and members.
+    function diskKey(d) {
+        return (d.disk || '') + '\u0000' + (d.serial || '');
+    }
+
     function buildDiskList() {
-        // Build a map of disk name → {model, serial} from first occurrence.
+        // Build a map of disk key → {name, model, serial, members} from first occurrence.
         const info = {};
         allData.forEach(d => {
-            if (!info[d.disk]) info[d.disk] = { model: d.model || '', serial: d.serial || '', members: membersText(d) };
+            const k = diskKey(d);
+            if (!info[k]) info[k] = { name: d.disk || '', model: d.model || '', serial: d.serial || '', members: membersText(d) };
         });
         const disks = Object.keys(info).sort();
         const ul = document.getElementById('disk-list');
@@ -325,7 +333,7 @@ __NAVBAR_HTML__
             });
             lbl.appendChild(cb);
             const textWrap = document.createElement('span');
-            textWrap.appendChild(document.createTextNode('\u00a0' + v));
+            textWrap.appendChild(document.createTextNode('\u00a0' + info[v].name));
             const sub = [info[v].model, info[v].serial, info[v].members].filter(Boolean).join('  \u00b7  ');
             if (sub) {
                 const subEl = document.createElement('span');
@@ -407,7 +415,7 @@ __NAVBAR_HTML__
             return;
         }
 
-        const nDisks  = new Set(entries.map(e => e.disk)).size;
+        const nDisks  = new Set(entries.map(diskKey)).size;
         const nPhases = new Set(entries.map(e => e.phase_name)).size;
         const hasTS   = entries.some(d => { const ts = d[metric.tsKey]; return ts && ts.length > 0; });
 

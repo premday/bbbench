@@ -717,8 +717,9 @@ func TestStatusPage_LayoutScript(t *testing.T) {
 
 const layoutStatusHarness = `
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const byId = {};
 const ctx = {
-  document: { addEventListener() {}, getElementById() { return { style: {}, set innerHTML(v) {}, set textContent(v) {} }; } },
+  document: { addEventListener() {}, getElementById(id) { return byId[id] || (byId[id] = { style: {}, innerHTML: '', textContent: '' }); } },
   fetch: () => new Promise(() => {}), setInterval() {}, console, Date, Math, String, Set, JSON, Object, Array,
 };
 vm.createContext(ctx);
@@ -748,5 +749,19 @@ assert(m.includes('S&lt;2&gt;') && !m.includes('S<2>'), 'serial not escaped: ' +
 assert(m.includes('SATA') && m.includes('PASSED'), 'config: ' + m);
 assert.strictEqual(run('membersHTML({name:"sda"})'), '');
 assert.strictEqual(run('membersHTML({name:"sda",members:[]})'), '');
-console.log('ok: layout steps, progress, variant, members');
+
+// The status card itself, rendered by updateStatusDisplay: an array target
+// shows "array", its members (not a configuration), next to a plain drive.
+run('updateStatusDisplay({running: true, total_phases: 2, completed_phases: 1, current_phase: 1, mode: "sequential", ' +
+  'group: ' + g('running') + ', drives: [' +
+  '{name:"md127",type:"SSD",kind:"array",vendor:"Linux",model:"raid1",serial:"u-1",status:"running",phase_name:"randwrite",' +
+  'members:[{name:"sdb",model:"M",serial:"S1",role:"data"},{name:"sdc",model:"M",serial:"S<2>",role:"spare"}]},' +
+  '{name:"sda",type:"SSD",vendor:"V",model:"M",serial:"S9",status:"pending"}]})');
+const cards = byId['drives-list'].innerHTML;
+assert(cards.includes('md127 (SSD) &middot; array'), 'array card title: ' + cards);
+const arrCard = cards.slice(cards.indexOf('md127'), cards.indexOf('sda (SSD)'));
+assert(arrCard.includes('sdb') && arrCard.includes('sdc') && arrCard.includes('spare') && arrCard.includes('S&lt;2&gt;') && !arrCard.includes('S<2>'), 'array card members: ' + arrCard);
+assert(arrCard.includes('Status: Running') && arrCard.includes('Phase: randwrite'), 'array card status: ' + arrCard);
+assert(cards.includes('sda (SSD)</div>') && !cards.slice(cards.indexOf('sda (SSD)')).includes('&middot; array'), 'drive card: ' + cards);
+console.log('ok: layout steps, progress, variant, members, array status card');
 `

@@ -438,7 +438,7 @@ func runLayoutHarness(t *testing.T, check string) {
 	if err := os.WriteFile(harness, []byte(layoutPagesHarness), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := map[string]string{"group": "group", "group_wc": "group", "graphs": "graphs", "compare": "compare", "result": "result", "result_lv": "result_lv"}[check]
+	script := map[string]string{"group": "group", "group_wc": "group", "graphs": "graphs", "compare": "compare", "result": "result", "result_lv": "result_lv", "compare_same_name": "compare", "graphs_same_name": "graphs"}[check]
 	out, err := exec.Command(node, harness, check, scripts[script], dataPath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("harness %s: %v\n%s", check, err, out)
@@ -458,6 +458,13 @@ func TestGroupPage_ArrayScript(t *testing.T) {
 func TestGraphsPage_MembersSubtitle(t *testing.T) {
 	runLayoutHarness(t, "graphs")
 	runLayoutHarness(t, "compare")
+}
+
+// Two layouts that got the same kernel name (md127 twice) are two entries of
+// the compare disk list, each with its own members, and two graph cards.
+func TestComparePage_SameKernelNameTwoLayouts(t *testing.T) {
+	runLayoutHarness(t, "compare_same_name")
+	runLayoutHarness(t, "graphs_same_name")
 }
 
 // The run details JSON carries the members of an array target and the
@@ -587,6 +594,29 @@ case 'compare': {
   const subs = ELS.filter(e => e.className === 'disk-sub').map(e => e.textContent);
   assert(subs.some(s => s.includes('members: sdb (data), sdc (data), sdd (spare)')), 'disk list: ' + subs);
   console.log('compare ok: membersText in the disk list');
+  break;
+}
+case 'compare_same_name': case 'graphs_same_name': {
+  // A second layout of the group was built as md127 too: other uuid, other members.
+  const a = DATA.graphs.find(d => d.disk === 'md127');
+  const b = Object.assign({}, a, {serial: 'u-second', setting_value: 'mdadm raid0 · 2 disks',
+    members: [{name: 'sde', role: 'data'}, {name: 'sdf', role: 'data'}]});
+  ctx.__two = [a, b];
+  if (check === 'compare_same_name') {
+    run('allData = __two; initSidebar()');
+    const subs = ELS.filter(e => e.className === 'disk-sub').map(e => e.textContent);
+    assert.strictEqual(byId['disk-list'].children.length, 2, 'disk list: ' + subs);
+    assert(subs.some(s => s.includes('members: sdb (data), sdc (data), sdd (spare)')), 'first layout: ' + subs);
+    assert(subs.some(s => s.includes('u-second') && s.includes('members: sde (data), sdf (data)')), 'second layout: ' + subs);
+    assert.strictEqual(run('getEntries().length'), 2, 'both layouts selected');
+    console.log('compare_same_name ok: one disk-list entry per layout', JSON.stringify(subs));
+  } else {
+    run('allData = __two; initFilters(); renderAll()');
+    const subs = ELS.filter(e => e.className === 'card-subtitle').map(e => e.textContent);
+    assert(subs.some(s => s.includes('members: sdb (data), sdc (data), sdd (spare)')), 'first card: ' + subs);
+    assert(subs.some(s => s.includes('members: sde (data), sdf (data)')), 'second card: ' + subs);
+    console.log('graphs_same_name ok: each card its own members');
+  }
   break;
 }
 case 'result': case 'result_lv': {
