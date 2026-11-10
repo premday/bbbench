@@ -177,3 +177,41 @@ func TestRecovery_LVMRecordRoundTrip(t *testing.T) {
 		t.Errorf("\n got %+v\nwant %+v", *a, want)
 	}
 }
+
+// TestRecovery_AmbiguousIsNotPresent: two present disks with the serial and
+// model of an entry cannot tell which one it is; the entry is not matched
+// (never the first one).
+func TestRecovery_AmbiguousIsNotPresent(t *testing.T) {
+	r := &Recovery{Setting: "software layout",
+		Drives: []RecoveryDrive{{Serial: "S1", Model: "M", Name: "sdb", Original: settings.Reading{Value: "enabled"}}},
+		Arrays: []RecoveryArray{{Backend: "mdadm", Name: "bbbench_1_1", Members: []RecoveryMember{
+			{Serial: "S1", Model: "M", Name: "sdb", Role: settings.RoleData},
+			{Serial: "S2", Model: "M", Name: "sdc", Role: settings.RoleData},
+		}}}}
+	x := settings.Target{Name: "sdx", Path: "/dev/sdx", Serial: "S1", Model: "M"}
+	y := settings.Target{Name: "sdy", Path: "/dev/sdy", Serial: "S1", Model: "M"}
+	c := settings.Target{Name: "sdc", Path: "/dev/sdc", Serial: "S2", Model: "M"}
+	matched, missing := r.Match([]DriveRef{{Name: "sdx", Serial: "S1", Model: "M"}, {Name: "sdy", Serial: "S1", Model: "M"}})
+	if len(matched) != 0 || len(missing) != 1 {
+		t.Errorf("Match: found %v, missing %v", matched, missing)
+	}
+	found, miss := r.Undos([]settings.Target{x, y, c})
+	if len(miss) != 1 || miss[0].Drive == nil || miss[0].Drive.Path != "" {
+		t.Errorf("drive entry: missing %+v", miss)
+	}
+	if len(found) != 1 || found[0].Array == nil {
+		t.Fatalf("found %+v", found)
+	}
+	ms := found[0].Array.Members
+	if ms[0].Name != "sdb" || ms[0].Path != "" {
+		t.Errorf("ambiguous member resolved to %+v", ms[0])
+	}
+	if ms[1].Name != "sdc" || ms[1].Path != "/dev/sdc" {
+		t.Errorf("member sdc %+v", ms[1])
+	}
+	// Only ambiguous members: the layout is missing.
+	r.Arrays[0].Members = r.Arrays[0].Members[:1]
+	if found, miss = r.Undos([]settings.Target{x, y}); len(found) != 0 || len(miss) != 2 || miss[1].Array == nil {
+		t.Errorf("found %+v, missing %+v", found, miss)
+	}
+}

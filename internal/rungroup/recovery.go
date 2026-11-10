@@ -76,21 +76,22 @@ func (r *Recovery) Remove(path string) error {
 
 // Match pairs entries with devices by serial and model, never by name,
 // since device names change across reboots. found maps the current device
-// name to its entry; missing lists entries with no matching device.
+// name to its entry; missing lists entries with no matching device, or with
+// more than one (ambiguous: which one it is cannot be told).
 func (r *Recovery) Match(devices []DriveRef) (found map[string]RecoveryDrive, missing []RecoveryDrive) {
 	found = map[string]RecoveryDrive{}
 	for _, e := range r.Drives {
-		matched := false
+		var names []string
 		for _, d := range devices {
 			if d.Serial == e.Serial && d.Model == e.Model {
-				found[d.Name] = e
-				matched = true
-				break
+				names = append(names, d.Name)
 			}
 		}
-		if !matched {
+		if len(names) != 1 {
 			missing = append(missing, e)
+			continue
 		}
+		found[names[0]] = e
 	}
 	return found, missing
 }
@@ -123,9 +124,10 @@ func RecoveryOf(setting string, undos []settings.Undo) *Recovery {
 // serial and model (Match), in the order of the file: the drives, then the
 // layouts. A found drive carries its current target; a missing one keeps its
 // recorded name, serial and model as an unresolved target. Each member of a
-// layout is resolved the same way; an unresolved member keeps its recorded
-// name with an empty Path. A layout is missing when none of its members is
-// present.
+// layout is resolved the same way; an unresolved member (absent, or
+// ambiguous: two present disks share its serial and model) keeps its
+// recorded name with an empty Path. A layout is missing when none of its
+// members is resolved.
 func (r *Recovery) Undos(targets []settings.Target) (found, missing []settings.Undo) {
 	refs := make([]DriveRef, 0, len(targets))
 	byName := make(map[string]settings.Target, len(targets))
@@ -156,12 +158,17 @@ func (r *Recovery) Undos(targets []settings.Target) (found, missing []settings.U
 		resolved := 0
 		for _, m := range e.Members {
 			t := settings.Target{Name: m.Name, Serial: m.Serial, Model: m.Model}
+			var hits []settings.Target
 			for _, c := range targets {
 				if m.Serial != "" && c.Serial == m.Serial && c.Model == m.Model {
-					t = c
-					resolved++
-					break
+					hits = append(hits, c)
 				}
+			}
+			// Two present disks with the member's serial and model: which
+			// one it is cannot be told, so it stays unresolved.
+			if len(hits) == 1 {
+				t = hits[0]
+				resolved++
 			}
 			a.Members = append(a.Members, settings.Disk{Target: t, Role: m.Role})
 		}
