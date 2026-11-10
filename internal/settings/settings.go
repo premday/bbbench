@@ -6,9 +6,12 @@ package settings
 
 import (
 	"context"
+	"crypto/rand"
+	"io"
 	"os/exec"
 	"time"
 
+	"bbbench/internal/inuse"
 	"bbbench/internal/scsi"
 )
 
@@ -28,6 +31,8 @@ type Scope string
 const (
 	// ScopeDrive is a property of each drive.
 	ScopeDrive Scope = "drive"
+	// ScopeLayout is how a set of disks is assembled (software RAID, LVM).
+	ScopeLayout Scope = "layout"
 )
 
 // Input is how the user chooses the groups of a setting.
@@ -38,7 +43,7 @@ const (
 	// (drive-scope settings).
 	InputValues Input = "values"
 	// InputVariants: the user lists variants one by one, each with its own
-	// disks (layout-scope settings; none exists yet).
+	// disks (layout-scope settings).
 	InputVariants Input = "variants"
 )
 
@@ -115,8 +120,11 @@ type Variant struct {
 // node ("md127", "dm-3"), Serial is its uuid, Model the level, and the
 // backend sets Vendor and Interface.
 type BenchTarget struct {
-	Kind    TargetKind
-	Target  Target
+	Kind   TargetKind
+	Target Target
+	// Backend is the layout backend that built a composite target, "" for
+	// a drive target.
+	Backend string
 	UUID    string
 	Members []Disk
 	// Want is the Reading.Value that verifies the target.
@@ -126,16 +134,29 @@ type BenchTarget struct {
 }
 
 // Undo is one record of what puts the machine back: for a drive, its
-// original reading.
+// original reading; for a layout, the array that was built.
 type Undo struct {
 	Drive    *Target
 	Original *Reading
+	Array    *ArrayUndo
 }
 
-// Name is the name of the drive the record puts back.
+// ArrayUndo is what tears down a built layout. UUID is empty when the
+// backend has none before the build. Extra belongs to the backend: the core
+// stores it and never reads it.
+type ArrayUndo struct {
+	Backend, Name, UUID string
+	Members             []Disk
+	Extra               map[string]string
+}
+
+// Name is the name of the drive or the array the record puts back.
 func (u Undo) Name() string {
-	if u.Drive != nil {
+	switch {
+	case u.Drive != nil:
 		return u.Drive.Name
+	case u.Array != nil:
+		return u.Array.Name
 	}
 	return ""
 }
@@ -190,6 +211,14 @@ type Env struct {
 	// Settle is how long a read-back may take to show a restored value
 	// (default 10 s).
 	Settle time.Duration
+	Dev    string    // device directory, default /dev
+	Rand   io.Reader // default crypto/rand.Reader
+	// Poll is the interval between two readings while waiting for a
+	// target to become steady (default 2 s).
+	Poll time.Duration
+	// InUse reports the disks that must not be erased (default
+	// inuse.Scan(inuse.Options{})).
+	InUse func() (*inuse.Report, error)
 }
 
 func (e Env) fill() Env {
@@ -210,13 +239,33 @@ func (e Env) fill() Env {
 	if e.Settle == 0 {
 		e.Settle = 10 * time.Second
 	}
+	if e.Dev == "" {
+		e.Dev = "/dev"
+	}
+	if e.Rand == nil {
+		e.Rand = rand.Reader
+	}
+	if e.Poll == 0 {
+		e.Poll = 2 * time.Second
+	}
+	if e.InUse == nil {
+		e.InUse = func() (*inuse.Report, error) { return inuse.Scan(inuse.Options{}) }
+	}
 	return e
 }
 
-// All lists the settings bbbench knows.
+// All lists the settings bbbench knows. The software layout is listed only
+// when at least one layout backend is registered.
 func All(env Env) []Setting {
-	return []Setting{NewWriteCache(env)}
+	all := []Setting{NewWriteCache(env)}
+	if bs := layoutBackends(env); len(bs) > 0 {
+		all = append(all, NewLayout(env, bs...))
+	}
+	return all
 }
+
+// layoutBackends are the registered layout backends; none exists yet.
+func layoutBackends(Env) []Backend { return nil }
 
 // Verify reads the setting every 200 ms until it equals t.Want or settle has
 // elapsed; it returns the last reading and whether it matched.
