@@ -101,12 +101,12 @@ md, mounted LV, swap on an LV, output dir on the array, extra partition mounted
 on a member, stacked foreign holder, VG with a PV outside the selection, array
 whose uuid changed between listing and destroy, member serial changed); a failed
 step reports what is left plus the manual command; TUI flow (picker grays blocked
-entries, wrong typed name does nothing, right name runs, list refreshes);
+entries, Enter does nothing, any key but y cancels, y runs, list refreshes);
 `TestCoreDoesNotNameTheBackend` stays green.
 
 ## Docs
 
 README (a section under the layout setting: what the key does, the erase
-warning, what is and is not touched, the typed confirmation), CHANGELOG, CLAUDE.md
+warning, what is and is not touched, the `y` confirmation), CHANGELOG, CLAUDE.md
 (Destroyer, the gate, the inuse reasons), `documentation/web-ui.md` is unaffected.
 Unverified-on-hardware list: the new mdadm/LVM commands.
