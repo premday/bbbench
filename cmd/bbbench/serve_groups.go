@@ -286,8 +286,8 @@ func groupMatrix(entries []DiskPhaseData, values []string) []MatrixRow {
 		s[0] += iops
 		s[1] += bw
 		sums[i] = s
-		r.IOPS.Min, r.IOPS.Max = minf(r.IOPS.Min, iops), maxf(r.IOPS.Max, iops)
-		r.BWMbps.Min, r.BWMbps.Max = minf(r.BWMbps.Min, bw), maxf(r.BWMbps.Max, bw)
+		r.IOPS.Min, r.IOPS.Max = min(r.IOPS.Min, iops), max(r.IOPS.Max, iops)
+		r.BWMbps.Min, r.BWMbps.Max = min(r.BWMbps.Min, bw), max(r.BWMbps.Max, bw)
 	}
 	type phaseKey struct {
 		num  int
@@ -333,20 +333,6 @@ func groupMatrix(entries []DiskPhaseData, values []string) []MatrixRow {
 		return rank(rows[a].Value) < rank(rows[b].Value)
 	})
 	return rows
-}
-
-func minf(a, b float64) float64 {
-	if b < a {
-		return b
-	}
-	return a
-}
-
-func maxf(a, b float64) float64 {
-	if b > a {
-		return b
-	}
-	return a
 }
 
 // handleGroupDetail serves /api/groups/detail: the group file, each run's
