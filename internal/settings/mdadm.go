@@ -111,6 +111,18 @@ func (m *mdadm) Label(l Layout, disks []Disk) string {
 // mdLabel is "mdadm <level> · <roles>[ · <chunk>][ · bitmap]"; the chunk
 // appears only for levels that have one.
 func mdLabel(level string, data, spare, journal int, chunk string, bitmap bool) string {
+	s := "mdadm " + level + " · " + mdRoles(data, spare, journal)
+	if mdHasChunk(level) && chunk != "" {
+		s += " · " + chunk
+	}
+	if bitmap {
+		s += " · bitmap"
+	}
+	return s
+}
+
+// mdRoles is "1 disk", "<n> disks" or "<n> data[ + <k> spares][ + <j> journal]".
+func mdRoles(data, spare, journal int) string {
 	var roles string
 	switch {
 	case spare == 0 && journal == 0 && data == 1:
@@ -128,14 +140,7 @@ func mdLabel(level string, data, spare, journal int, chunk string, bitmap bool) 
 			roles += fmt.Sprintf(" + %d journal", journal)
 		}
 	}
-	s := "mdadm " + level + " · " + roles
-	if mdHasChunk(level) && chunk != "" {
-		s += " · " + chunk
-	}
-	if bitmap {
-		s += " · bitmap"
-	}
-	return s
+	return roles
 }
 
 // Parse is the inverse of Label; the disk counts are not part of a Layout.
