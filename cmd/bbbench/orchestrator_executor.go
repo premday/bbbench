@@ -1089,8 +1089,8 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		"output", outputFile)
 
 	output, err := cmd.CombinedOutput()
-	stopTrace()
 	stopMembers()
+	stopTrace()
 	if err != nil {
 		// Check if it was cancelled
 		if ec.ctx.Err() != nil {

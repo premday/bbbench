@@ -93,6 +93,7 @@ type Sampler struct {
 	t0      time.Time
 	prev    map[string]last
 	windows []Window
+	lastAt  time.Time // time of the latest Sample
 
 	array     string
 	members   []string
@@ -132,6 +133,7 @@ func (s *Sampler) Sample(now time.Time) {
 		s.started = true
 		s.t0 = now
 	}
+	s.lastAt = now
 	ms := now.Sub(s.t0).Milliseconds()
 	for _, n := range s.names {
 		c, err := ReadCounters(s.sysBlock, n)
@@ -164,7 +166,19 @@ func (s *Sampler) Sample(now time.Time) {
 	}
 }
 
-// Run samples at start and every `every` until ctx is done, then once more.
+// sampleFinal takes the closing reading unless it would span less than half
+// of every since the previous one (a sliver that is not a real window).
+func (s *Sampler) sampleFinal(now time.Time, every time.Duration) {
+	s.mu.Lock()
+	short := s.started && now.Sub(s.lastAt) < every/2
+	s.mu.Unlock()
+	if !short {
+		s.Sample(now)
+	}
+}
+
+// Run samples at start and every `every` until ctx is done, then once more
+// unless that last window would be shorter than half of `every`.
 func (s *Sampler) Run(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		every = time.Second // NewTicker panics otherwise; sampling must never fail a phase
@@ -175,7 +189,7 @@ func (s *Sampler) Run(ctx context.Context, every time.Duration) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.Sample(time.Now())
+			s.sampleFinal(time.Now(), every)
 			return
 		case now := <-t.C:
 			s.Sample(now)

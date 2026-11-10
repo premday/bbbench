@@ -146,3 +146,20 @@ func TestRatesValues(t *testing.T) {
 		t.Fatalf("%v %v %v %v %v %v", rI, wI, rB, wB, rL, wL)
 	}
 }
+
+func TestFinalPartialWindowDropped(t *testing.T) {
+	root := t.TempDir()
+	writeStat(t, root, "sda", 0, 0, 0, 0, 0, 0)
+	s := NewSampler([]string{"sda"}, root)
+	t0 := time.Unix(1000, 0)
+	s.Sample(t0)
+	s.Sample(t0.Add(time.Second))
+	s.sampleFinal(t0.Add(1300*time.Millisecond), time.Second) // 300ms < half: dropped
+	if n := len(s.Windows()); n != 1 {
+		t.Fatalf("short final window kept: %d windows", n)
+	}
+	s.sampleFinal(t0.Add(1600*time.Millisecond), time.Second) // 600ms: kept
+	if n := len(s.Windows()); n != 2 {
+		t.Fatalf("long final window dropped: %d windows", n)
+	}
+}
