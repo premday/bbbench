@@ -17,7 +17,8 @@ import (
 const (
 	// groupRecoveryPath keeps the original values while a group runs.
 	groupRecoveryPath = "/var/lib/bbbench/group-recovery.json"
-	// groupSettle is how long a read-back may take to show an applied value.
+	// groupSettle is how long a read-back may take to show an applied or
+	// restored value.
 	groupSettle = 10 * time.Second
 )
 

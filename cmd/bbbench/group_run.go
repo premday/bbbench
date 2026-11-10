@@ -23,10 +23,6 @@ import (
 // restoreTimeout bounds restoring one drive (its commands and the read-back).
 const restoreTimeout = 2 * time.Minute
 
-// recoverySettle is how long a restore from the recovery file waits for the
-// read-back to show the original value.
-const recoverySettle = 10 * time.Second
-
 // groupConfig is a run group ready to execute: the setting, its values, how
 // they are spread over the drives, and how to run the test plan once.
 type groupConfig struct {
@@ -656,7 +652,7 @@ func restoreFromRecovery(ctx context.Context, s settings.Setting, rec *rungroup.
 			failed = append(failed, e.Name)
 			continue
 		}
-		if err := restoreOne(ctx, s, targets, name, e, recoverySettle); err != nil {
+		if err := restoreOne(ctx, s, targets, name, e, groupSettle); err != nil {
 			failed = append(failed, name)
 		}
 	}
