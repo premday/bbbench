@@ -267,7 +267,7 @@ func newGroupFile(cfg groupConfig, plans []rungroup.RunPlan, ids []string) (*run
 			run.Drives = slices.Clone(run.Drives)
 			g.Runs[i] = run
 		}
-		g.Restore = rungroup.GroupRestore{Status: "pending"}
+		g.Restore = rungroup.GroupRestore{Status: rungroup.RestorePending}
 		return &g, nil
 	}
 	now := time.Now()
@@ -279,7 +279,7 @@ func newGroupFile(cfg groupConfig, plans []rungroup.RunPlan, ids []string) (*run
 		Strategy: cfg.Strategy,
 		Values:   ids,
 		Runs:     make([]rungroup.GroupRun, len(plans)),
-		Restore:  rungroup.GroupRestore{Status: "pending"},
+		Restore:  rungroup.GroupRestore{Status: rungroup.RestorePending},
 	}
 	for i, p := range plans {
 		g.Runs[i] = rungroup.GroupRun{Round: p.Round, Status: rungroup.RunPlanned}
@@ -553,13 +553,13 @@ func finishGroup(cfg groupConfig, g *rungroup.GroupFile, rec *rungroup.Recovery,
 	}
 	var errs []error
 	if len(failed) == 0 {
-		g.Restore = rungroup.GroupRestore{Status: "done"}
+		g.Restore = rungroup.GroupRestore{Status: rungroup.RestoreDone}
 		if err := rec.Remove(cfg.RecoveryPath); err != nil {
 			errs = append(errs, fmt.Errorf("remove the recovery file: %w", err))
 		}
 		fmt.Println("Original values restored and verified.")
 	} else {
-		g.Restore = rungroup.GroupRestore{Status: "failed", Failed: failed}
+		g.Restore = rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: failed}
 		left := &rungroup.Recovery{Setting: rec.Setting, Drives: kept}
 		if err := left.Save(cfg.RecoveryPath); err != nil {
 			errs = append(errs, fmt.Errorf("update the recovery file: %w", err))

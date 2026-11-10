@@ -37,10 +37,19 @@ type GroupDrive struct {
 	Label  Label  `json:"label"`
 }
 
+// RestoreStatus is the state of restoring a group's original values.
+type RestoreStatus string
+
+const (
+	RestorePending RestoreStatus = "pending"
+	RestoreDone    RestoreStatus = "done"
+	RestoreFailed  RestoreStatus = "failed"
+)
+
 // GroupRestore tracks restoring the originals; Status is pending, done or failed.
 type GroupRestore struct {
-	Status string   `json:"status"`
-	Failed []string `json:"failed"`
+	Status RestoreStatus `json:"status"`
+	Failed []string      `json:"failed"`
 }
 
 // writeAtomic writes data to path through a temp file in the same

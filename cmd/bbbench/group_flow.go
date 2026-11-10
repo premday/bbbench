@@ -206,9 +206,9 @@ func printGroupSummary(w io.Writer, g *rungroup.GroupFile) {
 		}
 	}
 	switch g.Restore.Status {
-	case "done":
+	case rungroup.RestoreDone:
 		fmt.Fprintln(w, "  original values restored")
-	case "failed":
+	case rungroup.RestoreFailed:
 		fmt.Fprintf(w, "  RESTORE FAILED on: %s\n", strings.Join(g.Restore.Failed, ", "))
 	}
 }
