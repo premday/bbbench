@@ -359,12 +359,30 @@ func printGroupSummary(w io.Writer, g *rungroup.GroupFile) {
 			fmt.Fprintf(w, "  run %d teardown FAILED on: %s\n", i+1, strings.Join(r.Teardown.Failed, ", "))
 		}
 	}
+	done, failed := "  original values restored", "  RESTORE FAILED on: %s\n"
+	if isLayoutGroup(g) {
+		done, failed = "  layouts torn down", "  TEARDOWN FAILED on: %s\n"
+	}
 	switch g.Restore.Status {
 	case rungroup.RestoreDone:
-		fmt.Fprintln(w, "  original values restored")
+		fmt.Fprintln(w, done)
 	case rungroup.RestoreFailed:
-		fmt.Fprintf(w, "  RESTORE FAILED on: %s\n", strings.Join(g.Restore.Failed, ", "))
+		fmt.Fprintf(w, failed, strings.Join(g.Restore.Failed, ", "))
 	}
+}
+
+// isLayoutGroup reports whether g builds layouts (its end is a teardown, not
+// a restore of original values).
+func isLayoutGroup(g *rungroup.GroupFile) bool {
+	if len(g.Variants) > 0 {
+		return true
+	}
+	for _, r := range g.Runs {
+		if r.Teardown != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // groupFileName is the file name of group g in the output directory.

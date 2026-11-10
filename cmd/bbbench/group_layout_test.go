@@ -776,3 +776,29 @@ func TestLayoutDesc(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// A layout group's summary speaks of tearing layouts down, not of restoring
+// original values; a write-cache group's keeps its wording.
+func TestPrintGroupSummary_LayoutRestoreWording(t *testing.T) {
+	layoutGroup := func(st rungroup.GroupRestore) *rungroup.GroupFile {
+		return &rungroup.GroupFile{ID: "1", Setting: "software layout", Strategy: rungroup.Sequential,
+			Variants: []rungroup.GroupVariant{{Value: "raid1 · 2 disks"}},
+			Runs:     []rungroup.GroupRun{{Status: rungroup.RunDone, Teardown: &rungroup.GroupRestore{Status: rungroup.RestoreDone}}},
+			Restore:  st}
+	}
+	for _, c := range []struct {
+		g         *rungroup.GroupFile
+		want, not string
+	}{
+		{layoutGroup(rungroup.GroupRestore{Status: rungroup.RestoreDone}), "  layouts torn down\n", "restored"},
+		{layoutGroup(rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: []string{"bbbench_1_1"}}), "  TEARDOWN FAILED on: bbbench_1_1\n", "RESTORE"},
+		{&rungroup.GroupFile{ID: "2", Setting: "write_cache", Restore: rungroup.GroupRestore{Status: rungroup.RestoreDone}}, "  original values restored\n", "torn down"},
+		{&rungroup.GroupFile{ID: "2", Setting: "write_cache", Restore: rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: []string{"sda"}}}, "  RESTORE FAILED on: sda\n", "TEARDOWN"},
+	} {
+		var out strings.Builder
+		printGroupSummary(&out, c.g)
+		if !strings.Contains(out.String(), c.want) || strings.Contains(out.String(), c.not) {
+			t.Errorf("summary wants %q, not %q:\n%s", c.want, c.not, out.String())
+		}
+	}
+}

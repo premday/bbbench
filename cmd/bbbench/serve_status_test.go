@@ -650,3 +650,103 @@ func TestDriveInfo_JSONUnchangedForDrives(t *testing.T) {
 		}
 	}
 }
+
+// /api/status carries an array target's members (with their roles) and the
+// resync progress of a layout group.
+func TestStatusAPI_CarriesMembersAndProgress(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Running = true
+		s.Group = &GroupStatus{ID: "g3", Setting: "software layout", Strategy: "sequential", Run: 1, Runs: 2,
+			Step: stepResyncing, Progress: 42.4, Variant: "raid1 · 2 disks"}
+		s.Drives = newDriveStatuses(arrayDrives()[:1], nil)
+	})
+	var got struct {
+		Group struct {
+			Step     string  `json:"step"`
+			Progress float64 `json:"progress"`
+			Variant  string  `json:"variant"`
+		} `json:"group"`
+		Drives []struct {
+			Kind    string `json:"kind"`
+			Members []struct {
+				Name string `json:"name"`
+				Role string `json:"role"`
+			} `json:"members"`
+		} `json:"drives"`
+	}
+	if err := json.Unmarshal(get(handleStatus, "/api/status").Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Group.Step != "resyncing" || got.Group.Progress != 42.4 || got.Group.Variant != "raid1 · 2 disks" {
+		t.Errorf("group = %+v", got.Group)
+	}
+	if len(got.Drives) != 1 || got.Drives[0].Kind != "array" || len(got.Drives[0].Members) != 2 ||
+		got.Drives[0].Members[0].Role != "data" || got.Drives[0].Members[1].Name != "sdc" {
+		t.Errorf("drives = %+v", got.Drives)
+	}
+}
+
+// The layout steps, the resync progress, the variant and the members of an
+// array target run in node against the real status page script. Skipped
+// without node.
+func TestStatusPage_LayoutScript(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	dir := t.TempDir()
+	page := filepath.Join(dir, "page.js")
+	if err := os.WriteFile(page, []byte(pageScript(t)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(node, "--check", page).CombinedOutput(); err != nil {
+		t.Fatalf("node --check: %v\n%s", err, out)
+	}
+	harness := filepath.Join(dir, "harness.js")
+	if err := os.WriteFile(harness, []byte(layoutStatusHarness), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(node, harness, page).CombinedOutput()
+	if err != nil {
+		t.Fatalf("harness: %v\n%s", err, out)
+	}
+	t.Log(strings.TrimSpace(string(out)))
+}
+
+const layoutStatusHarness = `
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const ctx = {
+  document: { addEventListener() {}, getElementById() { return { style: {}, set innerHTML(v) {}, set textContent(v) {} }; } },
+  fetch: () => new Promise(() => {}), setInterval() {}, console, Date, Math, String, Set, JSON, Object, Array,
+};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx);
+const run = s => vm.runInContext(s, ctx);
+const g = step => '{id:"g3",setting:"software layout",strategy:"sequential",run:1,runs:2,step:"' + step + '",progress:42.4,variant:"raid1 <i>x</i>"}';
+
+let b = run('groupBannerHTML(' + g('resyncing') + ', [], {})');
+assert(b.includes('resyncing 42%'), b);
+assert(b.includes('raid1 &lt;i&gt;x&lt;/i&gt;') && !b.includes('<i>x'), 'variant: ' + b);
+b = run('groupBannerHTML(' + g('building') + ', [], {})');
+assert(b.includes('building the layout') && !b.includes('resyncing'), b);
+b = run('groupBannerHTML(' + g('tearing-down') + ', [], {})');
+assert(b.includes('tearing down') && !b.includes('tearing-down'), b);
+// a write-cache group: no variant, the steps as before
+b = run('groupBannerHTML({id:"g",setting:"write_cache",strategy:"sequential",run:1,runs:2,step:"running"}, [], {})');
+assert(b.includes('Setting test: <b>write_cache</b>, run 1 of 2, running <span class="dim">'), b);
+
+// members: name, model, serial, role, interface and SMART from config
+const arr = '{name:"md127",kind:"array",members:[' +
+  '{name:"sdb",model:"<b>x</b>",serial:"S1",role:"data",config:{interface:"SATA",smart:{status:"PASSED"}}},' +
+  '{name:"sdc",model:"M",serial:"S<2>",role:"spare"}]}';
+let m = run('membersHTML(' + arr + ')');
+assert(m.includes('sdb') && m.includes('sdc') && m.includes('S1') && m.includes('data') && m.includes('spare'), m);
+assert(m.includes('&lt;b&gt;x&lt;/b&gt;') && !m.includes('<b>x'), 'model not escaped: ' + m);
+assert(m.includes('S&lt;2&gt;') && !m.includes('S<2>'), 'serial not escaped: ' + m);
+assert(m.includes('SATA') && m.includes('PASSED'), 'config: ' + m);
+assert.strictEqual(run('membersHTML({name:"sda"})'), '');
+assert.strictEqual(run('membersHTML({name:"sda",members:[]})'), '');
+console.log('ok: layout steps, progress, variant, members');
+`

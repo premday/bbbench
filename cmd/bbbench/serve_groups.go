@@ -365,12 +365,17 @@ func handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		runs[i] = ro
 	}
-	writeJSON(w, map[string]any{
+	out := map[string]any{
 		"id": g.ID, "created": g.Created, "host": g.Host, "plan": g.Plan,
 		"setting": g.Setting, "strategy": g.Strategy, "values": g.Values,
 		"originals": g.Originals, "restore": g.Restore,
 		"runs": runs, "matrix": groupMatrix(groupEntries(g), g.Values),
-	})
+	}
+	// Layout groups only, so the detail of other groups is unchanged.
+	if len(g.Variants) > 0 {
+		out["variants"] = g.Variants
+	}
+	writeJSON(w, out)
 }
 
 // handleGroupGraphs serves /api/groups/graphs: the data of the member runs
@@ -431,8 +436,9 @@ __NAVBAR_HTML__
     <div class="card"><h1>Run group __GROUP_ID__</h1>
         <div class="links"><a href="/graphs?group=__GROUP_Q__">Graphs</a> <a href="/compare?group=__GROUP_Q__">Compare</a></div>
         <dl class="meta" id="meta"></dl></div>
+    <div class="card" id="variants-card" style="display:none"><h2>Layouts</h2><div id="variants"></div></div>
     <div class="card"><h2>Runs and drives</h2><div id="runs">Loading...</div></div>
-    <div class="card"><h2>Restore</h2><div id="restore"></div></div>
+    <div class="card"><h2 id="restore-title">Restore</h2><div id="restore"></div></div>
     <div class="card"><h2>Metrics per phase and value</h2><div id="matrix"></div></div>
 </div>
 <script>
@@ -457,12 +463,49 @@ function fmtMeta(g) {
     return rows.map(function (r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
 }
 function runValid(run, d) { return run.status !== 'interrupted' && d.label && d.label.valid; }
+// A layout group builds a layout per run and tears it down after it.
+function isLayoutGroup(g) {
+    return (g.variants || []).length > 0 || (g.runs || []).some(function (r) { return !!r.teardown; });
+}
+// The member disks of an array target as 'sdb (data), sdc (spare)', escaped.
+function memberList(ms) {
+    return (ms || []).map(function (m) { return esc(m.name) + ' (' + esc(m.role) + ')'; }).join(', ');
+}
+// A drive cell: the device with its model and serial, or for an array target
+// '<name> · array' with its members.
+function driveCell(d) {
+    if (d.kind === 'array') {
+        return esc(d.device) + ' · array<div class="dim">members: ' + memberList(d.members) + '</div>';
+    }
+    return esc(d.device) + '<div class="dim">' + esc(d.model) + ' ' + esc(d.serial) + '</div>';
+}
+// The outcome of removing a run's layout; '' for a run with none.
+function renderTeardown(run) {
+    var t = run.teardown;
+    if (!t) return '';
+    if (t.status === 'done') return '<span class="ok">torn down</span>';
+    if (t.status === 'failed') return '<span class="bad">teardown failed on ' + esc((t.failed || []).join(', ')) + '</span>';
+    return '<span class="dim">teardown ' + esc(t.status || 'pending') + '</span>';
+}
+// The layouts of a layout group with their disks and roles; '' otherwise.
+function renderVariants(g) {
+    var vs = g.variants || [];
+    if (!vs.length) return '';
+    var rows = vs.map(function (v, i) {
+        var disks = (v.disks || []).map(function (m) {
+            return '<div>' + esc(m.name) + ' <span class="dim">' + esc(m.model) + ' ' + esc(m.serial) + '</span> ' + esc(m.role) + '</div>';
+        }).join('');
+        return '<tr><td>' + (i + 1) + '</td><td>' + esc(v.value) + '</td><td>' + disks + '</td></tr>';
+    }).join('');
+    return '<table><tr><th>Run</th><th>Layout</th><th>Disks</th></tr>' + rows + '</table>';
+}
 function renderRuns(g) {
     var rows = [];
     (g.runs || []).forEach(function (run, i) {
         var drives = run.drives || [];
         if (!drives.length) {
-            rows.push('<tr><td>' + (i + 1) + '</td><td colspan="6" class="dim">' + esc(run.status) + '</td></tr>');
+            var td = renderTeardown(run);
+            rows.push('<tr><td>' + (i + 1) + (td ? '<div>' + td + '</div>' : '') + '</td><td colspan="6" class="dim">' + esc(run.status) + '</td></tr>');
             return;
         }
         drives.forEach(function (d, j) {
@@ -471,19 +514,26 @@ function renderRuns(g) {
                 ? '<a href="/result?id=' + encodeURIComponent(run.run_id) + '">' + esc(run.run_id) + '</a>' : (j === 0 ? esc(run.run_id) : '');
             var valid = runValid(run, d) ? '<span class="ok">valid</span>' : '<span class="bad">invalid</span>';
             var kernel = (run.kernel && run.kernel[d.device]) || '';
+            var td = j === 0 ? renderTeardown(run) : '';
             var note = '';
             if (l.note) note += '<div class="note">' + esc(l.note) + '</div>';
             if (run.flush_note) note += '<div class="note">This run had a write-through phase: the drive received no Flush, so Flush data is missing.</div>';
-            rows.push('<tr><td>' + (j === 0 ? (i + 1) + ' (round ' + (run.round + 1) + ', ' + esc(run.status) + ')' : '') + '</td>' +
-                '<td>' + link + '</td><td>' + esc(d.device) + '<div class="dim">' + esc(d.model) + ' ' + esc(d.serial) + '</div></td>' +
+            rows.push('<tr><td>' + (j === 0 ? (i + 1) + ' (round ' + (run.round + 1) + ', ' + esc(run.status) + ')' : '') +
+                (td ? '<div>' + td + '</div>' : '') + '</td>' +
+                '<td>' + link + '</td><td>' + driveCell(d) + '</td>' +
                 '<td>' + esc(d.value) + '</td><td>' + fmtReading(l.before) + '</td><td>' + fmtReading(l.after) + note + '</td>' +
-                '<td>' + valid + (kernel ? '<div class="dim">write_cache: ' + esc(kernel) + '</div>' : '') + '</td></tr>');
+                '<td>' + valid + (kernel ? '<div class="dim">' + (d.kind === 'array' ? 'layout: ' : 'write_cache: ') + esc(kernel) + '</div>' : '') + '</td></tr>');
         });
     });
     return '<table><tr><th>Run</th><th>ID</th><th>Drive</th><th>Value</th><th>Before</th><th>After</th><th>Result</th></tr>' + rows.join('') + '</table>';
 }
 function renderRestore(g) {
     var r = g.restore || {};
+    if (isLayoutGroup(g)) {
+        if (r.status === 'done') return '<span class="ok">Torn down.</span>';
+        if (r.status === 'failed') return '<span class="bad">Teardown failed on: ' + esc((r.failed || []).join(', ')) + '</span>';
+        return '<span class="dim">' + esc(r.status || 'pending') + '</span>';
+    }
     if (r.status === 'done') return '<span class="ok">Original values restored.</span>';
     if (r.status === 'failed') return '<span class="bad">Restore failed on: ' + esc((r.failed || []).join(', ')) + '</span>';
     return '<span class="dim">' + esc(r.status || 'pending') + '</span>';
@@ -506,6 +556,11 @@ function render(g) {
     document.getElementById('meta').innerHTML = fmtMeta(g);
     document.getElementById('runs').innerHTML = renderRuns(g);
     document.getElementById('restore').innerHTML = renderRestore(g);
+    if (isLayoutGroup(g)) {
+        document.getElementById('restore-title').textContent = 'Teardown';
+        document.getElementById('variants').innerHTML = renderVariants(g);
+        document.getElementById('variants-card').style.display = '';
+    }
     document.getElementById('matrix').innerHTML = renderMatrix(g.matrix);
 }
 function load() {

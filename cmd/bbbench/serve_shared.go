@@ -11,7 +11,8 @@ package main
 // window starts. The ramp-up is shaded by rampPlugin.
 //
 // It must not contain backticks (raw string). It also holds the run-group
-// helpers both pages use (setting values, rounds, invalid results) and esc.
+// helpers both pages use (setting values, rounds, invalid results, the
+// members of an array target) and esc.
 const chartSharedJS = `function rampOf(d) {
         return d.ramp_sec || (d.flush && d.flush.offset_ms ? d.flush.offset_ms / 1000 : 0);
     }
@@ -103,5 +104,12 @@ const chartSharedJS = `function rampOf(d) {
         if (d.round && rpv && rpv[d.setting_value] > 1) s += ' · round ' + d.round;
         if (d.invalid) s += ' (invalid)';
         return s;
+    }
+    // membersText names the member disks of an array target and their roles:
+    // 'members: sdb (data), sdc (spare)'; '' for a drive. Plain text: escape
+    // it before putting it into HTML.
+    function membersText(d) {
+        if (!d.members || d.members.length === 0) return '';
+        return 'members: ' + d.members.map(m => m.name + ' (' + m.role + ')').join(', ');
     }
 `

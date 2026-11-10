@@ -881,7 +881,8 @@ __NAVBAR_HTML__
     let modalChart = null;
 
     function openModal(d, metric, yLow, yHigh) {
-        document.getElementById('modal-title').textContent = d.disk + settingTag(d, RPV);
+        const mt = membersText(d);
+        document.getElementById('modal-title').textContent = d.disk + settingTag(d, RPV) + (mt ? ' \u00b7 ' + mt : '');
         const tech = d.technology ? d.technology.toUpperCase() : '';
         document.getElementById('modal-subtitle').textContent =
             [d.vendor, d.model, d.serial, tech, metric.label, 'source: ' + metric.source].filter(Boolean).join('  \u00b7  ');
@@ -927,7 +928,7 @@ __NAVBAR_HTML__
         const t2 = document.createElement('div');
         t2.className = 'card-subtitle';
         const tech = d.technology ? d.technology.toUpperCase() : '';
-        t2.textContent = [d.vendor, d.model, d.serial, tech].filter(Boolean).join('  \u00b7  ');
+        t2.textContent = [d.vendor, d.model, d.serial, tech, membersText(d)].filter(Boolean).join('  \u00b7  ');
         card.appendChild(t2);
 
         const wrap = document.createElement('div');

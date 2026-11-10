@@ -496,6 +496,11 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
             </div>
         </div>
 
+        <div class="card" id="drives-card" style="display:none">
+            <h2>Drives</h2>
+            <div id="drives-block"></div>
+        </div>
+
         <div class="card" id="group-card" style="display:none">
             <h2>Run group</h2>
             <div id="group-block"></div>
@@ -520,6 +525,22 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
             if (!r) return '<span class="dim">-</span>';
             return escG(r.value) + (r.kernel ? ' <span class="dim">(kernel: ' + escG(r.kernel) + ')</span>' : '');
         }
+        // drivesHTML lists the run's drives, each array target with its member
+        // disks and their roles under it; '' when the run has no array target
+        // (a plain run's page is unchanged).
+        function drivesHTML(result) {
+            const drives = result.drives || [];
+            if (!drives.some(d => d.Members && d.Members.length)) return '';
+            return '<table class="labels"><tr><th>Drive</th><th>Model</th><th>Serial</th><th>Members</th></tr>' +
+                drives.map(d => {
+                    const dev = d.Device || {};
+                    const ms = (d.Members || []).map(m => '<div>' + escG(m.name) + ' <span class="dim">' + escG(m.model) + ' ' +
+                        escG(m.serial) + '</span> ' + escG(m.role) + '</div>').join('');
+                    return '<tr><td>' + escG(dev.Name) + (ms ? ' &middot; array' : '') + '</td><td>' + escG(dev.Model) + '</td>' +
+                        '<td>' + escG(dev.Serial) + '</td><td>' + (ms || '<span class="dim">-</span>') + '</td></tr>';
+                }).join('') + '</table>';
+        }
+
         // groupBlockHTML shows the run group of a member run and, per drive,
         // the value it ran under and the readings that verified it; '' for a
         // plain run.
@@ -550,6 +571,11 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
         fetch('/api/results/detail?id=' + resultID)
             .then(response => response.json())
             .then(result => {
+                const db = drivesHTML(result);
+                if (db) {
+                    document.getElementById('drives-block').innerHTML = db;
+                    document.getElementById('drives-card').style.display = '';
+                }
                 const gb = groupBlockHTML(result);
                 if (gb) {
                     document.getElementById('group-block').innerHTML = gb;

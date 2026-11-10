@@ -306,7 +306,7 @@ __NAVBAR_HTML__
         // Build a map of disk name → {model, serial} from first occurrence.
         const info = {};
         allData.forEach(d => {
-            if (!info[d.disk]) info[d.disk] = { model: d.model || '', serial: d.serial || '' };
+            if (!info[d.disk]) info[d.disk] = { model: d.model || '', serial: d.serial || '', members: membersText(d) };
         });
         const disks = Object.keys(info).sort();
         const ul = document.getElementById('disk-list');
@@ -326,7 +326,7 @@ __NAVBAR_HTML__
             lbl.appendChild(cb);
             const textWrap = document.createElement('span');
             textWrap.appendChild(document.createTextNode('\u00a0' + v));
-            const sub = [info[v].model, info[v].serial].filter(Boolean).join('  \u00b7  ');
+            const sub = [info[v].model, info[v].serial, info[v].members].filter(Boolean).join('  \u00b7  ');
             if (sub) {
                 const subEl = document.createElement('span');
                 subEl.className = 'disk-sub';

@@ -610,6 +610,24 @@ __NAVBAR_HTML__
                 row('Power', power) + row('Write cache', wc) + row('SMART', smart) + '</div>';
         }
 
+        // The member disks of an array target: name, model, serial and role,
+        // with the interface and SMART health once the member's configuration
+        // has been read. '' for a drive.
+        function membersHTML(drive) {
+            const ms = drive.members || [];
+            if (ms.length === 0) return '';
+            const rows = ms.map(m => {
+                const c = m.config || {};
+                const bits = [esc(m.model || ''), m.serial ? 'S/N ' + esc(m.serial) : '', esc(m.role || '')];
+                if (c.interface) bits.push(esc(c.interface));
+                const st = c.smart && c.smart.status;
+                if (st) bits.push('SMART <span class="' + (st === 'PASSED' ? 'ok' : 'bad') + '">' + esc(st) + '</span>');
+                return '<div class="row"><span class="k">' + esc(m.name) + '</span><span class="v">' +
+                    bits.filter(Boolean).join(' &middot; ') + '</span></div>';
+            }).join('');
+            return '<div class="cfg"><div class="dim">Members</div>' + rows + '</div>';
+        }
+
         // ---- Run groups: banner, per-drive setting badges, whole-group ETA ----
 
         function badgeHTML(cls, text, tip) {
@@ -638,6 +656,7 @@ __NAVBAR_HTML__
                 readingBadge('before', st.before, st.value) + ' ' + readingBadge('after', st.after, st.value);
             if (st.valid === false) h += ' ' + badgeHTML('invalid', 'invalid', 'this drive did not hold the value for the run');
             if (group && group.step === 'restoring') h += ' ' + badgeHTML('restoring', 'restoring', 'the original setting is being restored');
+            if (group && group.step === 'tearing-down') h += ' ' + badgeHTML('restoring', 'tearing down', 'the layout is being torn down');
             return h + '</div>';
         }
 
@@ -658,8 +677,10 @@ __NAVBAR_HTML__
         // length of one full run. Drives run side by side, so the longest
         // drive counts.
         function groupEtaText(group, drives, phasesMap) {
-            const notStarted = group.step === 'applying' || group.step === 'verifying-before';
-            const after = group.step === 'verifying-after' || group.step === 'restoring' || group.step === 'done';
+            const notStarted = group.step === 'applying' || group.step === 'verifying-before' ||
+                group.step === 'building' || group.step === 'resyncing';
+            const after = group.step === 'verifying-after' || group.step === 'restoring' || group.step === 'done' ||
+                group.step === 'tearing-down';
             const runsLeft = Math.max(0, group.runs - group.run);
             let sec = 0, unknownPhases = 0, anyLeft = runsLeft > 0;
             drives.forEach(d => {
@@ -693,14 +714,29 @@ __NAVBAR_HTML__
                 new Date(Date.now() + sec * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) + ')';
         }
 
+        // What the group is doing: the layout steps in words (with the resync
+        // progress), the other steps by name.
+        function groupStepText(group) {
+            switch (group.step) {
+            case 'building': return 'building the layout';
+            case 'resyncing': return 'resyncing ' + Math.round(group.progress || 0) + '%';
+            case 'tearing-down': return 'tearing down';
+            }
+            return group.step;
+        }
+
         // The banner above the drives; empty (so the page is as before)
-        // outside a run group.
+        // outside a run group. A layout group names the run's layout; its ETA
+        // leaves the resyncs out (their length is not known).
         function groupBannerHTML(group, drives, phasesMap) {
             if (!group) return '';
+            let eta = groupEtaText(group, drives || [], phasesMap || {});
+            if (group.variant && eta !== 'all done') eta += ' (resync time not included)';
             return '<div class="group-banner">Setting test: <b>' + esc(group.setting) + '</b>, run ' +
-                esc(group.run) + ' of ' + esc(group.runs) + ', ' + esc(group.step) +
+                esc(group.run) + ' of ' + esc(group.runs) +
+                (group.variant ? ' (layout <b>' + esc(group.variant) + '</b>)' : '') + ', ' + esc(groupStepText(group)) +
                 ' <span class="dim">&middot; strategy: ' + esc(group.strategy) + ' &middot; ' +
-                esc(groupEtaText(group, drives || [], phasesMap || {})) + '</span></div>';
+                esc(eta) + '</span></div>';
         }
 
         function phasesHTML(drive) {
@@ -764,7 +800,7 @@ __NAVBAR_HTML__
 
                 // Show benchmark details
                 benchmarkDetails.innerHTML =
-                    '<div class="drive-detail">Mode: ' + status.mode + '</div>' +
+                    '<div class="drive-detail">Mode: ' + esc(status.mode) + '</div>' +
                     '<div class="drive-detail">Phase: ' + (status.current_phase + 1) + ' / ' + status.total_phases + '</div>' +
                     '<div class="drive-detail">Completed: ' + status.completed_phases + ' / ' + status.total_phases + '</div>';
             } else {
@@ -800,19 +836,22 @@ __NAVBAR_HTML__
                     }
 
                     html += '<div class="drive-card">' +
-                        '<div class="drive-name">' + drive.name + ' (' + (drive.type || 'Unknown') + ')</div>' +
-                        '<div class="drive-detail">' + drive.vendor + ' ' + drive.model + '</div>';
+                        '<div class="drive-name">' + esc(drive.name) + ' (' + esc(drive.type || 'Unknown') + ')' +
+                        (drive.kind === 'array' ? ' &middot; array' : '') + '</div>' +
+                        '<div class="drive-detail">' + esc(drive.vendor) + ' ' + esc(drive.model) + '</div>';
                     if (drive.serial) {
-                        html += '<div class="drive-detail">S/N: ' + drive.serial + '</div>';
+                        html += '<div class="drive-detail">S/N: ' + esc(drive.serial) + '</div>';
                     }
                     if (drive.capacity_gb) {
                         html += '<div class="drive-detail">Capacity: ' + drive.capacity_gb + ' GB</div>';
                     }
                     html += settingBadgesHTML(drive, status.group);
-                    html += configHTML(drive.config);
+                    // An array's configuration is its members' (the
+                    // composite itself has none to read).
+                    html += drive.kind === 'array' ? membersHTML(drive) : configHTML(drive.config);
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
-                        html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';
+                        html += '<div class="drive-detail">Phase: ' + esc(drive.phase_name) + '</div>';
                     }
                     if (drive.warning) {
                         html += '<div class="drive-detail" style="color: #b26a00; white-space: pre-line; text-align: left;">&#9888; ' + esc(drive.warning) + '</div>';
@@ -821,7 +860,7 @@ __NAVBAR_HTML__
                         html += '<div class="drive-detail" style="color: #b26a00;">' + esc(drive.skipped) + '</div>';
                     }
                     if (drive.error) {
-                        html += '<div class="drive-detail" style="color: #f44336;">Error: ' + drive.error + '</div>';
+                        html += '<div class="drive-detail" style="color: #f44336;">Error: ' + esc(drive.error) + '</div>';
                     }
                     html += phasesHTML(drive);
                     html += '</div>';
