@@ -34,6 +34,7 @@ type lvSim struct {
 	devices []string          // devices file entries; nil: no devices file
 	syncSeq []string          // sync_percent answers of WaitSteady, in order
 	fail    map[string]error  // command prefix -> error returned instead
+	noLink  bool              // lvcreate makes no /dev/<vg>/<lv> link
 }
 
 func newLVSim(t *testing.T) *lvSim {
@@ -209,6 +210,9 @@ func (s *lvSim) lvcreate(args []string) error {
 		lv.Attr, lv.Sync, lv.Stripes = "rwi-a-r---", "100.00", fmt.Sprint(len(paths))
 	}
 	s.lvs["LVUUID-1"] = lv
+	if s.noLink {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Join(s.dev, name), 0o755); err != nil {
 		s.t.Fatal(err)
 	}
@@ -473,8 +477,8 @@ func TestLVM_ApplyResolvesDM(t *testing.T) {
 	if !reflect.DeepEqual(ts, want) {
 		t.Errorf("\n got %+v\nwant %+v", ts, want)
 	}
-	if last := s.calls[len(s.calls)-1]; last != "lvm lvs --reportformat json --units k --nosuffix -o lv_uuid,lv_attr bbbench_1_1/bbbench_1_1" {
-		t.Errorf("last call %q", last)
+	if !slices.Contains(s.calls, "lvm lvs --reportformat json --units k --nosuffix -o lv_uuid,lv_attr bbbench_1_1/bbbench_1_1") {
+		t.Errorf("calls %q", s.calls)
 	}
 }
 
@@ -906,5 +910,107 @@ func TestLayout_MdadmAndLVMValues(t *testing.T) {
 		if err != nil || l.Backend != backend || l.Level != "raid5" {
 			t.Errorf("ParseLayout(%q) = %+v, %v", id, l, err)
 		}
+	}
+}
+
+func TestLVM_ApplyInactiveBeforeLink(t *testing.T) {
+	// An inactive LV has no /dev link: the error says it is not active,
+	// not that the link did not appear.
+	s := newLVSim(t)
+	s.noLink = true
+	env := s.env()
+	env.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := s.run(ctx, name, args...)
+		if len(args) > 0 && args[0] == "lvcreate" {
+			s.lvs["LVUUID-1"].Attr = "rwi---r---"
+		}
+		return out, err
+	}
+	b := NewLVM(env)
+	ds := dataDisks(2)
+	l := lvLayout("raid1")
+	v := variant("1_1", b.Label(l, ds), ds)
+	rec, err := b.Prepare(context.Background(), v, l, "bbbench_1_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts, err := b.Apply(context.Background(), v, l, rec)
+	if ts != nil || err == nil || err.Error() != "logical volume bbbench_1_1/bbbench_1_1 is not active (lv_attr rwi---r---)" {
+		t.Errorf("%v %v", ts, err)
+	}
+	// An active LV whose link never appears still fails.
+	s2 := newLVSim(t)
+	s2.noLink = true
+	b2 := NewLVM(s2.env())
+	rec2, _ := b2.Prepare(context.Background(), v, l, "bbbench_1_1")
+	if _, err := b2.Apply(context.Background(), v, l, rec2); err == nil || !strings.Contains(err.Error(), "did not appear") {
+		t.Errorf("no link: %v", err)
+	}
+}
+
+func TestLVM_UndoKeepsDevicesEntryOfOtherVGsPV(t *testing.T) {
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer slog.SetDefault(prev)
+	s := newLVSim(t)
+	// sdc was recorded as added to the devices file, but is now a PV of
+	// vg0, a volume group bbbench did not create.
+	s.devices = []string{"/dev/sdb", "/dev/sdc"}
+	s.pvs["/dev/sdb"] = ""
+	s.pvs["/dev/sdc"] = "vg0"
+	s.vgs["vg0"] = true
+	rec := ArrayUndo{Backend: "lvm", Name: "bbbench_1_1", Members: dataDisks(2),
+		Extra: map[string]string{"devicesfile_added": "S1,S2"}}
+	if err := NewLVM(s.env()).Undo(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	if d := destructive(s.calls); !slices.Equal(d, []string{"lvm pvremove --yes /dev/sdb", "lvm lvmdevices --deldev /dev/sdb"}) {
+		t.Errorf("ran %q", d)
+	}
+	if !slices.Equal(s.devices, []string{"/dev/sdc"}) {
+		t.Errorf("devices %v", s.devices)
+	}
+}
+
+func TestLVM_UndoErrorsWhenMemberStillInOwnVG(t *testing.T) {
+	// vgs does not list the VG, but a member is still a PV of it: the
+	// record must be kept.
+	s := newLVSim(t)
+	s.devices = []string{"/dev/sdc"}
+	s.pvs["/dev/sdb"] = ""
+	s.pvs["/dev/sdc"] = "bbbench_1_1"
+	rec := ArrayUndo{Backend: "lvm", Name: "bbbench_1_1", Members: dataDisks(2),
+		Extra: map[string]string{"devicesfile_added": "S2"}}
+	err := NewLVM(s.env()).Undo(context.Background(), rec)
+	if err == nil || err.Error() != "/dev/sdc is still a physical volume of volume group bbbench_1_1" {
+		t.Errorf("%v", err)
+	}
+	if d := destructive(s.calls); !slices.Equal(d, []string{"lvm pvremove --yes /dev/sdb"}) {
+		t.Errorf("ran %q", d)
+	}
+}
+
+func TestLVM_UndoAmbiguousVgsIsAnError(t *testing.T) {
+	s := newLVSim(t)
+	rec, _ := lvBuild(t, s, lvLayout("raid1"), dataDisks(2))
+	s.fail["lvm vgs"] = exitErr("  Global lock failed: check that global lockspace is started\n")
+	s.calls = nil
+	err := NewLVM(s.env()).Undo(context.Background(), *rec)
+	if err == nil || !strings.Contains(err.Error(), "Global lock failed") || !strings.Contains(err.Error(), "not touched") {
+		t.Errorf("%v", err)
+	}
+	if d := destructive(s.calls); len(d) != 0 {
+		t.Errorf("ran %q", d)
+	}
+	// The same for a pvs of a member that fails for another reason.
+	s2 := newLVSim(t)
+	s2.pvs["/dev/sdb"] = ""
+	s2.fail["lvm pvs --reportformat json -o pv_name,vg_name /dev/sdb"] = exitErr("  Cannot open /dev/sdb: Device or resource busy\n")
+	err = NewLVM(s2.env()).Undo(context.Background(), ArrayUndo{Backend: "lvm", Name: "bbbench_1_1", Members: dataDisks(1)})
+	if err == nil || !strings.Contains(err.Error(), "resource busy") {
+		t.Errorf("pvs: %v", err)
+	}
+	if d := destructive(s2.calls); len(d) != 0 {
+		t.Errorf("pvs: ran %q", d)
 	}
 }

@@ -189,23 +189,40 @@ func (b *lvm) run(ctx context.Context, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// exists runs a report on one object: an exit status other than 0 means
-// the object does not exist; any other failure (lvm not run, cancelled) is
-// an error.
+// exists runs a report on one object. A non-zero exit whose stderr says
+// the object is not there (one of notFound, case-insensitive; any non-zero
+// exit when notFound is empty) means it does not exist; any other failure
+// (another lvm error such as a lock failure, lvm not run, cancelled) is an
+// error, so that an ambiguous read is never taken for "nothing there".
 //
-// UNVERIFIED on hardware: the exit status of pvs and vgs on a disk or VG
-// that does not exist.
-func (b *lvm) exists(ctx context.Context, args ...string) ([]byte, bool, error) {
+// UNVERIFIED on hardware: the exit status and stderr of pvs and vgs on a
+// disk or VG that does not exist ("Volume group ... not found", "Failed to
+// find physical volume ...", "No physical volume label read from ...").
+func (b *lvm) exists(ctx context.Context, notFound []string, args ...string) ([]byte, bool, error) {
 	out, err := b.env.Run(ctx, "lvm", args...)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			return nil, false, nil
+			stderr := strings.ToLower(string(ee.Stderr))
+			if len(notFound) == 0 || slices.ContainsFunc(notFound, func(s string) bool { return strings.Contains(stderr, s) }) {
+				return nil, false, nil
+			}
 		}
-		return nil, false, fmt.Errorf("lvm %s: %v", strings.Join(args, " "), err)
+		msg := fmt.Sprintf("lvm %s: %v", strings.Join(args, " "), err)
+		if ee != nil {
+			if s := strings.TrimSpace(string(ee.Stderr)); s != "" {
+				msg += ": " + s
+			}
+		}
+		return nil, false, errors.New(msg)
 	}
 	return out, true, nil
 }
+
+var (
+	vgNotFound = []string{"not found"}
+	pvNotFound = []string{"failed to find", "not found", "no physical volume label"}
+)
 
 // lvReport parses "report[0].<kind>[]" of a JSON report.
 //
@@ -228,7 +245,7 @@ func lvReport(out []byte, kind string) ([]map[string]string, error) {
 
 // vgExists is whether the VG name exists.
 func (b *lvm) vgExists(ctx context.Context, name string) (bool, error) {
-	out, ok, err := b.exists(ctx, "vgs", "--reportformat", "json", "-o", "vg_name", name)
+	out, ok, err := b.exists(ctx, vgNotFound, "vgs", "--reportformat", "json", "-o", "vg_name", name)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -269,7 +286,7 @@ func (b *lvm) vgPVs(ctx context.Context, vg string) ([]string, error) {
 // use_devicesfile=1): the DEVNAME= field of its listing, whether pvcreate
 // adds an entry and whether pvremove already removes it.
 func (b *lvm) devicesFile(ctx context.Context) (map[string]bool, bool, error) {
-	out, ok, err := b.exists(ctx, "lvmdevices")
+	out, ok, err := b.exists(ctx, nil, "lvmdevices")
 	if err != nil || !ok {
 		return nil, false, err
 	}
@@ -394,10 +411,7 @@ func (b *lvm) Apply(ctx context.Context, v Variant, l Layout, rec *ArrayUndo) ([
 	if _, err := b.run(ctx, args...); err != nil {
 		return nil, err
 	}
-	dm, err := b.waitDM(ctx, name)
-	if err != nil {
-		return nil, err
-	}
+	// The activity check comes first: an inactive LV gets no /dev link.
 	out, err := b.run(ctx, "lvs", "--reportformat", "json", "--units", "k", "--nosuffix", "-o", "lv_uuid,lv_attr", name+"/"+name)
 	if err != nil {
 		return nil, err
@@ -413,6 +427,10 @@ func (b *lvm) Apply(ctx context.Context, v Variant, l Layout, rec *ArrayUndo) ([
 	if !lvActive(attr) {
 		return nil, fmt.Errorf("logical volume %s/%s is not active (lv_attr %s)", name, name, attr)
 	}
+	dm, err := b.waitDM(ctx, name)
+	if err != nil {
+		return nil, err
+	}
 	return []BenchTarget{{Kind: TargetArray,
 		Target: Target{Name: dm, Path: "/dev/" + dm, Serial: uuid, Model: l.Level, Vendor: "lvm", Interface: "lvm"},
 		UUID:   uuid, Members: slices.Clone(v.Disks), Want: v.Value.ID}}, nil
@@ -423,6 +441,9 @@ func lvActive(attr string) bool { return len(attr) >= 5 && attr[4] == 'a' }
 
 // waitDM polls the link <Dev>/<vg>/<lv> until Settle and returns the dm
 // kernel name it points to.
+//
+// UNVERIFIED on hardware: whether udev creates /dev/<vg>/<lv> within
+// Env.Settle after lvcreate --activate y.
 func (b *lvm) waitDM(ctx context.Context, name string) (string, error) {
 	link := filepath.Join(b.env.Dev, name, name)
 	deadline := time.Now().Add(b.env.Settle)
@@ -629,9 +650,14 @@ func (b *lvm) Undo(ctx context.Context, u ArrayUndo) error {
 			errs = append(errs, fmt.Errorf("member S/N %s is not present; its LVM label was not removed", d.Serial))
 			continue
 		}
-		if err := b.removeLabel(ctx, d.Path); err != nil {
-			failed[d.Path] = true
+		removed, err := b.removeLabel(ctx, d.Path, name)
+		if err != nil {
 			errs = append(errs, err)
+		}
+		if !removed {
+			// Left alone or failed: its devices-file entry is not
+			// bbbench's to remove.
+			failed[d.Path] = true
 		}
 	}
 	if err := b.removeDevicesEntries(ctx, u, failed); err != nil {
@@ -642,7 +668,7 @@ func (b *lvm) Undo(ctx context.Context, u ArrayUndo) error {
 
 // pvVG reports whether path is a PV and the VG it belongs to.
 func (b *lvm) pvVG(ctx context.Context, path string) (bool, string, error) {
-	out, ok, err := b.exists(ctx, "pvs", "--reportformat", "json", "-o", "pv_name,vg_name", path)
+	out, ok, err := b.exists(ctx, pvNotFound, "pvs", "--reportformat", "json", "-o", "pv_name,vg_name", path)
 	if err != nil || !ok {
 		return false, "", err
 	}
@@ -657,35 +683,41 @@ func (b *lvm) pvVG(ctx context.Context, path string) (bool, string, error) {
 }
 
 // removeLabel runs pvremove on path when it is an orphan PV and checks the
-// label is gone. A PV of a volume group is left alone.
-func (b *lvm) removeLabel(ctx context.Context, path string) error {
+// label is gone. removed is true when path carries no LVM label at the end
+// (removed here or none to begin with); it is false when the path was left
+// alone (a PV of another volume group) or on an error. A PV still in the
+// volume group own is an error: bbbench's VG is not gone.
+func (b *lvm) removeLabel(ctx context.Context, path, own string) (removed bool, err error) {
 	isPV, vg, err := b.pvVG(ctx, path)
 	if err != nil {
-		return fmt.Errorf("check the LVM label of %s: %v", path, err)
+		return false, fmt.Errorf("check the LVM label of %s: %v", path, err)
 	}
 	if !isPV {
-		return nil
+		return true, nil
+	}
+	if vg == own {
+		return false, fmt.Errorf("%s is still a physical volume of volume group %s", path, own)
 	}
 	if vg != "" {
 		slog.Info("member is a physical volume of another volume group; left alone", "path", path, "vg", vg)
-		return nil
+		return false, nil
 	}
 	if _, err := b.run(ctx, "pvremove", "--yes", path); err != nil {
-		return err
+		return false, err
 	}
 	still, _, err := b.pvVG(ctx, path)
 	if err != nil {
-		return fmt.Errorf("cannot check the pvremove of %s: %v", path, err)
+		return false, fmt.Errorf("cannot check the pvremove of %s: %v", path, err)
 	}
 	if still {
-		return fmt.Errorf("%s still carries an LVM label after pvremove", path)
+		return false, fmt.Errorf("%s still carries an LVM label after pvremove", path)
 	}
-	return nil
+	return true, nil
 }
 
 // removeDevicesEntries removes the devices-file entries of the recorded
-// serials whose member is present (skip: label still there) and checks
-// they are gone. A serial that is not a recorded member is ignored.
+// serials whose member is present and has no LVM label left (skip: left
+// alone or failed) and checks they are gone. A serial that is not a recorded member is ignored.
 func (b *lvm) removeDevicesEntries(ctx context.Context, u ArrayUndo, skip map[string]bool) error {
 	added := u.Extra[devicesFileKey]
 	if added == "" {
