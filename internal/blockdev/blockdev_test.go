@@ -672,3 +672,22 @@ func TestDiscover_FallsBackToVPDPage80(t *testing.T) {
 		t.Errorf("expected serial from vpd_pg80, got %q", dev.Serial)
 	}
 }
+
+// TestLookup reads one device by name, as Discover would, and fails when it
+// is not there.
+func TestLookup(t *testing.T) {
+	fsys := validSDADevice()
+	d, err := Lookup(fsys, "/sys/block", "sda")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Name != "sda" || d.Serial != "S6EVNX0T123456" || d.Model != "Samsung SSD 990" || d.CapacityBytes != 1953525168*512 {
+		t.Errorf("device %+v", d)
+	}
+	if _, err := Lookup(fsys, "/sys/block", "sdz"); err == nil {
+		t.Error("a missing device was read")
+	}
+	if _, err := Lookup(fsys, "/sys/block", "../sda"); err == nil {
+		t.Error("a path was read as a name")
+	}
+}

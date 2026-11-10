@@ -69,6 +69,22 @@ func Discover(fsys FS, sysBlock string) (map[string]Device, error) {
 	return out, nil
 }
 
+// Lookup reads the one device name as Discover does (sysBlock "" is
+// /sys/block). It fails when the device has no size in sysfs, i.e. is not
+// there; an empty serial or model is returned as read.
+func Lookup(fsys FS, sysBlock, name string) (Device, error) {
+	if sysBlock == "" {
+		sysBlock = "/sys/block"
+	}
+	if name == "" || strings.ContainsAny(name, "/") || name == "." || name == ".." {
+		return Device{}, fmt.Errorf("bad device name %q", name)
+	}
+	if _, err := fsys.ReadFile(filepath.Join(sysBlock, name, "size")); err != nil {
+		return Device{}, fmt.Errorf("read %s: %w", name, err)
+	}
+	return readOne(fsys, sysBlock, name)
+}
+
 func readOne(fsys FS, sysBlock, name string) (Device, error) {
 	base := filepath.Join(sysBlock, name)
 	readStr := func(rel string) string {

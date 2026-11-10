@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"bbbench/internal/blockdev"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 )
@@ -52,6 +53,10 @@ type groupConfig struct {
 	// MakeDrive turns a composite target built by a layout into the drive
 	// a run benchmarks; nil refuses composite targets.
 	MakeDrive func(bt settings.BenchTarget) (DriveInfo, error)
+	// Identify reads a disk as it is now, by kernel name (blockdev.Lookup
+	// in production). A layout run re-identifies every disk with it right
+	// before the build; nil refuses every layout run.
+	Identify func(name string) (blockdev.Device, error)
 }
 
 // driveRefs describes the drives for planning; Firmware is the drive's own
@@ -403,8 +408,12 @@ func checkLayoutDisks(cfg groupConfig) error {
 			return fmt.Errorf("run group: layout %d (%s) has no disks", i+1, v.Value.ID)
 		}
 		for _, d := range v.Disks {
-			if _, ok := driveOf[d.Name]; !ok {
+			dr, ok := driveOf[d.Name]
+			if !ok {
 				return fmt.Errorf("run group: %s of layout %d is not among the drives of the group", d.Name, i+1)
+			}
+			if dev := dr.Device; d.Serial != dev.Serial || d.Model != dev.Model || d.Path != dev.Path {
+				return fmt.Errorf("run group: %s of layout %d is not the drive %s of the group (%s S/N %s at %s, the drive is %s S/N %s at %s)", d.Name, i+1, d.Name, d.Model, d.Serial, d.Path, dev.Model, dev.Serial, dev.Path)
 			}
 			if d.Serial == "" {
 				return fmt.Errorf("run group: %s has no serial; it could not be found again for a teardown", d.Name)
@@ -1003,6 +1012,11 @@ func runLayoutOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, l
 		return teardown()
 	}
 
+	// Re-identified right before the build: a disk re-enumerated or
+	// hot-plugged since the confirmation must not be the one erased.
+	if err := reidentify(cfg.Identify, diskDrives); err != nil {
+		return notRun("not built: " + err.Error())
+	}
 	// Prepared right before the build: the in-use re-check sees the disks
 	// as they are now, after the previous layout was torn down.
 	prepared, err := s.Prepare(ctx, v)
@@ -1098,4 +1112,30 @@ func runLayoutOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, l
 		return err
 	}
 	return teardown()
+}
+
+// reidentify reads every disk again by its kernel name and checks that it is
+// still the drive that was confirmed: same serial, model and capacity. A disk
+// that cannot be read, or reads without a serial, is refused too.
+func reidentify(identify func(string) (blockdev.Device, error), drives []DriveInfo) error {
+	if identify == nil {
+		return errors.New("no way to re-identify the disks")
+	}
+	for _, d := range drives {
+		want := d.Device
+		got, err := identify(want.Name)
+		if err != nil {
+			return fmt.Errorf("cannot re-identify %s: %v", want.Name, err)
+		}
+		if got.Serial == "" {
+			return fmt.Errorf("cannot re-identify %s: no serial", want.Name)
+		}
+		if got.Serial != want.Serial {
+			return fmt.Errorf("%s is no longer %s (found %s)", want.Name, want.Serial, got.Serial)
+		}
+		if got.Model != want.Model || got.CapacityBytes != want.CapacityBytes {
+			return fmt.Errorf("%s is no longer %s S/N %s of %d bytes (found %s of %d bytes)", want.Name, want.Model, want.Serial, want.CapacityBytes, got.Model, got.CapacityBytes)
+		}
+	}
+	return nil
 }

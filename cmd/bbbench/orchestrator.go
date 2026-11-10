@@ -402,6 +402,9 @@ func runOrchestrator(args []string) error {
 			return arrayDrive(bt, drivesByName(group.Drives), *sysBlock, fioGenerator(cfg, eng, host))
 		}
 		cfg := newGroupConfig(group, targets, opts, host, resumeGroup, makeDrive)
+		cfg.Identify = func(name string) (blockdev.Device, error) {
+			return blockdev.Lookup(blockdev.OSFS{}, *sysBlock, name)
+		}
 		if group.Variants != nil {
 			fmt.Printf("Setting test: %s, %d layouts, one after the other\n\n", group.Setting.Name(), len(group.Variants))
 		} else {

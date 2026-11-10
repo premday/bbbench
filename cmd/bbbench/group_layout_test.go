@@ -215,8 +215,21 @@ func testLayoutGroup(t *testing.T, mk func(targets map[string]settings.Target) [
 		MakeDrive: func(bt settings.BenchTarget) (DriveInfo, error) {
 			return DriveInfo{Device: blockdev.Device{Name: bt.Target.Name, Path: bt.Target.Path, Serial: bt.UUID, Model: bt.Target.Model}, Members: rungroup.MembersOf(bt.Members), UUID: bt.UUID}, nil
 		},
+		Identify: identifyAs(drives),
 	}
 	return cfg, fl, ex
+}
+
+// identifyAs re-identifies each disk as the drive of the same name.
+func identifyAs(drives []DriveInfo) func(string) (blockdev.Device, error) {
+	return func(name string) (blockdev.Device, error) {
+		for _, d := range drives {
+			if d.Device.Name == name {
+				return d.Device, nil
+			}
+		}
+		return blockdev.Device{}, fmt.Errorf("read %s: no such device", name)
+	}
 }
 
 func twoRaids(targets map[string]settings.Target) []settings.Variant {
@@ -371,6 +384,130 @@ func TestRunGroup_LayoutPrepareFailsNotRun(t *testing.T) {
 	}
 	if g.Runs[1].Status != rungroup.RunDone || len(ex.specs) != 1 {
 		t.Errorf("run 2 %+v, %d executions", g.Runs[1], len(ex.specs))
+	}
+}
+
+// TestRunGroup_LayoutReidentifiesBeforeBuild: sdb is another disk by run 2
+// (re-enumerated, hot-plugged): run 2 builds nothing and is not run.
+func TestRunGroup_LayoutReidentifiesBeforeBuild(t *testing.T) {
+	cfg, fl, ex := testLayoutGroup(t, twoRaids)
+	base := cfg.Identify
+	runs := 0
+	fl.onApply = func(settings.Variant) { runs++ }
+	cfg.Identify = func(name string) (blockdev.Device, error) {
+		d, err := base(name)
+		if name == "sdb" && runs >= 1 {
+			d.Serial = "SN-other"
+		}
+		return d, err
+	}
+	g, err := runGroup(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps, as := fl.callsOf("prepare"), fl.callsOf("apply"); len(ps) != 1 || len(as) != 1 {
+		t.Fatalf("prepares %+v, applies %+v: run 2 may not be prepared or built", ps, as)
+	}
+	r := g.Runs[1]
+	if r.Status != rungroup.RunNotRun || len(r.Drives) != 2 {
+		t.Fatalf("run 2 %+v", r)
+	}
+	for _, d := range r.Drives {
+		if d.Label.Note != "not built: sdb is no longer SN-sdb (found SN-other)" || d.Label.Valid {
+			t.Errorf("run 2 %s label %+v", d.Device, d.Label)
+		}
+	}
+	if g.Runs[0].Status != rungroup.RunDone || len(ex.specs) != 1 {
+		t.Errorf("run 1 %+v, %d executions", g.Runs[0], len(ex.specs))
+	}
+}
+
+func TestRunGroup_LayoutReidentifyModelOrCapacity(t *testing.T) {
+	for name, change := range map[string]func(*blockdev.Device){
+		"model":    func(d *blockdev.Device) { d.Model = "M2" },
+		"capacity": func(d *blockdev.Device) { d.CapacityBytes /= 2 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, fl, _ := testLayoutGroup(t, twoRaids)
+			base := cfg.Identify
+			cfg.Identify = func(n string) (blockdev.Device, error) {
+				d, err := base(n)
+				if n == "sdc" {
+					change(&d)
+				}
+				return d, err
+			}
+			g, err := runGroup(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ps := fl.callsOf("prepare"); len(ps) != 0 {
+				t.Fatalf("prepared %+v", ps)
+			}
+			for i, r := range g.Runs {
+				if r.Status != rungroup.RunNotRun || !strings.HasPrefix(r.Drives[0].Label.Note, "not built: sdc is no longer ") {
+					t.Errorf("run %d %+v", i+1, r)
+				}
+			}
+		})
+	}
+}
+
+func TestRunGroup_LayoutReidentifyUnreadableRefuses(t *testing.T) {
+	cfg, fl, ex := testLayoutGroup(t, twoRaids)
+	cfg.Identify = func(name string) (blockdev.Device, error) {
+		return blockdev.Device{}, fmt.Errorf("read %s: no such device", name)
+	}
+	g, err := runGroup(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps := fl.callsOf("prepare"); len(ps) != 0 || len(ex.specs) != 0 {
+		t.Fatalf("prepared %+v, %d executions", ps, len(ex.specs))
+	}
+	for i, r := range g.Runs {
+		if r.Status != rungroup.RunNotRun || r.Drives[0].Label.Note != "not built: cannot re-identify sdb: read sdb: no such device" {
+			t.Errorf("run %d %+v", i+1, r)
+		}
+	}
+	// No serial read back is unreadable too, and so is no way to read.
+	cfg, fl, _ = testLayoutGroup(t, twoRaids)
+	cfg.Identify = func(name string) (blockdev.Device, error) { return blockdev.Device{Name: name}, nil }
+	if g, err = runGroup(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if ps := fl.callsOf("prepare"); len(ps) != 0 || g.Runs[0].Drives[0].Label.Note != "not built: cannot re-identify sdb: no serial" {
+		t.Errorf("prepared %+v, run 1 %+v", ps, g.Runs[0])
+	}
+	cfg, fl, _ = testLayoutGroup(t, twoRaids)
+	cfg.Identify = nil
+	if g, err = runGroup(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if ps := fl.callsOf("prepare"); len(ps) != 0 || g.Runs[0].Status != rungroup.RunNotRun {
+		t.Errorf("prepared %+v without a way to re-identify, run 1 %+v", ps, g.Runs[0])
+	}
+}
+
+// TestCheckLayoutDisks_IdentityOfTheDrive: a layout disk must be the group's
+// drive of that name, by serial, model and path.
+func TestCheckLayoutDisks_IdentityOfTheDrive(t *testing.T) {
+	for name, change := range map[string]func(*settings.Disk){
+		"serial": func(d *settings.Disk) { d.Serial = "SN-other" },
+		"model":  func(d *settings.Disk) { d.Model = "M2" },
+		"path":   func(d *settings.Disk) { d.Path = "/dev/sdz" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, _, _ := testLayoutGroup(t, twoRaids)
+			if err := checkLayoutDisks(cfg); err != nil {
+				t.Fatalf("unchanged: %v", err)
+			}
+			change(&cfg.Variants[1].Disks[0])
+			err := checkLayoutDisks(cfg)
+			if err == nil || !strings.Contains(err.Error(), "sdb of layout 2 is not the drive sdb") {
+				t.Errorf("err %v", err)
+			}
+		})
 	}
 }
 
