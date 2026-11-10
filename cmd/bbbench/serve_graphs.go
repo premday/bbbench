@@ -1183,7 +1183,7 @@ __NAVBAR_HTML__
                     g.last = pct;
                 }
             }
-            deg = Math.max(deg, p.degraded || 0);
+            deg = Math.max(deg, p.degraded > 0 ? p.degraded : 0); // < 0 = unreadable
         });
         const out = segs.map(g => {
             if (g.first === null) return {text: g.action, kind: 'sync'};
@@ -1212,7 +1212,7 @@ __NAVBAR_HTML__
         if (p) {
             out.push('md: ' + (mdBusy(p)
                 ? p.action + ' ' + Math.round(p.pct || 0) + '% ' + ((p.speed || 0) / 1024).toFixed(1) + ' MiB/s'
-                : (p.action || 'unknown')) + ', degraded ' + (p.degraded || 0));
+                : (p.action || 'unknown')) + ', degraded ' + (p.degraded < 0 ? 'unknown' : (p.degraded || 0)));
         }
         (d.md_events || []).forEach(e => {
             if (memberKey(e.t, step) === k) out.push('md event: ' + e.text);

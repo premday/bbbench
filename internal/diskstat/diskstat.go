@@ -211,7 +211,7 @@ type MDState struct {
 	Action           string
 	Completed, Total uint64
 	SpeedKiBps       uint64
-	Degraded         int
+	Degraded         int // -1 when it could not be read
 	ArrayState       string
 	RaidDisks        int
 	Members          map[string]string
@@ -233,7 +233,7 @@ func readTrim(path string) string {
 
 // ReadMD reads the md state of array; sysBlock "" is /sys/block. ok is false
 // when <sysBlock>/<array>/md does not exist. A field that cannot be read or
-// parsed stays empty or zero.
+// parsed stays empty or zero, except Degraded, which is -1.
 func ReadMD(sysBlock, array string, members []string) (MDState, bool) {
 	if sysBlock == "" {
 		sysBlock = "/sys/block"
@@ -254,7 +254,11 @@ func ReadMD(sysBlock, array string, members []string) (MDState, bool) {
 		}
 	}
 	st.SpeedKiBps, _ = strconv.ParseUint(readTrim(filepath.Join(dir, "sync_speed")), 10, 64)
-	st.Degraded, _ = strconv.Atoi(readTrim(filepath.Join(dir, "degraded")))
+	if d, err := strconv.Atoi(readTrim(filepath.Join(dir, "degraded"))); err == nil && d >= 0 {
+		st.Degraded = d
+	} else {
+		st.Degraded = -1 // unreadable: unknown, not "not degraded"
+	}
 	st.RaidDisks, _ = strconv.Atoi(readTrim(filepath.Join(dir, "raid_disks")))
 	if len(members) > 0 {
 		st.Members = make(map[string]string, len(members))

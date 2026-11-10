@@ -277,6 +277,13 @@ func TestMDEventsIgnoreUnreadable(t *testing.T) {
 	check("raid_disks 0", texts(mk("idle", 4, "in_sync"), mk("idle", 0, "in_sync"), mk("idle", 4, "in_sync")))
 	check("removed", texts(mk("idle", 4, "in_sync"), mk("idle", 4, "removed"), mk("idle", 4, "in_sync")),
 		"sdb: in_sync -> removed", "sdb: removed -> in_sync")
+	mkd := func(d int) diskstat.MDState {
+		m := mk("idle", 4, "in_sync")
+		m.Degraded = d
+		return m
+	}
+	check("degraded unreadable", texts(mkd(1), mkd(-1), mkd(1)))
+	check("degraded unreadable then change", texts(mkd(1), mkd(-1), mkd(0)), "degraded 1 -> 0")
 	check("unreadable then change", texts(mk("idle", 4, "in_sync"), mk("", 4, "in_sync"), mk("check", 4, "in_sync")),
 		"sync_action idle -> check")
 }

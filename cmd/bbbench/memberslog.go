@@ -93,7 +93,7 @@ type MDPoint struct {
 	Action     string  `json:"action"`
 	Pct        float64 `json:"pct"`
 	SpeedKiBps uint64  `json:"speed"`
-	Degraded   int     `json:"degraded"`
+	Degraded   int     `json:"degraded"` // -1 = unreadable (unknown)
 	State      string  `json:"state"`
 }
 
@@ -137,7 +137,7 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 				add("degraded %d (at phase start)", cur.Degraded)
 			}
 		} else {
-			// an unreadable value ("" or 0 raid_disks) is not a change; the
+			// an unreadable value ("", 0 raid_disks or -1 degraded) is not a change; the
 			// last known value stays the baseline for the next window
 			if cur.Action != "" && cur.Action != prev.Action {
 				add("sync_action %s -> %s", prev.Action, cur.Action)
@@ -145,7 +145,7 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 			if cur.ArrayState != "" && cur.ArrayState != prev.ArrayState {
 				add("array_state %s -> %s", prev.ArrayState, cur.ArrayState)
 			}
-			if cur.Degraded != prev.Degraded {
+			if cur.Degraded >= 0 && prev.Degraded >= 0 && cur.Degraded != prev.Degraded {
 				add("degraded %d -> %d", prev.Degraded, cur.Degraded)
 			}
 			if cur.RaidDisks != 0 && cur.RaidDisks != prev.RaidDisks {
@@ -169,6 +169,9 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 			}
 			if next.ArrayState == "" {
 				next.ArrayState = prev.ArrayState
+			}
+			if next.Degraded < 0 {
+				next.Degraded = prev.Degraded
 			}
 			if next.RaidDisks == 0 {
 				next.RaidDisks = prev.RaidDisks

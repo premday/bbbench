@@ -59,7 +59,7 @@ func TestReadMDUnreadableFieldIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, ok := ReadMD(root, "md0", []string{"sda", "sdb"})
-	if !ok || s.ArrayState != "clean" || s.Action != "" || s.Total != 0 || s.Degraded != 0 || s.Members["sda"] != "" {
+	if !ok || s.ArrayState != "clean" || s.Action != "" || s.Total != 0 || s.Degraded != -1 || s.Members["sda"] != "" {
 		t.Fatalf("%v %+v", ok, s)
 	}
 	// no dev-sdb directory: the member was removed from the array
