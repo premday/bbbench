@@ -280,3 +280,31 @@ func TestMDEventsIgnoreUnreadable(t *testing.T) {
 	check("unreadable then change", texts(mk("idle", 4, "in_sync"), mk("", 4, "in_sync"), mk("check", 4, "in_sync")),
 		"sync_action idle -> check")
 }
+
+// The sampler stamps EndMs from the wall clock, so the window closing the
+// ramp-up ends a few ms after the boundary; it must still be dropped.
+func TestRampBoundaryJitter(t *testing.T) {
+	prefix := filepath.Join(t.TempDir(), "md0_j_log")
+	f, _ := os.Create(diskstat.LogName(prefix))
+	meta := diskstat.Meta{AvgMsec: 1000, OffsetMs: 10000, Array: "md0", Members: []diskstat.MemberMeta{{Name: "sda", Role: "data"}}}
+	var ws []diskstat.Window
+	var md []diskstat.MDWindow
+	for _, end := range []int64{10001, 11001, 12002} {
+		ws = append(ws, diskstat.Window{EndMs: end, SpanMs: 1000, Device: "sda", D: diskstat.Counters{ReadIOs: 1}})
+		md = append(md, diskstat.MDWindow{EndMs: end, SpanMs: 1000, S: diskstat.MDState{Action: "idle"}})
+	}
+	if err := diskstat.WriteLog(f, meta, ws, md); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	series, info, ok := loadMembersAndMD(prefix)
+	if !ok {
+		t.Fatal("not ok")
+	}
+	if got := series["sda"].IOPS; len(got) != 2 || got[0].T < 10.0 || got[0].T > 10.01 {
+		t.Errorf("members kept %+v", got)
+	}
+	if len(info.Points) != 2 || info.Points[0].T < 10.0 || info.Points[0].T > 10.01 {
+		t.Errorf("md points %+v", info.Points)
+	}
+}

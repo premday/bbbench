@@ -78,6 +78,13 @@ func loadMembersLog(logPrefix string) (map[string]MemberSeries, bool) {
 	return series, ok
 }
 
+// inRamp reports whether a sampling window belongs to fio's ramp-up. EndMs
+// comes from the wall clock (k*avg plus a few ms of jitter), so the window is
+// judged by its midpoint: one closing the ramp at offset+1ms is still ramp.
+func inRamp(endMs, spanMs, offsetMs int64) bool {
+	return endMs-spanMs/2 <= offsetMs
+}
+
 // MDPoint is the md state of an array at the start of one sampling window.
 // Pct is the sync_completed progress (0 when the total is unknown), SpeedKiBps
 // the kernel's sync speed in KiB/s as stored.
@@ -188,7 +195,7 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 func loadMDLog(md []diskstat.MDWindow, offsetMs int64) (MDInfo, bool) {
 	var vis []diskstat.MDWindow
 	for _, w := range md {
-		if w.EndMs > offsetMs {
+		if !inRamp(w.EndMs, w.SpanMs, offsetMs) {
 			vis = append(vis, w)
 		}
 	}
@@ -231,8 +238,8 @@ func loadMembersAndMD(logPrefix string) (map[string]MemberSeries, MDInfo, bool) 
 		out[m.Name] = MemberSeries{Role: role}
 	}
 	for _, w := range windows {
-		if w.EndMs <= int64(meta.OffsetMs) {
-			continue // entirely in the ramp-up
+		if inRamp(w.EndMs, w.SpanMs, int64(meta.OffsetMs)) {
+			continue // mostly in the ramp-up
 		}
 		ms, ok := out[w.Device]
 		if !ok {
