@@ -191,7 +191,8 @@ func (s *Sampler) Windows() []Window {
 }
 
 // MDState is the state of an md array read from <sysBlock>/<array>/md.
-// Members maps a member name to the trimmed text of md/dev-<name>/state.
+// Members maps a member name to the trimmed text of md/dev-<name>/state ("removed" when
+// the dev-<name> directory is gone, "" when the state cannot be read).
 type MDState struct {
 	Action           string
 	Completed, Total uint64
@@ -244,6 +245,10 @@ func ReadMD(sysBlock, array string, members []string) (MDState, bool) {
 	if len(members) > 0 {
 		st.Members = make(map[string]string, len(members))
 		for _, m := range members {
+			if fi, err := os.Stat(filepath.Join(dir, "dev-"+m)); err != nil || !fi.IsDir() {
+				st.Members[m] = "removed" // no longer part of the array
+				continue
+			}
 			st.Members[m] = readTrim(filepath.Join(dir, "dev-"+m, "state"))
 		}
 	}

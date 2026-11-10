@@ -130,16 +130,18 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 				add("degraded %d (at phase start)", cur.Degraded)
 			}
 		} else {
-			if cur.Action != prev.Action {
+			// an unreadable value ("" or 0 raid_disks) is not a change; the
+			// last known value stays the baseline for the next window
+			if cur.Action != "" && cur.Action != prev.Action {
 				add("sync_action %s -> %s", prev.Action, cur.Action)
 			}
-			if cur.ArrayState != prev.ArrayState {
+			if cur.ArrayState != "" && cur.ArrayState != prev.ArrayState {
 				add("array_state %s -> %s", prev.ArrayState, cur.ArrayState)
 			}
 			if cur.Degraded != prev.Degraded {
 				add("degraded %d -> %d", prev.Degraded, cur.Degraded)
 			}
-			if cur.RaidDisks != prev.RaidDisks {
+			if cur.RaidDisks != 0 && cur.RaidDisks != prev.RaidDisks {
 				add("raid_disks %d -> %d", prev.RaidDisks, cur.RaidDisks)
 			}
 			names := make([]string, 0, len(cur.Members))
@@ -148,13 +150,31 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 			}
 			sort.Strings(names)
 			for _, n := range names {
-				if o, ok := prev.Members[n]; ok && o != cur.Members[n] {
+				if o, ok := prev.Members[n]; ok && o != "" && cur.Members[n] != "" && o != cur.Members[n] {
 					add("%s: %s -> %s", n, o, cur.Members[n])
 				}
 			}
 		}
-		c := cur
-		prev = &c
+		next := cur
+		if prev != nil {
+			if next.Action == "" {
+				next.Action = prev.Action
+			}
+			if next.ArrayState == "" {
+				next.ArrayState = prev.ArrayState
+			}
+			if next.RaidDisks == 0 {
+				next.RaidDisks = prev.RaidDisks
+			}
+			next.Members = make(map[string]string, len(cur.Members))
+			for n, v := range cur.Members {
+				if o := prev.Members[n]; v == "" {
+					v = o
+				}
+				next.Members[n] = v
+			}
+		}
+		prev = &next
 	}
 	return ev
 }
@@ -163,7 +183,8 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 // ended inside the ramp-up are not shown as points, but the events are derived
 // from every window (the phase start state comes from the very first one) and
 // those that happened in the ramp are stamped at the start of the first visible
-// window, so nothing is lost and nothing is reported twice.
+// window, so nothing is lost and nothing is reported twice. A phase shorter
+// than the ramp has no visible window: its md events are dropped with the points.
 func loadMDLog(md []diskstat.MDWindow, offsetMs int64) (MDInfo, bool) {
 	var vis []diskstat.MDWindow
 	for _, w := range md {

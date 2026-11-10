@@ -251,3 +251,32 @@ func TestMDStartEventsWithRamp(t *testing.T) {
 		t.Errorf("no ramp: %+v", info.Events)
 	}
 }
+
+func TestMDEventsIgnoreUnreadable(t *testing.T) {
+	mk := func(act string, rd int, mem string) diskstat.MDState {
+		return diskstat.MDState{Action: act, ArrayState: "clean", RaidDisks: rd, Members: map[string]string{"sdb": mem}}
+	}
+	texts := func(ws ...diskstat.MDState) []string {
+		var wins []diskstat.MDWindow
+		for i, w := range ws {
+			wins = append(wins, mdw(int64(i+1)*1000, w))
+		}
+		var o []string
+		for _, e := range mdEventsFrom(&ws[0], wins[1:]) {
+			o = append(o, e.Text)
+		}
+		return o
+	}
+	check := func(name string, got []string, want ...string) {
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("%s: %q, want %q", name, got, want)
+		}
+	}
+	check("empty member", texts(mk("idle", 4, "in_sync"), mk("idle", 4, ""), mk("idle", 4, "in_sync")))
+	check("empty action", texts(mk("idle", 4, "in_sync"), mk("", 4, "in_sync"), mk("idle", 4, "in_sync")))
+	check("raid_disks 0", texts(mk("idle", 4, "in_sync"), mk("idle", 0, "in_sync"), mk("idle", 4, "in_sync")))
+	check("removed", texts(mk("idle", 4, "in_sync"), mk("idle", 4, "removed"), mk("idle", 4, "in_sync")),
+		"sdb: in_sync -> removed", "sdb: removed -> in_sync")
+	check("unreadable then change", texts(mk("idle", 4, "in_sync"), mk("", 4, "in_sync"), mk("check", 4, "in_sync")),
+		"sync_action idle -> check")
+}

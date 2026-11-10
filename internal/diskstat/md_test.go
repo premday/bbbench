@@ -55,9 +55,16 @@ func TestReadMDNoDirIsNotOK(t *testing.T) {
 func TestReadMDUnreadableFieldIsEmpty(t *testing.T) {
 	root := t.TempDir()
 	writeMD(t, root, "md0", map[string]string{"array_state": "clean\n", "sync_completed": "garbage\n", "degraded": "x\n"})
-	s, ok := ReadMD(root, "md0", []string{"sda"})
+	if err := os.MkdirAll(filepath.Join(root, "md0", "md", "dev-sda"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := ReadMD(root, "md0", []string{"sda", "sdb"})
 	if !ok || s.ArrayState != "clean" || s.Action != "" || s.Total != 0 || s.Degraded != 0 || s.Members["sda"] != "" {
 		t.Fatalf("%v %+v", ok, s)
+	}
+	// no dev-sdb directory: the member was removed from the array
+	if s.Members["sdb"] != "removed" {
+		t.Fatalf("removed member: %+v", s.Members)
 	}
 }
 
