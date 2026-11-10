@@ -60,7 +60,7 @@ func writeMembersLog(logPrefix string, meta diskstat.Meta, ws []diskstat.Window)
 	if err != nil {
 		return err
 	}
-	if err := diskstat.WriteLog(f, meta, ws); err != nil {
+	if err := diskstat.WriteLog(f, meta, ws, nil); err != nil {
 		f.Close()
 		return err
 	}
@@ -77,7 +77,7 @@ func loadMembersLog(logPrefix string) (map[string]MemberSeries, bool) {
 		return nil, false
 	}
 	defer f.Close()
-	meta, windows, err := diskstat.ReadLog(f)
+	meta, windows, _, err := diskstat.ReadLog(f)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("unreadable members log", "prefix", logPrefix, "err", err)

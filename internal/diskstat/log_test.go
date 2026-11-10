@@ -16,10 +16,10 @@ func TestLogRoundTrip(t *testing.T) {
 		{EndMs: 2000, SpanMs: 1000, Device: "sda"},
 	}
 	var buf bytes.Buffer
-	if err := WriteLog(&buf, m, ws); err != nil {
+	if err := WriteLog(&buf, m, ws, nil); err != nil {
 		t.Fatal(err)
 	}
-	gm, gw, err := ReadLog(&buf)
+	gm, gw, _, err := ReadLog(&buf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestLogRoundTrip(t *testing.T) {
 
 func TestReadLogRejectsGarbageLine(t *testing.T) {
 	for _, s := range []string{"garbage\n", "1, 2, sda, x, 1, 1, 1, 1, 1\n", "1, 2, sda, 1\n", "# avg_msec nope\n", "# device sda\n"} {
-		if _, _, err := ReadLog(strings.NewReader(s)); err == nil {
+		if _, _, _, err := ReadLog(strings.NewReader(s)); err == nil {
 			t.Errorf("%q: want error", s)
 		}
 	}

@@ -93,6 +93,27 @@ type Sampler struct {
 	t0      time.Time
 	prev    map[string]last
 	windows []Window
+
+	array     string
+	members   []string
+	mdPrevMs  int64
+	mdHasPrev bool
+	mdWindows []MDWindow
+}
+
+// WithArray also records the md state of the array (<sysBlock>/<array>/md)
+// at every Sample after the first, when that directory exists. It returns s.
+func (s *Sampler) WithArray(name string, members []string) *Sampler {
+	s.array = name
+	s.members = append([]string(nil), members...)
+	return s
+}
+
+// MDWindows returns a copy of the md windows recorded so far.
+func (s *Sampler) MDWindows() []MDWindow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]MDWindow(nil), s.mdWindows...)
 }
 
 // NewSampler samples the named devices under sysBlock ("" = /sys/block).
@@ -133,6 +154,14 @@ func (s *Sampler) Sample(now time.Time) {
 		}
 		s.prev[n] = last{c: c, ms: ms, ok: true}
 	}
+	if s.array != "" {
+		if st, ok := ReadMD(s.sysBlock, s.array, s.members); ok {
+			if s.mdHasPrev {
+				s.mdWindows = append(s.mdWindows, MDWindow{EndMs: ms, SpanMs: ms - s.mdPrevMs, S: st})
+			}
+			s.mdHasPrev, s.mdPrevMs = true, ms
+		}
+	}
 }
 
 // Run samples at start and every `every` until ctx is done, then once more.
@@ -159,4 +188,64 @@ func (s *Sampler) Windows() []Window {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Window(nil), s.windows...)
+}
+
+// MDState is the state of an md array read from <sysBlock>/<array>/md.
+// Members maps a member name to the trimmed text of md/dev-<name>/state.
+type MDState struct {
+	Action           string
+	Completed, Total uint64
+	SpeedKiBps       uint64
+	Degraded         int
+	ArrayState       string
+	RaidDisks        int
+	Members          map[string]string
+}
+
+// MDWindow is the md state at the end of one sampling window.
+type MDWindow struct {
+	EndMs, SpanMs int64
+	S             MDState
+}
+
+func readTrim(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// ReadMD reads the md state of array; sysBlock "" is /sys/block. ok is false
+// when <sysBlock>/<array>/md does not exist. A field that cannot be read or
+// parsed stays empty or zero.
+func ReadMD(sysBlock, array string, members []string) (MDState, bool) {
+	if sysBlock == "" {
+		sysBlock = "/sys/block"
+	}
+	dir := filepath.Join(sysBlock, array, "md")
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return MDState{}, false
+	}
+	st := MDState{
+		Action:     readTrim(filepath.Join(dir, "sync_action")),
+		ArrayState: readTrim(filepath.Join(dir, "array_state")),
+	}
+	if f := strings.Split(readTrim(filepath.Join(dir, "sync_completed")), "/"); len(f) == 2 {
+		d, e1 := strconv.ParseUint(strings.TrimSpace(f[0]), 10, 64)
+		t, e2 := strconv.ParseUint(strings.TrimSpace(f[1]), 10, 64)
+		if e1 == nil && e2 == nil {
+			st.Completed, st.Total = d, t
+		}
+	}
+	st.SpeedKiBps, _ = strconv.ParseUint(readTrim(filepath.Join(dir, "sync_speed")), 10, 64)
+	st.Degraded, _ = strconv.Atoi(readTrim(filepath.Join(dir, "degraded")))
+	st.RaidDisks, _ = strconv.Atoi(readTrim(filepath.Join(dir, "raid_disks")))
+	if len(members) > 0 {
+		st.Members = make(map[string]string, len(members))
+		for _, m := range members {
+			st.Members[m] = readTrim(filepath.Join(dir, "dev-"+m, "state"))
+		}
+	}
+	return st, true
 }

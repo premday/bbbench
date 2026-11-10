@@ -28,7 +28,7 @@ func writeTestMembersLog(t *testing.T, prefix string) {
 			diskstat.Window{EndMs: end, SpanMs: 1000, Device: "sda", D: diskstat.Counters{ReadIOs: 100, ReadSectors: 2048, ReadTicksMs: 50}},
 			diskstat.Window{EndMs: end, SpanMs: 1000, Device: "sdb"})
 	}
-	if err := diskstat.WriteLog(f, meta, ws); err != nil {
+	if err := diskstat.WriteLog(f, meta, ws, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -121,7 +121,7 @@ func TestStartMemberSamplerWritesLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	m, ws, err := diskstat.ReadLog(f)
+	m, ws, _, err := diskstat.ReadLog(f)
 	if err != nil {
 		t.Fatal(err)
 	}
