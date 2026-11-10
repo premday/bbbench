@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"bbbench/internal/diskinfo"
+	"bbbench/internal/rungroup"
+	"bbbench/internal/settings"
 )
 
 // BenchmarkStatus represents the current state of benchmark execution.
@@ -36,9 +38,43 @@ type BenchmarkStatus struct {
 	// LastUpdate is the last time the status was updated
 	LastUpdate time.Time `json:"last_update"`
 
+	// Group is the run group being executed (nil for a single run). It is
+	// replaced, never mutated, on every update.
+	Group *GroupStatus `json:"group,omitempty"`
+
 	// phaseConfigs describes each drive's phases (keyed by device name); it is
 	// served by /api/status/phases, not with every status poll.
 	phaseConfigs map[string][]PhaseConfig
+}
+
+// Group steps, in the order a run goes through them.
+const (
+	stepApplying        = "applying"
+	stepVerifyingBefore = "verifying-before"
+	stepRunning         = "running"
+	stepVerifyingAfter  = "verifying-after"
+	stepRestoring       = "restoring"
+	stepDone            = "done"
+)
+
+// GroupStatus is where a run group is: run Run (1-based) of Runs, at Step.
+type GroupStatus struct {
+	ID       string            `json:"id"`
+	Setting  string            `json:"setting"`
+	Strategy rungroup.Strategy `json:"strategy"`
+	Run      int               `json:"run"`
+	Runs     int               `json:"runs"`
+	Step     string            `json:"step"`
+}
+
+// DriveSetting is a drive's setting value in the current run of a group and
+// its verification: Before and After are nil until read, Valid is nil until
+// the run has been verified after.
+type DriveSetting struct {
+	Value  string            `json:"value"`
+	Before *settings.Reading `json:"before,omitempty"`
+	After  *settings.Reading `json:"after,omitempty"`
+	Valid  *bool             `json:"valid,omitempty"`
 }
 
 // DriveStatus represents the status of a single drive.
@@ -68,6 +104,38 @@ type DriveStatus struct {
 	// Warning is a caveat about the phase the drive is running.
 	Warning       string `json:"warning,omitempty"`
 	LastCompleted string `json:"last_completed,omitempty"`
+	// Setting is the run group setting of the drive (nil for a single run).
+	// It is replaced, never mutated, so snapshots can share it.
+	Setting *DriveSetting `json:"setting,omitempty"`
+}
+
+// newDriveStatuses is the pending status of each drive at the start of a
+// run. A drive's Setting is kept from prev (the run group sets it before the
+// run starts).
+func newDriveStatuses(drives []DriveInfo, prev []DriveStatus) []DriveStatus {
+	out := make([]DriveStatus, len(drives))
+	for i, drive := range drives {
+		driveType := "SSD"
+		if drive.Device.Rotational {
+			driveType = "HDD"
+		}
+		out[i] = DriveStatus{
+			Name:     drive.Device.Name,
+			Vendor:   drive.Device.Vendor,
+			Model:    drive.Device.Model,
+			Serial:   drive.Device.Serial,
+			Capacity: drive.Device.CapacityBytes / (1024 * 1024 * 1024),
+			Type:     driveType,
+			Status:   "pending",
+		}
+		for _, p := range prev {
+			if p.Name == drive.Device.Name {
+				out[i].Setting = p.Setting
+				break
+			}
+		}
+	}
+	return out
 }
 
 // clearNotes drops the per-phase skip reason and warning (a new phase starts).
@@ -101,6 +169,8 @@ type BenchmarkStatusSnapshot struct {
 	LastUpdate      time.Time     `json:"last_update"`
 	// ServerTime lets the page measure elapsed time without trusting its own clock.
 	ServerTime time.Time `json:"server_time"`
+	// Group is a copy of the run group state (nil for a single run).
+	Group *GroupStatus `json:"group,omitempty"`
 }
 
 // GetStatus returns a point-in-time snapshot of the current status.
@@ -122,6 +192,10 @@ func GetStatus() BenchmarkStatusSnapshot {
 		snap.Drives = make([]DriveStatus, len(globalStatus.Drives))
 		copy(snap.Drives, globalStatus.Drives)
 	}
+	if globalStatus.Group != nil {
+		g := *globalStatus.Group
+		snap.Group = &g
+	}
 	return snap
 }
 
@@ -136,6 +210,7 @@ func ResetStatus() {
 		s.TotalPhases = 0
 		s.CompletedPhases = 0
 		s.phaseConfigs = nil
+		s.Group = nil
 	})
 }
 
@@ -165,6 +240,12 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; }
+        .group-banner { background: #eef4ff; border: 1px solid #c5d6f5; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; color: #223; }
+        .group-banner .dim { color: #667; }
+        .sbadge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; background: #eee; color: #555; }
+        .sbadge.ok { background: #e3f4e5; color: #2e7d32; }
+        .sbadge.failed, .sbadge.invalid { background: #fde3e1; color: #c62828; }
+        .sbadge.restoring { background: #fff1d6; color: #b26a00; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             margin: 0;
@@ -305,6 +386,7 @@ __NAVBAR_HTML__
 
     <div class="status-card">
         <h2>Drives</h2>
+        <div id="group-banner"></div>
         <div id="drives-list" class="no-data">No active benchmarks</div>
     </div>
 
@@ -505,6 +587,99 @@ __NAVBAR_HTML__
                 row('Power', power) + row('Write cache', wc) + row('SMART', smart) + '</div>';
         }
 
+        // ---- Run groups: banner, per-drive setting badges, whole-group ETA ----
+
+        function badgeHTML(cls, text, tip) {
+            return '<span class="sbadge ' + cls + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + esc(text) + '</span>';
+        }
+
+        // What one reading says about the expected value: pending until it is
+        // read, ok when it matches, failed otherwise; the reading (and what
+        // the kernel believes) is in the tooltip.
+        function readingBadge(label, reading, want) {
+            if (!reading) return badgeHTML('pending', label + ' pending', label + ': not read yet');
+            const tip = label + ': read ' + reading.value + ', expected ' + want +
+                (reading.kernel ? ', kernel ' + reading.kernel : '');
+            const ok = reading.value === want;
+            return badgeHTML(ok ? 'ok' : 'failed', label + ' ' + (ok ? 'ok' : 'failed'), tip);
+        }
+
+        // A drive card's setting line: the value and the before/after badges,
+        // invalid when the run did not verify, restoring while the group
+        // restores. Empty outside a run group. The restore outcome is not
+        // known here (the group page shows it).
+        function settingBadgesHTML(drive, group) {
+            const st = drive.setting;
+            if (!st) return '';
+            let h = '<div class="drive-detail setting">Setting: <b>' + esc(st.value) + '</b> ' +
+                readingBadge('before', st.before, st.value) + ' ' + readingBadge('after', st.after, st.value);
+            if (st.valid === false) h += ' ' + badgeHTML('invalid', 'invalid', 'this drive did not hold the value for the run');
+            if (group && group.step === 'restoring') h += ' ' + badgeHTML('restoring', 'restoring', 'the original setting is being restored');
+            return h + '</div>';
+        }
+
+        // Expected length of one full run on a drive, in seconds; null when a
+        // phase has no known length.
+        function runLengthOf(phases) {
+            if (!phases || phases.length === 0) return null;
+            let sec = 0;
+            for (const p of phases) {
+                if (!p.deterministic) return null;
+                sec += p.duration_sec;
+            }
+            return sec;
+        }
+
+        // ETA of the whole group: what is left of the current run (all of it
+        // before the run starts) plus the runs still to do at the expected
+        // length of one full run. Drives run side by side, so the longest
+        // drive counts.
+        function groupEtaText(group, drives, phasesMap) {
+            const notStarted = group.step === 'applying' || group.step === 'verifying-before';
+            const after = group.step === 'verifying-after' || group.step === 'restoring' || group.step === 'done';
+            const runsLeft = Math.max(0, group.runs - group.run);
+            let sec = 0, unknownPhases = 0, anyLeft = runsLeft > 0;
+            drives.forEach(d => {
+                const phases = phasesMap[d.name] || [];
+                const full = runLengthOf(phases);
+                // The runs still to do repeat the unknown-length phases too.
+                if (full == null) unknownPhases += runsLeft * phases.filter(p => !p.deterministic).length;
+                if (full != null) {
+                    sec = Math.max(sec, runsLeft * full);
+                }
+                if (after) return;
+                if (notStarted) {
+                    if (full != null) sec = Math.max(sec, runsLeft * full + full);
+                    else unknownPhases += phases.filter(p => !p.deterministic).length;
+                    anyLeft = anyLeft || phases.length > 0;
+                    return;
+                }
+                const e = etaOf(d, phases);
+                unknownPhases += e.unknown;
+                if (e.left > 0) anyLeft = true;
+                if (full != null) sec = Math.max(sec, runsLeft * full + e.sec);
+                else sec = Math.max(sec, e.sec);
+            });
+            if (!anyLeft) return 'all done';
+            if (unknownPhases > 0) {
+                return (sec > 0 ? 'ETA ~' + fmtDur(sec) + ' + ' : 'ETA unknown: ') + unknownPhases + ' phase' +
+                    (unknownPhases > 1 ? 's' : '') + ' of unknown length';
+            }
+            if (sec <= 0) return 'ETA unknown';
+            return 'ETA ~' + fmtDur(sec) + ' (about ' +
+                new Date(Date.now() + sec * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) + ')';
+        }
+
+        // The banner above the drives; empty (so the page is as before)
+        // outside a run group.
+        function groupBannerHTML(group, drives, phasesMap) {
+            if (!group) return '';
+            return '<div class="group-banner">Setting test: <b>' + esc(group.setting) + '</b>, run ' +
+                esc(group.run) + ' of ' + esc(group.runs) + ', ' + esc(group.step) +
+                ' <span class="dim">&middot; strategy: ' + esc(group.strategy) + ' &middot; ' +
+                esc(groupEtaText(group, drives || [], phasesMap || {})) + '</span></div>';
+        }
+
         function phasesHTML(drive) {
             const phases = phasesByDrive[drive.name];
             if (!phases || phases.length === 0) return '';
@@ -549,6 +724,7 @@ __NAVBAR_HTML__
             const progressText = document.getElementById('progress-text');
             const benchmarkDetails = document.getElementById('benchmark-details');
             const drivesList = document.getElementById('drives-list');
+            document.getElementById('group-banner').innerHTML = groupBannerHTML(status.group, status.drives, phasesByDrive);
             const lastUpdate = document.getElementById('last-update');
 
             // Update status badge
@@ -609,6 +785,7 @@ __NAVBAR_HTML__
                     if (drive.capacity_gb) {
                         html += '<div class="drive-detail">Capacity: ' + drive.capacity_gb + ' GB</div>';
                     }
+                    html += settingBadgesHTML(drive, status.group);
                     html += configHTML(drive.config);
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {

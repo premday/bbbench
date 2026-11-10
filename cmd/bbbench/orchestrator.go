@@ -41,12 +41,16 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"bbbench/internal/blockdev"
 	"bbbench/internal/config"
+	"bbbench/internal/diskinfo"
 	"bbbench/internal/dmi"
+	"bbbench/internal/rungroup"
+	"bbbench/internal/settings"
 	"bbbench/internal/util"
 )
 
@@ -145,6 +149,8 @@ func runOrchestrator(args []string) error {
 		fmt.Println()
 	}
 
+	allDrives := drives
+
 	// Apply filters
 	filter := DriveFilter{
 		Type:        *filterType,
@@ -166,16 +172,6 @@ func runOrchestrator(args []string) error {
 		return errors.New("no drives match the specified filters")
 	}
 
-	// Launch TUI for drive selection
-	selectedDrives, err := runDriveSelectionTUI(drives)
-	if err != nil {
-		return err
-	}
-
-	if len(selectedDrives) == 0 {
-		return errors.New("no drives selected")
-	}
-
 	// Determine output directory
 	outDir := *outputDir
 	if outDir == "" {
@@ -193,6 +189,65 @@ func runOrchestrator(args []string) error {
 	}
 	outDir = expandUser(outDir)
 
+	// A drive setting left changed by an earlier setting test is offered for
+	// restoring before anything else; all discovered drives are candidates.
+	available := settings.All(settings.Env{})
+	targets := targetsFor(allDrives, diskinfo.Options{})
+	if err := offerRecovery(context.Background(), os.Stdin, os.Stdout, groupRecoveryPath, available, allDrives, targets); err != nil {
+		return err
+	}
+
+	// What to run: a group to resume, a setting test, or a single run.
+	var group *groupChoice
+	var resumeGroup *rungroup.GroupFile
+	var selectedDrives []DriveInfo
+	if *resume {
+		if g := findResumableGroup(outDir); g != nil {
+			if resumesGroup(g, stateIfAny(getStateFilePath(outDir))) {
+				if *dryRun {
+					return errors.New("a dry run cannot be combined with a setting test")
+				}
+				c, err := prepareGroupResume(os.Stdin, os.Stdout, g, available, allDrives)
+				if err != nil {
+					return err
+				}
+				group, resumeGroup, selectedDrives = c, g, c.Drives
+			} else {
+				fmt.Printf("Note: setting test %s is left unfinished (%s); resuming the single run instead.\n", g.ID, groupFileName(g))
+			}
+		}
+	}
+	if group == nil {
+		choice, err := runModeTUI(available, drives, targets)
+		if err != nil {
+			return err
+		}
+		if choice.Setting != nil && *dryRun {
+			return errors.New("a dry run cannot be combined with a setting test")
+		}
+		if note := resumeIgnoredNote(*resume, choice.Setting); note != "" {
+			fmt.Println(note)
+		}
+
+		// Launch TUI for drive selection
+		selectedDrives, err = runDriveSelectionTUI(drives)
+		if err != nil {
+			return err
+		}
+
+		if len(selectedDrives) == 0 {
+			return errors.New("no drives selected")
+		}
+
+		if choice.Setting != nil {
+			group, err = runGroupSetupTUI(choice.Setting, selectedDrives, targets)
+			if err != nil {
+				return err
+			}
+			selectedDrives = group.Drives
+		}
+	}
+
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
@@ -200,7 +255,7 @@ func runOrchestrator(args []string) error {
 	// Handle resume mode
 	var resumeState *ExecutionState
 	stateFile := getStateFilePath(outDir)
-	if *resume {
+	if *resume && group == nil {
 		state, err := loadState(stateFile)
 		if err != nil {
 			return fmt.Errorf("load state for resume: %w", err)
@@ -262,58 +317,174 @@ func runOrchestrator(args []string) error {
 	}
 	fmt.Printf("Output directory: %s\n\n", outDir)
 
-	// Parse fio files
-	coordinator, err := newExecutionCoordinator(selectedDrives, *mode, outDir)
-	if err != nil {
-		return err
+	opts := runOptions{
+		Mode:             *mode,
+		OutDir:           outDir,
+		Resume:           resumeState,
+		DryRun:           *dryRun,
+		Verbose:          *verbose,
+		FlushTrace:       !*noFlushTrace,
+		SkipWriteThrough: *skipWriteThrough,
+		LogAvgMsec:       *logAvgMsec,
 	}
-	coordinator.dryRun = *dryRun
-	coordinator.stateFile = stateFile
-	coordinator.resumeState = resumeState
-	coordinator.verbose = *verbose
-	coordinator.logAvgMsec = *logAvgMsec
-	coordinator.flushTrace = !*noFlushTrace
-	if err := coordinator.checkEnvironment(); err != nil {
-		return err
-	}
-	coordinator.skipWriteThrough = *skipWriteThrough
+	spec := runSpec{Drives: selectedDrives}
 
-	if *dryRun {
-		// In dry-run mode, just show what would be executed
-		return displayDryRun(coordinator)
+	// The web server starts when the run is registered (see OnStarted), once
+	// per process; a dry run never gets there.
+	var srv *http.Server
+	var startOnce sync.Once
+	opts.OnStarted = func() {
+		startOnce.Do(func() {
+			srv = newWebServer("0.0.0.0:12345")
+			go func(srv *http.Server) {
+				logger.Info("starting web server from orchestrator", "addr", srv.Addr)
+				fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
+				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					logger.Error("web server error", "err", err)
+				}
+			}(srv)
+		})
 	}
-
-	// Create live result for web view (updated incrementally as phases complete)
-	runID := fmt.Sprintf("run_%d", time.Now().Unix())
-	liveResult := &BenchmarkResult{
-		ID:        runID,
-		Timestamp: time.Now(),
-		Mode:      *mode,
-		Drives:    selectedDrives,
-		Phases:    make([]PhaseResult, 0),
-		OutputDir: outDir,
-	}
-	globalResultsStore.AddResult(liveResult)
-	coordinator.liveResult = liveResult
-
-	// Start web server in background
-	srv := newWebServer("0.0.0.0:12345")
-	go func() {
-		logger.Info("starting web server from orchestrator", "addr", srv.Addr)
-		fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("web server error", "err", err)
-		}
-	}()
 	defer func() {
+		if srv == nil {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		srv.Shutdown(ctx)
 	}()
 
+	var runErr error
+	if group != nil {
+		cfg := newGroupConfig(group, targets, opts, host, resumeGroup)
+		fmt.Printf("Setting test: %s, %d values, strategy %s\n\n", group.Setting.Name(), len(group.Values), group.Strategy)
+		g, err := runGroup(context.Background(), cfg)
+		if g == nil {
+			// Setup failed before the first run: nothing to wait for.
+			return err
+		}
+		printGroupSummary(os.Stdout, g)
+		runErr = err
+	} else {
+		result, err := executeRun(context.Background(), opts, spec)
+		if result == nil {
+			// Setup failed, or a dry run: nothing was executed, nothing to wait for.
+			return err
+		}
+		runErr = err
+	}
+
+	// Keep web server running until user interrupts
+	fmt.Printf("\nWeb server still running at http://0.0.0.0:12345\n")
+	fmt.Printf("Results available at: %s\n", outDir)
+	fmt.Printf("\nPress Ctrl+C to stop...\n\n")
+
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	<-sigChan
+	fmt.Println("\n\nShutting down gracefully...")
+	logger.Info("received interrupt signal")
+
+	return runErr
+}
+
+// runOptions are the settings shared by every run of an orchestrator process.
+type runOptions struct {
+	Mode, OutDir     string
+	Resume           *ExecutionState
+	DryRun, Verbose  bool
+	FlushTrace       bool
+	SkipWriteThrough bool
+	LogAvgMsec       int
+	// OnStarted, when non-nil, is called once the run's live result is in
+	// the results store, just before the phases execute (the web server
+	// starts here).
+	OnStarted func()
+}
+
+// registerLiveRun creates the live result for the web view (updated
+// incrementally as phases complete), adds it to the results store, and then
+// calls opts.OnStarted.
+func registerLiveRun(opts runOptions, spec runSpec, coordinator *ExecutionCoordinator) *BenchmarkResult {
+	runID := fmt.Sprintf("run_%d", time.Now().Unix())
+	liveResult := &BenchmarkResult{
+		ID:        runID,
+		Timestamp: time.Now(),
+		Mode:      opts.Mode,
+		Drives:    spec.Drives,
+		Phases:    make([]PhaseResult, 0),
+		OutputDir: opts.OutDir,
+		GroupID:   spec.GroupID,
+		Labels:    spec.Labels,
+	}
+	globalResultsStore.AddResult(liveResult)
+	coordinator.liveResult = liveResult
+	if opts.OnStarted != nil {
+		opts.OnStarted()
+	}
+	return liveResult
+}
+
+// runSpec describes one run: its drives and, for a run group, its labels.
+type runSpec struct {
+	Drives  []DriveInfo
+	Labels  map[string]rungroup.Label // device -> label; nil for a plain run
+	GroupID string
+}
+
+// executeRun runs the whole test plan once on spec.Drives: it builds the
+// coordinator, executes, displays the results and saves the summary. It
+// returns the saved result. The result is nil (with a nil error) for a dry
+// run, and nil with an error when setup failed before anything ran; once
+// execution started the result is non-nil and the error joins any execution
+// and display errors.
+func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkResult, error) {
+	coordinator, err := newExecutionCoordinator(spec.Drives, opts.Mode, opts.OutDir)
+	if err != nil {
+		return nil, err
+	}
+	// Ending the coordinator's context when the run returns also stops its
+	// signal handler, and finish stops it after a first signal.
+	defer coordinator.finish()
+	defer coordinator.cancel()
+	coordinator.dryRun = opts.DryRun
+	coordinator.stateFile = getStateFilePath(opts.OutDir)
+	coordinator.resumeState = opts.Resume
+	coordinator.verbose = opts.Verbose
+	coordinator.logAvgMsec = opts.LogAvgMsec
+	coordinator.flushTrace = opts.FlushTrace
+	coordinator.labels = spec.Labels
+	coordinator.groupID = spec.GroupID
+	if err := coordinator.checkEnvironment(); err != nil {
+		return nil, err
+	}
+	coordinator.skipWriteThrough = opts.SkipWriteThrough
+
+	if opts.DryRun {
+		// In dry-run mode, just show what would be executed
+		return nil, displayDryRun(coordinator)
+	}
+
+	// Stop the coordinator when the caller cancels ctx, reported as an
+	// interruption like a signal.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			coordinator.setInterrupted()
+			coordinator.cancel()
+		case <-done:
+		}
+	}()
+
+	liveResult := registerLiveRun(opts, spec, coordinator)
+
 	// Execute based on mode
 	var execErr error
-	if *mode == "parallel-sync" {
+	if opts.Mode == "parallel-sync" {
 		execErr = coordinator.executeParallelSync()
 	} else {
 		execErr = coordinator.executeSequential()
@@ -335,25 +506,12 @@ func runOrchestrator(args []string) error {
 	}
 
 	// Save benchmark summary to output directory
-	if err := saveBenchmarkSummary(coordinator, selectedDrives, *mode, outDir); err != nil {
+	if err := saveBenchmarkSummary(coordinator, spec.Drives, opts.Mode, opts.OutDir); err != nil {
 		logger.Error("save benchmark summary", "err", err)
 		fmt.Printf("Warning: failed to save benchmark summary: %v\n", err)
 	}
 
-	// Keep web server running until user interrupts
-	fmt.Printf("\nWeb server still running at http://0.0.0.0:12345\n")
-	fmt.Printf("Results available at: %s\n", outDir)
-	fmt.Printf("\nPress Ctrl+C to stop...\n\n")
-
-	// Wait for interrupt signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	<-sigChan
-	fmt.Println("\n\nShutting down gracefully...")
-	logger.Info("received interrupt signal")
-
-	return errors.Join(execErr, displayErr)
+	return liveResult, errors.Join(execErr, displayErr)
 }
 
 // DriveFilter contains criteria for filtering drives.

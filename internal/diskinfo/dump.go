@@ -15,7 +15,7 @@ func (c *collector) dump(info Info) string {
 		title = c.opts.Label
 	}
 	fmt.Fprintf(&b, "bbbench disk configuration: %s\nCollected: %s\n", title, time.Now().Format(time.RFC3339))
-	b.WriteString("Read-only: bbbench never changes the drive's configuration.\n\n")
+	b.WriteString("This dump is a read-only collection: gathering it does not change the drive's configuration.\n\n")
 	b.WriteString("== Summary ==\n")
 	b.WriteString(Format(info))
 	c.smbiosDump(&b)

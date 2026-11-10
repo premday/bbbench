@@ -65,7 +65,7 @@ func writeCacheHint(device string) string {
 	} else {
 		fmt.Fprintf(&sb, "\nFix: hdparm -W 1 /dev/%s (SATA) or sdparm --set WCE=1 /dev/%s (SAS/SCSI)", device, device)
 	}
-	sb.WriteString("\nbbbench only reads this setting and never changes the drive's configuration: apply the fix yourself. " +
+	sb.WriteString("\nA plain run only reads this setting; bbbench changes a drive's cache setting only in a setting test, after you confirm it, so apply the fix yourself or run a setting test. " +
 		"Then run again: this phase counts as done, so --resume will not redo it. " +
 		"Where to look: the run output and web UI show this warning; the Flush graph and the " +
 		"<fio log>_flush.1.log header (write_cache=) record the cache mode the trace saw")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"bbbench/internal/diskinfo"
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/rungroup"
 )
 
 // ExecutionCoordinator manages benchmark execution across multiple drives.
@@ -31,7 +33,11 @@ type ExecutionCoordinator struct {
 	mu          sync.Mutex
 	ctx         context.Context
 	cancel      context.CancelFunc
-	interrupted bool
+	interrupted bool // guarded by mu: setInterrupted, isInterrupted
+	// finished is closed (finish) when the run is over: the signal handler
+	// then stops answering further signals.
+	finished    chan struct{}
+	finishOnce  sync.Once
 	tempFiles   []string
 	tempFilesMu sync.Mutex
 	stateFile   string
@@ -40,6 +46,9 @@ type ExecutionCoordinator struct {
 	liveResult  *BenchmarkResult // updated after each phase for live web view
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
 	flushTrace  bool             // trace device Flush latency during phases that fsync
+
+	labels  map[string]rungroup.Label // device -> setting label (run groups; nil otherwise)
+	groupID string
 
 	skipWriteThrough bool   // do not run fsync phases on write-through devices (default: warn)
 	sysBlock         string // sysfs block dir override for tests ("" = /sys/block)
@@ -118,13 +127,20 @@ func validateFioFile(path string) error {
 }
 
 // newExecutionCoordinator creates a new coordinator and parses all fio files.
-func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*ExecutionCoordinator, error) {
+func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (_ *ExecutionCoordinator, err error) {
 	// Check if fio is installed
 	if err := checkFioInstalled(); err != nil {
 		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// On a setup error nobody gets the coordinator: end its context so its
+	// signal handler stops.
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
 
 	ec := &ExecutionCoordinator{
 		drives:    drives,
@@ -135,6 +151,7 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*Execu
 		ctx:       ctx,
 		cancel:    cancel,
 		startTime: time.Now(),
+		finished:  make(chan struct{}),
 	}
 
 	// Set up signal handling for graceful shutdown
@@ -173,32 +190,104 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*Execu
 	return ec, nil
 }
 
-// exitCodeSIGINT is the conventional exit code for processes terminated by SIGINT (128 + signal number).
-const exitCodeSIGINT = 128 + int(syscall.SIGINT)
-
-// handleSignals sets up signal handling for graceful shutdown.
-func (ec *ExecutionCoordinator) handleSignals() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	<-sigChan
-	fmt.Println("\n\nReceived interrupt signal. Gracefully shutting down...")
-	fmt.Println("Waiting for current phase to complete...")
-	fmt.Println("Press Ctrl+C again to force quit (may leave temporary files)")
-
+// setInterrupted records that the run was stopped (signal or cancelled
+// context). interrupted is only read through isInterrupted, or under mu.
+func (ec *ExecutionCoordinator) setInterrupted() {
 	ec.mu.Lock()
 	ec.interrupted = true
 	ec.mu.Unlock()
+}
 
+// isInterrupted says whether the run was stopped.
+func (ec *ExecutionCoordinator) isInterrupted() bool {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	return ec.interrupted
+}
+
+// errRunInterrupted is returned by the executors when the run was stopped
+// (signal or cancelled context) before all phases ran.
+var errRunInterrupted = errors.New("execution interrupted by user")
+
+// exitCodeSIGINT is the conventional exit code for processes terminated by SIGINT (128 + signal number).
+const exitCodeSIGINT = 128 + int(syscall.SIGINT)
+
+// handleSignals sets up signal handling for graceful shutdown (see
+// watchSignals) and stops listening when that returns.
+func (ec *ExecutionCoordinator) handleSignals() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigChan)
+	ec.watchSignals(sigChan, os.Exit)
+}
+
+// watchSignals stops the run on the first signal from sigChan. It returns
+// when the coordinator's context ends without a signal, so the handlers of
+// finished runs (a run group has one coordinator per run) do not pile up.
+// After the first signal, a plain run force-quits (exit) on a further one
+// until the run is over (finish), so the final "Press Ctrl+C" wait is left
+// alone; a run group's coordinator returns at once, runGroup answers further
+// signals until its restore is done (watchGroupSignals).
+func (ec *ExecutionCoordinator) watchSignals(sigChan <-chan os.Signal, exit func(int)) {
+	select {
+	case <-sigChan:
+	case <-ec.ctx.Done():
+		return
+	}
+	fmt.Println("\n\nReceived interrupt signal. Gracefully shutting down...")
+	fmt.Println("Waiting for current phase to complete...")
+	if forceQuitAllowed(ec) {
+		fmt.Println("Press Ctrl+C again to force quit (may leave temporary files)")
+	} else {
+		fmt.Println("The drives' original settings are restored afterwards; do not interrupt again.")
+	}
+
+	ec.setInterrupted()
 	ec.cancel()
 
-	// Set up second signal handler for force quit
-	go func() {
-		<-sigChan
-		fmt.Println("\nForce quitting...")
-		ec.cleanup()
-		os.Exit(exitCodeSIGINT)
-	}()
+	if !forceQuitAllowed(ec) {
+		return
+	}
+	for {
+		select {
+		case <-sigChan:
+			ec.onSecondSignal(exit)
+		case <-ec.finished:
+			return
+		}
+	}
+}
+
+// finish tells the signal handler that the run is over. Safe to call more
+// than once, and on a coordinator built without the channel.
+func (ec *ExecutionCoordinator) finish() {
+	ec.finishOnce.Do(func() {
+		if ec.finished != nil {
+			close(ec.finished)
+		}
+	})
+}
+
+// groupSignalMessage answers a further signal during a run group.
+const groupSignalMessage = "\nA setting test is restoring the drives' original settings: this signal is ignored.\n" +
+	"If the process is killed anyway, the recovery file restores them at the next start."
+
+// forceQuitAllowed says whether a second signal may end the process. Not
+// during a run group: exiting would leave the drives with the setting under
+// test applied.
+func forceQuitAllowed(ec *ExecutionCoordinator) bool { return ec.groupID == "" }
+
+// onSecondSignal handles a signal after the first: force quit through exit
+// for a plain run, a message and nothing else for a run group.
+func (ec *ExecutionCoordinator) onSecondSignal(exit func(int)) {
+	if !forceQuitAllowed(ec) {
+		logger.Warn("signal ignored during a run group: restoring the original settings", "group", ec.groupID)
+		fmt.Println(groupSignalMessage)
+		return
+	}
+	fmt.Println("\nForce quitting...")
+	ec.cleanup()
+	exit(exitCodeSIGINT)
 }
 
 // cleanup removes temporary files.
@@ -278,6 +367,10 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 		rFiles, wFiles int     // number of files that contributed (for avgAcrossFiles)
 	}
 	global := make(map[int64]*combined)
+	// rExpected/wExpected count the files that log each direction at all. A
+	// job that only reads (or only writes) never contributes to the other
+	// direction, so it must not count as missing there.
+	var rExpected, wExpected int
 
 	type acc struct {
 		rSum, wSum float64
@@ -321,6 +414,18 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 				a.wSum += v
 				a.wN++
 			}
+		}
+
+		fileHasR, fileHasW := false, false
+		for _, a := range perTime {
+			fileHasR = fileHasR || a.rN > 0
+			fileHasW = fileHasW || a.wN > 0
+		}
+		if fileHasR {
+			rExpected++
+		}
+		if fileHasW {
+			wExpected++
 		}
 
 		// Second pass: coalesce this file's timestamps into per-bucket accumulators,
@@ -380,7 +485,6 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 	}
 	sort.Slice(buckets, func(i, j int) bool { return buckets[i] < buckets[j] })
 
-	nFiles := int64(len(files))
 	points := make([]TimePoint, len(buckets))
 	for i, b := range buckets {
 		c := global[b]
@@ -394,9 +498,15 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, 
 				w /= float64(c.wFiles)
 			}
 		}
-		// Mark incomplete if any active direction has fewer contributors than expected.
-		incomplete := (c.rFiles > 0 && int64(c.rFiles) < nFiles) ||
-			(c.wFiles > 0 && int64(c.wFiles) < nFiles)
+		// Mark incomplete if a direction has fewer contributors than the
+		// files that log that direction.
+		//
+		// The first and last slots are exempt: jobs start and stop a few
+		// hundred ms apart, so a job's final stamp can round into one more
+		// slot than the others', and that is not a missing contribution.
+		edge := i == 0 || i == len(buckets)-1
+		incomplete := !edge && ((c.rFiles > 0 && c.rFiles < rExpected) ||
+			(c.wFiles > 0 && c.wFiles < wExpected))
 		points[i] = TimePoint{T: float64(b) / 1000.0, R: r, W: w, Incomplete: incomplete}
 	}
 	return points
@@ -507,25 +617,8 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		s.CompletedPhases = 0
 		s.CurrentPhase = 0
 		s.phaseConfigs = ec.statusPhaseConfigs()
-		// Build drive status list
-		s.Drives = make([]DriveStatus, len(ec.drives))
-		for i, drive := range ec.drives {
-			driveType := "SSD"
-			if drive.Device.Rotational {
-				driveType = "HDD"
-			}
-			capacityGB := drive.Device.CapacityBytes / (1024 * 1024 * 1024)
-			s.Drives[i] = DriveStatus{
-				Name:         drive.Device.Name,
-				Vendor:       drive.Device.Vendor,
-				Model:        drive.Device.Model,
-				Serial:       drive.Device.Serial,
-				Capacity:     capacityGB,
-				Type:         driveType,
-				Status:       "pending",
-				CurrentPhase: 0,
-			}
-		}
+		// Build drive status list (a run group's per-drive setting is kept)
+		s.Drives = newDriveStatuses(ec.drives, s.Drives)
 	})
 
 	ec.collectDiskConfig()
@@ -538,7 +631,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			fmt.Println("\nExecution interrupted. Cleaning up...")
 			ec.cleanup()
 			ec.saveState()
-			return fmt.Errorf("execution interrupted by user")
+			return errRunInterrupted
 		default:
 		}
 
@@ -723,25 +816,8 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		s.CompletedPhases = 0
 		s.CurrentPhase = 0
 		s.phaseConfigs = ec.statusPhaseConfigs()
-		// Build drive status list
-		s.Drives = make([]DriveStatus, len(ec.drives))
-		for i, drive := range ec.drives {
-			driveType := "SSD"
-			if drive.Device.Rotational {
-				driveType = "HDD"
-			}
-			capacityGB := drive.Device.CapacityBytes / (1024 * 1024 * 1024)
-			s.Drives[i] = DriveStatus{
-				Name:         drive.Device.Name,
-				Vendor:       drive.Device.Vendor,
-				Model:        drive.Device.Model,
-				Serial:       drive.Device.Serial,
-				Capacity:     capacityGB,
-				Type:         driveType,
-				Status:       "pending",
-				CurrentPhase: 0,
-			}
-		}
+		// Build drive status list (a run group's per-drive setting is kept)
+		s.Drives = newDriveStatuses(ec.drives, s.Drives)
 	})
 
 	ec.collectDiskConfig()
@@ -754,7 +830,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		case <-ec.ctx.Done():
 			fmt.Println("\nExecution interrupted. Cleaning up...")
 			ec.cleanup()
-			return fmt.Errorf("execution interrupted by user")
+			return errRunInterrupted
 		default:
 		}
 
@@ -780,7 +856,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 				fmt.Println("\n  Interrupted during execution. Cleaning up...")
 				ec.cleanup()
 				ec.saveState()
-				return fmt.Errorf("execution interrupted by user")
+				return errRunInterrupted
 			default:
 			}
 

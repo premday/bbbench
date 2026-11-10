@@ -10,7 +10,8 @@ package main
 // window); the Flush series already counts from the start of tracing, in
 // window starts. The ramp-up is shaded by rampPlugin.
 //
-// It must not contain backticks (raw string).
+// It must not contain backticks (raw string). It also holds the run-group
+// helpers both pages use (setting values, rounds, invalid results) and esc.
 const chartSharedJS = `function rampOf(d) {
         return d.ramp_sec || (d.flush && d.flush.offset_ms ? d.flush.offset_ms / 1000 : 0);
     }
@@ -63,5 +64,44 @@ const chartSharedJS = `function rampOf(d) {
         const a = Math.abs(v);
         if (a === 0) return '0';
         return a >= 1000 ? (a/1000).toFixed(1)+'k' : a.toFixed(0);
+    }
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Run groups: the entries of labelled drives carry setting_value (and
+    // run_id, round, invalid). A plain run's entries carry none of them, so
+    // these helpers change nothing for it.
+    function hasSettingData(data) {
+        return data.some(d => !!d.setting_value);
+    }
+    // Invalid results are left out unless showInvalid.
+    function visibleEntries(data, showInvalid) {
+        return showInvalid ? data : data.filter(d => !d.invalid);
+    }
+    // runsPerValue maps each value to the number of distinct runs it was
+    // measured in.
+    function runsPerValue(data) {
+        const runs = {};
+        data.forEach(d => {
+            if (!d.setting_value) return;
+            (runs[d.setting_value] = runs[d.setting_value] || new Set()).add(d.run_id);
+        });
+        const n = {};
+        Object.keys(runs).forEach(v => { n[v] = runs[v].size; });
+        return n;
+    }
+    // settingTag names an entry's setting and value, its round when the value was
+    // measured in several runs, and flags an invalid result: ' · setting: value ·
+    // round N (invalid)'. '' for an unlabelled entry. Plain text: escape it
+    // before putting it into HTML.
+    function settingTag(d, rpv) {
+        if (!d.setting_value) return '';
+        let s = ' · ' + (d.setting ? d.setting + ': ' : '') + d.setting_value;
+        if (d.round && rpv && rpv[d.setting_value] > 1) s += ' · round ' + d.round;
+        if (d.invalid) s += ' (invalid)';
+        return s;
     }
 `

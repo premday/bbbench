@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/rungroup"
 )
 
 // BenchmarkResult represents a complete benchmark run.
@@ -20,6 +21,10 @@ type BenchmarkResult struct {
 	Drives    []DriveInfo   `json:"drives"`     // Drives that were benchmarked
 	Phases    []PhaseResult `json:"phases"`     // Results for each phase
 	OutputDir string        `json:"output_dir"` // Directory containing JSON files
+	// GroupID and Labels are set when the run is part of a run group:
+	// Labels maps device -> the setting value the run was taken under.
+	GroupID string                    `json:"group_id,omitempty"`
+	Labels  map[string]rungroup.Label `json:"labels,omitempty"`
 }
 
 // PhaseResult represents results for a single phase.

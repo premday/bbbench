@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"bbbench/internal/flushtrace"
@@ -19,6 +20,14 @@ type DiskPhaseData struct {
 	Technology string `json:"technology"` // "hdd" or "ssd"
 	PhaseNum   int    `json:"phase_num"`
 	PhaseName  string `json:"phase_name"`
+	// Run-group label of the disk (empty for an unlabelled drive).
+	Setting      string `json:"setting,omitempty"`
+	SettingValue string `json:"setting_value,omitempty"`
+	RunID        string `json:"run_id,omitempty"`
+	Invalid      bool   `json:"invalid,omitempty"`
+	// Round is the 1-based round of the run in its group (set only in a
+	// group's data, /api/groups/graphs).
+	Round int `json:"round,omitempty"`
 	// Summary stats (averages for the full phase)
 	ReadIOPS    float64 `json:"read_iops"`
 	WriteIOPS   float64 `json:"write_iops"`
@@ -164,6 +173,12 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 				dp.RampSec = phase.RampSec
 				dp.LogAvgMsec = phase.LogAvgMsec
 				dp.Flush = phase.FlushTrace[name]
+				if l, ok := result.Labels[name]; ok {
+					dp.Setting = l.Setting
+					dp.SettingValue = l.Value
+					dp.RunID = result.ID
+					dp.Invalid = l.Value != "" && !l.Valid
+				}
 				out = append(out, *dp)
 			}
 		}
@@ -266,6 +281,11 @@ func handleResultsList(w http.ResponseWriter, r *http.Request) {
 			"phase_count": len(result.Phases),
 			"output_dir":  result.OutputDir,
 		}
+		// A member run of a run group: its group and the value(s) it ran under.
+		if result.GroupID != "" {
+			summaries[i]["group_id"] = result.GroupID
+			summaries[i]["setting_values"] = labelValues(result)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(summaries); err != nil {
@@ -274,6 +294,20 @@ func handleResultsList(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+// labelValues returns the distinct setting values of a run's labels, sorted.
+func labelValues(result *BenchmarkResult) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, l := range result.Labels {
+		if l.Value != "" && !seen[l.Value] {
+			seen[l.Value] = true
+			out = append(out, l.Value)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // filterGroup returns the HTML for one sidebar filter group.
@@ -291,22 +325,28 @@ func filterGroup(dim, label string) string {
         </div>`, label, dim, dim, dim)
 }
 
-// handleGraphsPage serves the graphs visualization page.
+// groupFilters is the sidebar block for a run group's data: the setting value
+// filter and the invalid toggle. It stays hidden until the data carries
+// setting values (see addSettingDim).
+var groupFilters = `
+        <div id="group-filters" style="display:none">` + filterGroup("setting", "Setting value") + `
+        <div class="fg"><ul class="flist"><li><label><input type="checkbox" id="hide-invalid" checked>&nbsp;Hide invalid results</label></li></ul></div>
+        </div>`
+
+// handleGraphsPage serves the graphs visualization page (?id=<run> or
+// ?group=<group>).
 func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
-	resultID := r.URL.Query().Get("id")
-	if resultID == "" {
-		http.Error(w, "Missing result ID", http.StatusBadRequest)
-		return
-	}
-	_, ok := globalResultsStore.GetResult(resultID)
+	dataURL, _, ok := chartSource(w, r)
 	if !ok {
-		http.Error(w, "Result not found", http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	// The setting filter and the invalid toggle are shown only for data of
+	// labelled drives (a run group); a plain run never sees them.
 	sidebar := filterGroup("graph_type", "Graph Type") +
+		groupFilters +
 		filterGroup("technology", "Drive Type") +
 		filterGroup("vendor", "Vendor") +
 		filterGroup("model", "Model") +
@@ -499,7 +539,7 @@ __NAVBAR_HTML__
 </div>
 
 <script>
-    const resultID = '__RESULT_ID__';
+    const DATA_URL = __DATA_URL__;
     let allData = [];
     const charts = {};
 
@@ -545,7 +585,9 @@ __NAVBAR_HTML__
         phase:      new Set(),
     };
 
-    // Data dimensions and their field accessors.
+    // Data dimensions and their field accessors. The setting dimension (the
+    // value labels of a run group) is added by addSettingDim only when the
+    // entries carry setting_value.
     const DATA_DIMS = ['technology', 'vendor', 'model', 'serial', 'disk', 'phase'];
     const DIM_F = {
         technology: d => d.technology || '',
@@ -555,10 +597,29 @@ __NAVBAR_HTML__
         disk:       d => d.disk       || '',
         phase:      d => d.phase_name || '',
     };
+    // Group data: hide invalid results unless asked; RPV counts the runs per value.
+    let SHOW_INVALID = false;
+    let RPV = {};
+    function addSettingDim() {
+        if (!hasSettingData(allData) || DATA_DIMS.indexOf('setting') !== -1) return;
+        DATA_DIMS.unshift('setting');
+        DIM_F.setting = d => d.setting_value || '';
+        SEL.setting = new Set();
+        RPV = runsPerValue(allData);
+        document.getElementById('group-filters').style.display = '';
+    }
+    function setShowInvalid(on) {
+        SHOW_INVALID = on;
+        updateLists();
+    }
+    // Entries the filters work on: invalid ones only when shown.
+    function pool() {
+        return visibleEntries(allData, SHOW_INVALID);
+    }
 
     // Entries matching all dims except the given one.
     function dataExcept(dim) {
-        return allData.filter(d =>
+        return pool().filter(d =>
             DATA_DIMS.every(fd => fd === dim || SEL[fd].has(DIM_F[fd](d)))
         );
     }
@@ -614,7 +675,7 @@ __NAVBAR_HTML__
     }
 
     function filteredData() {
-        return allData.filter(d =>
+        return pool().filter(d =>
             DATA_DIMS.every(fd => SEL[fd].has(DIM_F[fd](d)))
         );
     }
@@ -640,6 +701,7 @@ __NAVBAR_HTML__
             li.appendChild(lbl);
             ul.appendChild(li);
         });
+        addSettingDim();
         // Data dims: all values selected by default, except trim phases.
         DATA_DIMS.forEach(dim => {
             const vals = [...new Set(allData.map(d => DIM_F[dim](d)))].sort();
@@ -687,7 +749,7 @@ __NAVBAR_HTML__
                 type: 'line', plugins: [rampPlugin],
                 data: { datasets: [{ label: 'Flush (ftrace)', data: pts,
                     borderColor: color, backgroundColor: 'rgba(124,58,237,0.07)',
-                    fill: 'origin', tension: 0.2, pointRadius: 1.5, borderWidth: 1.5 }] },
+                    fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5 }] },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
@@ -746,12 +808,12 @@ __NAVBAR_HTML__
             if (readPts.length > 0) datasets.push({
                 label: 'Read',  data: readPts,
                 borderColor: 'rgba(37,99,235,0.9)',  backgroundColor: 'rgba(37,99,235,0.07)',
-                fill: 'origin', tension: 0.2, pointRadius: 2, borderWidth: 1.5,
+                fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
             });
             if (writePts.length > 0) datasets.push({
                 label: 'Write', data: writePts,
                 borderColor: 'rgba(220,38,38,0.9)', backgroundColor: 'rgba(220,38,38,0.07)',
-                fill: 'origin', tension: 0.2, pointRadius: 2, borderWidth: 1.5,
+                fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
             });
             return new Chart(canvas, {
                 type: 'line', data: { datasets }, plugins: [rampPlugin],
@@ -803,7 +865,7 @@ __NAVBAR_HTML__
     let modalChart = null;
 
     function openModal(d, metric, yLow, yHigh) {
-        document.getElementById('modal-title').textContent = d.disk;
+        document.getElementById('modal-title').textContent = d.disk + settingTag(d, RPV);
         const tech = d.technology ? d.technology.toUpperCase() : '';
         document.getElementById('modal-subtitle').textContent =
             [d.vendor, d.model, d.serial, tech, metric.label, 'source: ' + metric.source].filter(Boolean).join('  \u00b7  ');
@@ -841,7 +903,7 @@ __NAVBAR_HTML__
 
         const t1 = document.createElement('div');
         t1.className = 'card-title';
-        t1.textContent = d.disk;
+        t1.textContent = d.disk + settingTag(d, RPV);
         t1.appendChild(document.createTextNode(' '));
         t1.appendChild(srcBadge(metric));
         card.appendChild(t1);
@@ -960,7 +1022,7 @@ __NAVBAR_HTML__
                 const phaseHdr = document.createElement('div');
                 phaseHdr.className = 'phase-hdr';
                 phaseHdr.innerHTML = '<span class="chev">▼</span>'
-                    + pname
+                    + esc(pname)
                     + ' <span class="phase-count">(' + diskCount + ' disk' + (diskCount !== 1 ? 's' : '') + ')</span>';
                 secBody.appendChild(phaseHdr);
 
@@ -984,8 +1046,9 @@ __NAVBAR_HTML__
     }
 
     document.getElementById('btn-show').addEventListener('click', renderAll);
+    document.getElementById('hide-invalid').addEventListener('change', e => setShowInvalid(!e.target.checked));
 
-    fetch('/api/results/graphs?id=' + resultID)
+    fetch(DATA_URL)
         .then(r => r.json())
         .then(data => { allData = data || []; initFilters(); })
         .catch(err => {
@@ -999,7 +1062,7 @@ __NAVBAR_HTML__
 	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
 	html = strings.ReplaceAll(html, "__CHART_SHARED_JS__", chartSharedJS)
 	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/results"))
-	html = strings.ReplaceAll(html, "__RESULT_ID__", resultID)
+	html = strings.ReplaceAll(html, "__DATA_URL__", jsString(dataURL))
 	html = strings.ReplaceAll(html, "__SIDEBAR__", sidebar)
 
 	w.Write([]byte(html))

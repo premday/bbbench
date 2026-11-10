@@ -1,0 +1,385 @@
+# Run groups: iterate the test plan over configurations
+
+Status: design, not built. Branch `run_groups`.
+Items marked **(call)** are defaults chosen while writing this, not decisions
+the user made; they are listed again under "Open points".
+
+## Intent
+
+bbbench runs a test plan (the workload phases of `dist/default.yml`) on a set
+of drives. A recurring need is to run the **same plan under several
+configurations** and compare: drive write cache on and off, a RAID layout (see
+the `raid_testing` branch), power management, and ideas not yet had.
+
+Today the user does this by hand: configure the drives as A, run the
+orchestrator, configure them as B, run it again. Nothing in the results says
+which run had which setting, so the user has to remember, and comparing means
+picking runs one by one.
+
+This design adds an organisation layer above a run, the **run group**, and a
+way for bbbench to create one: apply a setting to the drives, run the plan,
+apply the next value, run again, and keep every run labelled with the setting
+it ran under, verified, and visible in the web UI.
+
+## Vocabulary
+
+- **Setting**: a thing that can be changed on a drive, with a known way to read,
+  apply and restore it. First one: *disk write cache policy*. Later: RAID layout
+  (software, mdadm), power management.
+- **Value**: one choice of a setting (`write cache: enabled`, `disabled`).
+- **Run**: one execution of the whole test plan, as today (one coordinator, one
+  `run_<unix>_summary.json`).
+- **Variant**: one configuration inside a run: a value and the drives it applies
+  to (see "Creating a group").
+- **Run group**: the set of runs of one plan that differ by the value of one
+  setting. A normal run is a group of one with no setting.
+- **Target**: what the plan runs on. Today a target is a drive. Later it may be
+  an md array or a controller's virtual drive.
+- **Label**: the value a target carried during a run. It belongs to the pair
+  (run, target), not to the run: with the parallel option a run holds targets
+  with different values. In the first version every target is a drive, so this
+  reads "(run, drive)" everywhere below; the data model uses a generic target
+  (name, serial and model for a drive; name and members for an array) so that
+  later settings fit without a migration.
+
+## Goals
+
+1. Create a group from the orchestrator: choose *single run* or *setting test*.
+2. For a setting test, offer the available settings (write cache policy first)
+   and the values to test.
+3. bbbench applies each value to the selected drives, runs the full plan, moves
+   on to the next value, and puts every drive back as it found it.
+4. The value is **verified before and after each run**, per drive, against the
+   drive itself (not assumed). Both readings are stored.
+5. When selected drives are identical (same vendor, model, capacity), offer to
+   run values **in parallel** on different drives. Optionally a **swap round**
+   that rotates the values over the drives, to cancel drive-to-drive variance.
+   Not the default.
+6. **Everything is visible in the web UI**: live status, the group, every run's
+   per-drive value, both verification readings, invalid or not-run runs, the
+   restore result, and comparison of the variants.
+7. Old runs keep working and appear as groups of one.
+
+## Non-goals (first version)
+
+- The software RAID layout setting (mdadm), hardware RAID / controller mode, and
+  power management. Room is left for them, see "Later settings"; none is built.
+- Combining two settings in one group (a matrix); one setting per group.
+- Verification between phases; it is per run.
+- Changing a setting while a run is in progress.
+- Controller modes (above): the design leaves room, nothing is built.
+- Creating groups without the TUI (flags or a file). The mechanism should not
+  prevent it; building it is left to the builder if cheap.
+
+## Anti-goals (a failure even if it technically works)
+
+- A drive left with a changed setting after bbbench exits, including after a
+  crash or a signal.
+- Results measured under a setting that was not in effect being shown as valid.
+- Existing runs, pages or files breaking.
+- Reconfiguring a drive the user did not select or confirm.
+
+## Creating a group (orchestrator TUI)
+
+A single run is what bbbench does today: the user picks drives, each drive gets
+the plan for its type (SSD or HDD plan), and everything is tested at once. A
+group is for something else: it tests **one setting over a criterion**, and
+what the user must provide depends on the setting's **scope**.
+
+Order: **mode** -> (single run: drive selection as today) | (setting test:
+setting -> that setting's input form -> confirmation) -> run. The mode comes
+first because for some settings the drives are not one common selection.
+
+1. **Mode**: *single run* or *setting test*. Single run is today's flow,
+   unchanged.
+2. **Setting**: the available settings, each with the number of discovered
+   drives it applies to and, for those it does not, the reason.
+3. **The setting's input form**, by scope:
+   - **Drive scope** (write cache policy): select the drives (the drive
+     selection screen, as today), then tick the values to test (for write cache
+     both `enabled` and `disabled` start ticked **(call)**), then the strategy.
+     The same setting acts on separate drives, so values can run side by side:
+     - *one value after the other* (default): every selected drive gets the same
+       value in a run; one run per value.
+     - *parallel*: identical drives are divided among the values, all values run
+       at the same time in one run.
+     - *parallel with swap round*: parallel, then the values are rotated over the
+       drive subsets and the plan runs again, so each value is measured on every
+       subset. Not the default.
+   - **Layout scope** (software RAID with mdadm, later; not built now): the user
+     lists the variants one by one; for each, the layout and the disks it uses
+     (a disk may appear in several variants, since variants run one after the
+     other). No parallel or swap: a layout makes its disks one target.
+   Each variant still runs the plan for the type of its disks.
+4. **Confirmation**: a summary of what will be changed on which drives, the
+   number of runs, the estimated time, and the statement that the original
+   values will be restored. Nothing is applied before the user confirms.
+
+A **variant** is one configuration of a run: a value and the drives it applies
+to. A run holds one variant (sequential strategy, or a layout), or several
+disjoint ones (parallel). The input form of a setting only decides how the user
+produces the list of variants; everything after (apply, verify, run, verify,
+restore, labels) is the same for every setting.
+
+Parallel rules **(call)** (drive scope only): drives are classed by (vendor,
+model, capacity). Parallel is offered only if every selected drive belongs to a
+class whose size is a multiple of the number of values, and each class is
+divided evenly among the values. Otherwise the TUI says why it is not offered.
+With K values and subsets S1..SK, the swap rounds are the K cyclic rotations
+(each subset sees each value once); for two values this is the simple swap.
+Different firmware in one class is shown as a warning, not a blocker.
+
+## The setting abstraction
+
+A setting has a **scope** (a drive, a controller, or the host) and a **kind**:
+
+- *applied*: bbbench can change it while the system runs and restore it (write
+  cache policy; the RAID layout later).
+- *manual*: bbbench cannot change it (it needs a reboot, a BIOS or a vendor tool),
+  so the user sets it up and bbbench only **reads and verifies** it, then labels
+  the run. A group of manual-setting runs is built as you go: the user changes the
+  setting, runs the orchestrator, and adds the run to the group (see "Creating a
+  group").
+
+A setting provides, per drive (or per controller for a controller-scope setting):
+
+- `Kind()` and `Scope()`; a manual setting has no `Apply` or `Restore`.
+- `Applicable(drive)`: yes, or the reason it is not (for write cache: a RAID
+  virtual drive, USB, virtio, a drive with no volatile cache).
+- `Values(drives)`: the values it can offer.
+- `Read(drive)`: the current value, from the drive itself.
+- `Apply(drive, value)` and `Restore(drive, original)`.
+- `Verify(drive, value)`: reads back and returns the readings to store.
+
+**Write cache policy** per interface (read-only commands to check, volatile
+settings only, never "save"):
+
+| Interface | Read | Apply |
+|---|---|---|
+| NVMe | `nvme get-feature /dev/nvmeN -f 6` | `nvme set-feature /dev/nvmeN -f 6 -V 0\|1` |
+| SATA | `hdparm -W /dev/sdX` | `hdparm -W0\|1 /dev/sdX` |
+| SAS / SCSI | MODE SENSE caching page (`scsi.GetWCE`, already in the repo) | `sdparm --set WCE=0\|1` |
+
+The kernel's `queue/write_cache` is read back too and stored next to the drive
+reading. It is informational for the verification **(call)**: the drive-level
+value decides validity. bbbench does **not** force the kernel value (it never
+writes `/sys/block/*/queue/write_cache`): a kernel that follows the drive
+(the patched one) reports `write through` for a disabled cache, a stock kernel
+keeps `write back`, and the existing Flush-phase rules (warning by default,
+`--skip-write-through` to skip, see `orchestrator_skip.go`) apply to each run
+as they do today, reading the kernel value at run time. The group page shows the
+kernel value per run, with a note when Flush phases traced nothing for that
+reason, so a run is never silently missing Flush data. Applying waits a bounded
+time for the reading to settle before declaring a failure.
+
+Tools: `nvme`, `hdparm` and `sdparm` are optional dependencies, added to the
+dependency table with their purpose; a drive whose tool is missing is "not
+applicable" with the reason, and `doctor` reports them. SAS/SCSI apply uses
+`sdparm` in the first version **(call)**; a native SG_IO MODE SELECT would avoid
+the dependency but is hardware-specific code that cannot be tested here.
+
+This reverses the documented rule that bbbench never changes a drive's
+configuration. After this change the rule is: it changes it only in setting-test
+mode, after an explicit confirmation, and always restores it. README,
+`flush-latency.md`, `web-ui.md`, CLAUDE.md and the warning texts must say so.
+
+### Later settings (not built now; room only)
+
+Two more settings are planned and **must not be implemented in this version**:
+**hardware RAID** (controller mode, below) and **software RAID with mdadm** (the
+builder, teardown and in-use protection already exist on the `raid_testing`
+branch). What they ask of the first version is the same as the controller mode,
+plus:
+
+- **They change the targets.** A "layout" value turns the selected drives into a
+  different set of targets: four drives are four targets for the value *none*, one
+  target for *raid10*. So a run's targets are part of the run (stored in the group
+  file and the summary, with members for an array), and comparison between values
+  cannot assume the same drives. The pages compare **by label**, and show the
+  members of each target.
+- **Apply builds and Restore tears down.** The recovery file must be able to hold
+  "arrays assembled by bbbench" as well as drive values (the cleanup state of
+  `raid_testing` is the model), and the same restore-on-every-exit path covers
+  both.
+- **Verification differs**: for a layout it checks that the arrays exist with the
+  expected level and members, before and after the run.
+
+#### Controller mode
+
+Grouping runs by a hardware controller mode (HBA / IT against RAID, JBOD or
+passthrough against virtual drives, the controller's cache policy) is the
+reason for the scope and kind above. It would be a **manual**, controller-scope
+setting at first: the mode is *read* from what bbbench already collects about the
+controller (`diskinfo.Controller`: kind, driver, and the RAID virtual-drive or
+passthrough guess; optionally the vendor tool, `storcli`, `perccli`, `ssacli`,
+`sas3ircu`, as an optional source for the exact mode and cache policy) and
+*verified* before and after each run exactly like write cache. Applying it with
+the vendor tool would be a later step, only for modes the tool can change online.
+What this asks of the first version:
+
+- **Identity by serial**: a mode change can make the disks reappear under other
+  device names (or as virtual drives), so a run's labels, the group file and the
+  recovery file match drives by serial and model, with the name as a hint. This
+  is already in the recovery file design and must hold for labels too.
+- **A group can span several orchestrator invocations**, since a reboot is in
+  the middle: a run is tagged into an existing group when it starts, or from the
+  run details page afterwards.
+- The label of a controller-scope setting is stored per controller and shown on
+  every drive behind it.
+
+## Verification and failure policy
+
+Per drive, per run:
+
+- **Before**: after applying, before the first phase.
+- **After**: after the last phase, before the next value is applied or the
+  originals are restored.
+
+Both are stored with the readings and the time.
+
+Failure policy **(call)**:
+
+- *Before* fails on any drive of a run: the run is **not started**. It is shown
+  as "not run: setting not effective", with the readings, and the group continues
+  with the next run.
+- *After* fails on a drive: the run is kept and that drive's results are flagged
+  **invalid**. Other drives of the run stay valid.
+- Failing to restore is reported prominently (UI and console) with the exact
+  command to restore by hand; it never silently passes.
+
+## Data model
+
+New file per group in the output directory, `group_<unix>_group.json`:
+
+```
+id, created, host, plan {workload names}, setting {name},
+strategy ("sequential" | "parallel" | "parallel-swap"),
+values [..],
+originals { drive: value },                 // what to restore
+runs [ { run_id, round, status: planned|running|done|not_run|invalid|interrupted,
+         drives [ { device, value, verified_before {value,kernel,at}, verified_after {...}, valid, note } ] } ],
+restore { status: pending|done|failed, per-drive results }
+```
+
+Each run's summary (`run_<unix>_summary.json`) gains `group_id` and a per-drive
+`setting` {name, value, verified readings}, so a run stays self-describing if the
+group file is lost. Runs without these fields are groups of one, computed when
+loading (no migration).
+
+A **recovery file** records the original value of every drive **before the first
+apply** and is removed after a successful restore. It lives at a fixed path
+independent of `--output` and the working directory, `/var/lib/bbbench/group-recovery.json`
+(root only, like the rest) **(call)**, so the next start always finds it. Drives
+are keyed by **serial and model**, with the device name kept as a hint, because
+names change across reboots; a drive that is no longer present is skipped and
+reported. Restore **reads the current value first** and writes only if it differs
+from the original (a power cycle may already have reset a volatile setting).
+If the file exists at startup, the orchestrator offers to restore before doing
+anything else **(call)**.
+
+`--resume` of a group continues at the first run that is not done. An interrupted
+run is **restarted from its first phase** **(call)**, not continued: after a
+crash the drives were restored, so phases measured before it may not have
+run under the value, and the value is applied and verified again. Its earlier
+files are kept and marked interrupted, and excluded from comparisons. If a
+recovery file is present, restore happens first, then the group resumes
+(apply, verify, run).
+
+## Orchestrator control flow
+
+One orchestrator process owns the whole group, with **one coordinator per run**
+(a parallel run is one coordinator whose drives carry different labels, not one
+coordinator per value). A loop is added above the existing per-run machinery.
+The run (phases, fio, summary, the per-run state file) is reused, with these
+changes: the coordinator receives a `labels` map (device -> setting value) and
+stores it in the run summary; the status singleton gains group fields (group,
+run i of n, per drive value and verification); the web store gains groups.
+Doing those three first is the first step of the plan, because the rest builds
+on them.
+
+```
+confirm -> write recovery file
+for each run in the plan:
+    apply values -> verify before (failure policy)
+    create coordinator, execute the plan, save the run summary
+    verify after
+restore originals (also on error, SIGINT/SIGTERM, panic) -> verify restore -> remove recovery file
+write the group file (after every run, so a crash keeps what is done)
+```
+
+Restore runs from a deferred function and from the signal handler, so every exit
+path except a hard kill restores; a hard kill leaves the recovery file.
+
+## Web UI (all of it, first version)
+
+- **Status tab**: a group banner (setting, run i of n, strategy); per drive card
+  the current value, verification badges (before and after: pending, ok, failed
+  with readings), and during restore its state. The ETA covers the remaining
+  runs, not only the current one.
+- **Results list**: runs grouped under their group (expandable), showing the
+  setting and values; single runs as before.
+- **Group page** (`/group?id=`): setting, values, strategy, host, plan; a table
+  run x drive with value, both verification readings, validity and a link to the
+  run; the restore result; a small matrix of the main metrics per phase and per
+  value.
+- **Graphs and compare for a group** (`/graphs?group=`, `/compare?group=`): the
+  data of the member runs together, with a new filter dimension **setting
+  value**, so cards and overlays contrast the variants. Invalid results are
+  hidden by default with a toggle to show them, flagged **(call)**.
+- **Run details**: shows its group and each drive's value and verification.
+- **Repeated measurements** **(call)**: with swap rounds one value is measured on
+  several drives and in several runs. Graphs and compare show each (drive, run)
+  as its own series, labelled with value and round; the group page's metric
+  matrix aggregates, per value, over the valid (drive, run) results: mean, min-max
+  and the count n. A value with no valid result is shown as incomplete and
+  compare still renders the others.
+- **API**: `/api/groups`, `/api/groups/detail?id=`, `/api/groups/graphs?id=`.
+
+## Safety
+
+- Nothing is applied before the confirmation screen.
+- Only drives the user selected are touched. This version adds no in-use check of
+  its own **(call)**: changing the volatile write cache does not touch data, and
+  the benchmark itself writes to the selected drives as it does today. The
+  in-use protection of `raid_testing` applies to the drive selection once that is
+  merged, and so to groups.
+- Restore is verified, not assumed.
+
+## Order of work
+
+Each step is working and tested on its own, so the branch can stop after any of
+them with single runs unaffected: (1) coordinator `labels`, status and run-summary
+fields, group file and store; (2) the setting abstraction and the write cache
+setting with fake runners; (3) apply / verify / restore with the recovery file and
+signal handling; (4) the TUI flow and the group loop; (5) status tab and group
+page; (6) graphs, compare, results list and run details; (7) docs. Whether and
+when this becomes a PR is the user's decision.
+
+## Testing
+
+- Fake sysfs and a fake command runner for each setting source (NVMe, SATA, SAS),
+  including a failing apply, a failing read-back, and a drive that does not follow.
+- Unit tests for: the parallel split and swap rotations, per-drive labels, the
+  verification state machine and failure policy, the recovery file lifecycle,
+  group-of-one for old runs.
+- Node checks (`node --check` plus logic runs) of the new page scripts against a
+  stored group.
+- Not testable without hardware, to be listed in the PR: real `nvme set-feature`,
+  `hdparm -W` and `sdparm` behaviour, and a kernel that follows the cache state.
+
+## Open points
+
+Defaults chosen while writing, all marked **(call)** above, for the user to
+overrule: the failure policy (not run on a failed *before*, invalid on a failed
+*after*); the drive value decides validity and the kernel value is not forced;
+`sdparm` for SAS; the recovery file at `/var/lib/bbbench/` keyed by serial and
+model; restart (not continue) of an interrupted run; per-(drive, run) series with
+an aggregated matrix; invalid results hidden by default; "identical" = vendor,
+model, capacity; cyclic rotation for more than two values; no new in-use check;
+a non-interactive way to define a group is left for later.
+
+## Left to the builder
+
+File and function names, the TUI layout of the new screens, how the group file
+is written atomically, how the status singleton is extended, the exact wording
+of messages and the style of the new pages (follow the existing ones).

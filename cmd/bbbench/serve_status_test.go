@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"bbbench/internal/blockdev"
 	"bbbench/internal/diskinfo"
+	"bbbench/internal/settings"
 )
 
 func TestGetStatus(t *testing.T) {
@@ -424,3 +426,205 @@ func TestRecordPhaseTime(t *testing.T) {
 		t.Errorf("/api/status = %s", w.Body.String())
 	}
 }
+
+// The snapshot holds its own copy of the group state, and rebuilding the
+// drive list at the start of a run keeps each drive's setting state.
+func TestGetStatus_GroupCopiedAndSettingKept(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	valid := true
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Group = &GroupStatus{ID: "g1", Setting: "cache", Strategy: "sequential", Run: 1, Runs: 2, Step: "applying"}
+		s.Drives = []DriveStatus{{Name: "sda", Setting: &DriveSetting{Value: "enabled", Valid: &valid}}}
+	})
+	snap := GetStatus()
+	UpdateStatus(func(s *BenchmarkStatus) { s.Group.Step = "running" })
+	if snap.Group == nil || snap.Group.Step != "applying" {
+		t.Errorf("snapshot group changed with the status: %+v", snap.Group)
+	}
+
+	drives := []DriveInfo{{Device: blockdev.Device{Name: "sda"}}, {Device: blockdev.Device{Name: "sdb"}}}
+	UpdateStatus(func(s *BenchmarkStatus) { s.Drives = newDriveStatuses(drives, s.Drives) })
+	got := GetStatus().Drives
+	if len(got) != 2 || got[0].Setting == nil || got[0].Setting.Value != "enabled" || got[1].Setting != nil {
+		t.Errorf("drives after rebuild = %+v", got)
+	}
+	if got[0].Status != "pending" {
+		t.Errorf("rebuilt drive status %q, want pending", got[0].Status)
+	}
+
+	w := httptest.NewRecorder()
+	handleStatus(w, httptest.NewRequest("GET", "/api/status", nil))
+	body := w.Body.String()
+	for _, want := range []string{`"group":{`, `"step":"running"`, `"setting":{"value":"enabled"`, `"valid":true`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/api/status lacks %s: %s", want, body)
+		}
+	}
+	ResetStatus()
+	if GetStatus().Group != nil {
+		t.Error("ResetStatus kept the group")
+	}
+}
+
+// /api/status carries the group and the per-drive setting the page draws.
+func TestStatusAPI_CarriesGroup(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	invalid := false
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Running = true
+		s.Group = &GroupStatus{ID: "g1", Setting: "write-cache", Strategy: "sequential", Run: 2, Runs: 3, Step: "verifying-before"}
+		s.Drives = []DriveStatus{{Name: "sda", Setting: &DriveSetting{
+			Value: "disabled", Before: &settings.Reading{Value: "enabled", Kernel: "write back"}, Valid: &invalid}}}
+	})
+	w := httptest.NewRecorder()
+	handleStatus(w, httptest.NewRequest("GET", "/api/status", nil))
+	var got struct {
+		Group struct {
+			Step string `json:"step"`
+			Run  int    `json:"run"`
+			Runs int    `json:"runs"`
+		} `json:"group"`
+		Drives []struct {
+			Setting struct {
+				Value  string `json:"value"`
+				Before struct {
+					Value string `json:"value"`
+				} `json:"before"`
+				Valid *bool `json:"valid"`
+			} `json:"setting"`
+		} `json:"drives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Group.Step != "verifying-before" || got.Group.Run != 2 || got.Group.Runs != 3 {
+		t.Errorf("group = %+v", got.Group)
+	}
+	if len(got.Drives) != 1 || got.Drives[0].Setting.Value != "disabled" ||
+		got.Drives[0].Setting.Before.Value != "enabled" || got.Drives[0].Setting.Valid == nil || *got.Drives[0].Setting.Valid {
+		t.Errorf("drives = %+v", got.Drives)
+	}
+}
+
+// pageScript is the status page's <script> content.
+func pageScript(t *testing.T) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	handleStatusPage(w, httptest.NewRequest("GET", "/status", nil))
+	body := w.Body.String()
+	i := strings.Index(body, "<script>")
+	j := strings.LastIndex(body, "</script>")
+	if i < 0 || j < i {
+		t.Fatal("no script in the status page")
+	}
+	return body[i+len("<script>") : j]
+}
+
+// The group banner, badges and ETA run in node against sample data; the page
+// script must also pass node --check. Skipped without node.
+func TestStatusPage_GroupScript(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	dir := t.TempDir()
+	page := filepath.Join(dir, "page.js")
+	if err := os.WriteFile(page, []byte(pageScript(t)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(node, "--check", page).CombinedOutput(); err != nil {
+		t.Fatalf("node --check: %v\n%s", err, out)
+	}
+	harness := filepath.Join(dir, "harness.js")
+	if err := os.WriteFile(harness, []byte(groupHarness), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(node, harness, page).CombinedOutput(); err != nil {
+		t.Fatalf("harness: %v\n%s", err, out)
+	}
+}
+
+const groupHarness = `
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const ctx = {
+  document: { addEventListener() {}, getElementById() { return { style: {}, set innerHTML(v) {}, set textContent(v) {} }; } },
+  fetch: () => new Promise(() => {}), setInterval() {}, console, Date, Math, String, Set, JSON, Object, Array,
+};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx);
+const run = s => vm.runInContext(s, ctx);
+
+// no group: nothing at all
+assert.strictEqual(run('groupBannerHTML(undefined, [], {})'), '');
+assert.strictEqual(run('groupBannerHTML(null, [], {})'), '');
+assert.strictEqual(run('settingBadgesHTML({name:"sda"}, undefined)'), '');
+
+const group = '{id:"g",setting:"write <b>cache</b>",strategy:"sequential",run:2,runs:3,step:"running"}';
+const phases = '{sda:[{index:0,deterministic:true,duration_sec:60},{index:1,deterministic:true,duration_sec:40}]}';
+const drv = '[{name:"sda",status:"running",current_phase:1,phase_start:new Date().toISOString()}]';
+let b = run('groupBannerHTML(' + group + ',' + drv + ',' + phases + ')');
+assert(b.includes('Setting test: <b>write &lt;b&gt;cache&lt;/b&gt;</b>, run 2 of 3, running'), b);
+assert(b.includes('sequential'), b);
+assert(!b.includes('write <b>'), b);
+// 1 run left * 100s + current run (~100s) => about 3m 20s
+assert(b.includes('ETA ~3m'), b);
+
+// unknown-length phase makes the total unknown, said like the existing text
+const phasesU = '{sda:[{index:0,deterministic:true,duration_sec:60},{index:1,deterministic:false}]}';
+b = run('groupBannerHTML(' + group + ',' + drv + ',' + phasesU + ')');
+assert(b.includes('of unknown length') && !/ETA ~[^+]*\(about/.test(b), b);
+
+// mixed drives: A fully known, B past its unknown phase (phase 2 of 2 running)
+// but with an unknown phase in its future runs: no confident plain number.
+const mixPh = '{sda:[{index:0,deterministic:true,duration_sec:60}],sdb:[{index:0,deterministic:false},{index:1,deterministic:true,duration_sec:40}]}';
+const mixDr = '[{name:"sda",status:"running",current_phase:1,phase_start:new Date().toISOString()},{name:"sdb",status:"running",current_phase:2,phase_start:new Date().toISOString()}]';
+b = run('groupBannerHTML(' + group + ',' + mixDr + ',' + mixPh + ')');
+assert(b.includes('1 phase of unknown length'), b);
+assert(!/ETA ~[^+<]*\(about/.test(b), b);
+// every drive fully known: the plain number
+const knownPh = '{sda:[{index:0,deterministic:true,duration_sec:60}],sdb:[{index:0,deterministic:true,duration_sec:80}]}';
+b = run('groupBannerHTML(' + group + ',' + mixDr + ',' + knownPh + ')');
+assert(/ETA ~[^+<]*\(about/.test(b) && !b.includes('unknown'), b);
+
+// last run: no extra runs
+b = run('groupBannerHTML({id:"g",setting:"s",strategy:"sequential",run:3,runs:3,step:"running"},' + drv + ',' + phases + ')');
+assert(!b.includes('ETA unknown'), b);
+
+// restoring and done steps
+b = run('groupBannerHTML({id:"g",setting:"s",strategy:"sequential",run:3,runs:3,step:"restoring"},' + drv + ',' + phases + ')');
+assert(b.includes('restoring'), b);
+b = run('groupBannerHTML({id:"g",setting:"s",strategy:"sequential",run:3,runs:3,step:"done"},' + drv + ',' + phases + ')');
+assert(b.includes('done'), b);
+assert(!/restored|restore failed/.test(b), b);
+
+// badges: failed before, pending after
+let d = '{name:"sda",setting:{value:"disabled",before:{value:"enabled",kernel:"write back"}}}';
+let h = run('settingBadgesHTML(' + d + ',' + group + ')');
+assert(h.includes('disabled'), h);
+assert(/before[^<]*<\/span>|before: failed/.test(h) && h.includes('failed'), h);
+assert(h.includes('pending'), h);
+assert(h.includes('kernel write back'), h);
+
+// after ok, valid
+d = '{name:"sda",setting:{value:"disabled",before:{value:"disabled"},after:{value:"disabled",kernel:"write through"},valid:true}}';
+h = run('settingBadgesHTML(' + d + ',' + group + ')');
+assert(!h.includes('failed') && !h.includes('pending') && !h.includes('invalid'), h);
+assert(h.includes('>before ok<') && h.includes('>after ok<'), h);
+
+// invalid card
+d = '{name:"sda",setting:{value:"disabled",before:{value:"disabled"},after:{value:"enabled"},valid:false}}';
+h = run('settingBadgesHTML(' + d + ',' + group + ')');
+assert(h.includes('invalid') && h.includes('failed'), h);
+
+// restoring step
+h = run('settingBadgesHTML(' + d + ',{step:"restoring",run:1,runs:1})');
+assert(h.includes('restoring'), h);
+
+// markup in value and reading is escaped
+d = '{name:"sda",setting:{value:"<img src=x onerror=1>",before:{value:"\\"><script>",kernel:"<i>"}}}';
+h = run('settingBadgesHTML(' + d + ',' + group + ')');
+assert(!h.includes('<img') && !h.includes('<script') && !h.includes('<i>'), h);
+console.log('ok');
+`

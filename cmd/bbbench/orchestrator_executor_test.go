@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"math"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestParseFioSingleLog_IOPS verifies that IOPS values from 10 job files are
@@ -344,6 +349,168 @@ func TestParseFioSingleLog_EarlyStampsKeepTheirWindow(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("points at %v, want %v", got, want)
+		}
+	}
+}
+
+// A second signal never exits during a run group (the drives' settings are
+// being restored); a plain run still force-quits.
+func TestSecondSignal_GroupDoesNotExit(t *testing.T) {
+	quietLogger(t)
+	exits := 0
+	exit := func(code int) {
+		if code != exitCodeSIGINT {
+			t.Errorf("exit code %d", code)
+		}
+		exits++
+	}
+	grp := &ExecutionCoordinator{groupID: "1700000000"}
+	if forceQuitAllowed(grp) {
+		t.Error("force quit allowed in a group")
+	}
+	grp.onSecondSignal(exit)
+	grp.onSecondSignal(exit)
+	if exits != 0 {
+		t.Errorf("group coordinator exited %d times", exits)
+	}
+	if !strings.Contains(groupSignalMessage, "recovery file") || !strings.Contains(groupSignalMessage, "restor") {
+		t.Errorf("group message %q", groupSignalMessage)
+	}
+	plain := &ExecutionCoordinator{}
+	if !forceQuitAllowed(plain) {
+		t.Error("force quit not allowed in a plain run")
+	}
+	plain.onSecondSignal(exit)
+	if exits != 1 {
+		t.Errorf("plain coordinator exits = %d, want 1", exits)
+	}
+}
+
+// interrupted is written under mu by the signal handler and by the context
+// watcher of executeRun while the run goroutine reads it (go test -race).
+func TestInterruptedFlag_NoRace(t *testing.T) {
+	quietLogger(t)
+	ec := &ExecutionCoordinator{results: map[string][]*FioResult{}, stateFile: filepath.Join(t.TempDir(), "state.json")}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ec.setInterrupted()
+	}()
+	stdout := os.Stdout
+	devnull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	os.Stdout = devnull
+	displayResults(ec)
+	ec.cleanupStateFile()
+	os.Stdout = stdout
+	devnull.Close()
+	wg.Wait()
+	if !ec.isInterrupted() {
+		t.Error("isInterrupted false after setInterrupted")
+	}
+}
+
+// After the first signal a plain run force-quits on the next one, but only
+// while the run lasts: once it is over (the final "Press Ctrl+C" wait) the
+// coordinator no longer answers signals. A group's coordinator leaves further
+// signals to runGroup.
+func TestWatchSignals_StopsWhenRunEnds(t *testing.T) {
+	quietLogger(t)
+	for _, group := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		ec := &ExecutionCoordinator{ctx: ctx, cancel: cancel, finished: make(chan struct{})}
+		if group {
+			ec.groupID = "1700000000"
+		}
+		var mu sync.Mutex
+		exits := 0
+		exit := func(int) { mu.Lock(); exits++; mu.Unlock() }
+		sigs := make(chan os.Signal, 1)
+		returned := make(chan struct{})
+		go func() { ec.watchSignals(sigs, exit); close(returned) }()
+		sigs <- os.Interrupt
+		<-ctx.Done()
+		if !ec.isInterrupted() {
+			t.Errorf("group=%v: not marked interrupted", group)
+		}
+		if group {
+			<-returned // the group coordinator stops listening after the first signal
+		} else {
+			sigs <- os.Interrupt
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				mu.Lock()
+				n := exits
+				mu.Unlock()
+				if n == 1 || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			ec.finish()
+			<-returned
+		}
+		select {
+		case sigs <- os.Interrupt:
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+		mu.Lock()
+		want := 1
+		if group {
+			want = 0
+		}
+		if exits != want {
+			t.Errorf("group=%v: %d exits, want %d", group, exits, want)
+		}
+		mu.Unlock()
+	}
+}
+
+// TestParseFioSingleLog_MixedDirectionsComplete: in a mixed workload each job
+// logs one direction only (here 2 readers, 1 writer). Every point has all the
+// files that log its direction, so none is incomplete.
+func TestParseFioSingleLog_MixedDirectionsComplete(t *testing.T) {
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "mixed")
+	logs := map[string]string{
+		"1": "1000, 10, 0, 4096, 0\n2000, 11, 0, 4096, 0\n",
+		"2": "1000, 12, 0, 4096, 0\n2000, 13, 0, 4096, 0\n",
+		"3": "1000, 20, 1, 4096, 0\n2000, 21, 1, 4096, 0\n",
+	}
+	for n, body := range logs {
+		if err := os.WriteFile(prefix+"_iops."+n+".log", []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
+	if len(pts) != 2 {
+		t.Fatalf("points = %d, want 2", len(pts))
+	}
+	for _, p := range pts {
+		if p.Incomplete {
+			t.Errorf("point t=%v flagged incomplete in a mixed workload", p.T)
+		}
+	}
+}
+
+// TestParseFioSingleLog_EdgeSlotsNotIncomplete: one job's final stamp rounds
+// into an extra last slot that only it fills; that edge slot is not flagged.
+func TestParseFioSingleLog_EdgeSlotsNotIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "edge")
+	logs := map[string]string{
+		"1": "1000, 10, 0, 4096, 0\n2000, 11, 0, 4096, 0\n3000, 12, 0, 4096, 0\n4000, 13, 0, 4096, 0\n",
+		"2": "1000, 10, 0, 4096, 0\n2000, 11, 0, 4096, 0\n3000, 12, 0, 4096, 0\n",
+	}
+	for n, body := range logs {
+		if err := os.WriteFile(prefix+"_iops."+n+".log", []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range parseFioSingleLog(prefix, "iops", 1.0, false, 1000) {
+		if p.Incomplete {
+			t.Errorf("edge point t=%v flagged incomplete", p.T)
 		}
 	}
 }

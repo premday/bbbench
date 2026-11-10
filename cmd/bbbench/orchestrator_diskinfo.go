@@ -11,7 +11,7 @@ import (
 // collectDiskConfig reads every drive's interface, link, power, write cache and
 // SMART state in the background (smartctl and nvme-cli can take seconds), puts
 // it on the status page as it arrives and writes the full text dump next to the
-// results. It only reads.
+// results. It only reads (a setting test changes drives elsewhere, in runGroup).
 func (ec *ExecutionCoordinator) collectDiskConfig() {
 	collect := ec.collectDisk
 	if collect == nil {
