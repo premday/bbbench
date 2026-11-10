@@ -70,13 +70,19 @@ func writeAtomic(path string, data []byte) error {
 	return err
 }
 
+// FileGlob matches every group file name.
+const FileGlob = "group_*_group.json"
+
+// FileName is the file name of the group with the given id.
+func FileName(id string) string { return "group_" + id + "_group.json" }
+
 // Save writes group_<ID>_group.json into dir atomically.
 func (g *GroupFile) Save(dir string) error {
 	data, err := json.MarshalIndent(g, "", "  ")
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(dir, "group_"+g.ID+"_group.json"), data)
+	return writeAtomic(filepath.Join(dir, FileName(g.ID)), data)
 }
 
 func LoadGroup(path string) (*GroupFile, error) {
@@ -93,7 +99,7 @@ func LoadGroup(path string) (*GroupFile, error) {
 
 // LoadGroups loads every group file in dir, skipping unreadable ones.
 func LoadGroups(dir string) ([]*GroupFile, error) {
-	paths, err := filepath.Glob(filepath.Join(dir, "group_*_group.json"))
+	paths, err := filepath.Glob(filepath.Join(dir, FileGlob))
 	if err != nil {
 		return nil, err
 	}

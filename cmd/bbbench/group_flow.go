@@ -214,7 +214,7 @@ func printGroupSummary(w io.Writer, g *rungroup.GroupFile) {
 }
 
 // groupFileName is the file name of group g in the output directory.
-func groupFileName(g *rungroup.GroupFile) string { return "group_" + g.ID + "_group.json" }
+func groupFileName(g *rungroup.GroupFile) string { return rungroup.FileName(g.ID) }
 
 // resumesGroup decides what --resume continues when group g is unfinished:
 // a state file tagged with a group (or none at all) belongs to the group; an
