@@ -69,15 +69,6 @@ func writeMembersLog(logPrefix string, meta diskstat.Meta, ws []diskstat.Window,
 	return f.Close()
 }
 
-// loadMembersLog reads the stored members log of a phase: per member the
-// IOPS, bandwidth and latency series. Like the Flush series, windows that
-// ended inside fio's ramp-up are left out and points are stamped at the window
-// START. ok is false when there is no usable log.
-func loadMembersLog(logPrefix string) (map[string]MemberSeries, bool) {
-	series, _, ok := loadMembersAndMD(logPrefix)
-	return series, ok
-}
-
 // inRamp reports whether a sampling window belongs to fio's ramp-up. EndMs
 // comes from the wall clock (k*avg plus a few ms of jitter), so the window is
 // judged by its midpoint: one closing the ramp at offset+1ms is still ramp.
@@ -219,6 +210,10 @@ func loadMDLog(md []diskstat.MDWindow, offsetMs int64) (MDInfo, bool) {
 	return info, true
 }
 
+// loadMembersAndMD reads the stored members log of a phase: per member the
+// IOPS, bandwidth and latency series, and the md state. Windows mostly in
+// fio's ramp-up are left out and points are stamped at the window START, like
+// the Flush series. ok is false when there is no usable log.
 func loadMembersAndMD(logPrefix string) (map[string]MemberSeries, MDInfo, bool) {
 	f, err := os.Open(diskstat.LogName(logPrefix))
 	if err != nil {

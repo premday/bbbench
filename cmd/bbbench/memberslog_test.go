@@ -36,7 +36,7 @@ func writeTestMembersLog(t *testing.T, prefix string) {
 func TestLoadMembersLogDropsRamp(t *testing.T) {
 	prefix := filepath.Join(t.TempDir(), "md0_phase1_1_log")
 	writeTestMembersLog(t, prefix)
-	got, ok := loadMembersLog(prefix)
+	got, _, ok := loadMembersAndMD(prefix)
 	if !ok {
 		t.Fatal("not ok")
 	}
@@ -56,7 +56,7 @@ func TestLoadMembersLogDropsRamp(t *testing.T) {
 }
 
 func TestLoadMembersLogMissing(t *testing.T) {
-	if _, ok := loadMembersLog(filepath.Join(t.TempDir(), "x_log")); ok {
+	if _, _, ok := loadMembersAndMD(filepath.Join(t.TempDir(), "x_log")); ok {
 		t.Error("ok for a missing log")
 	}
 }
