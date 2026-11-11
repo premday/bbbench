@@ -107,6 +107,9 @@ type layoutModel struct {
 	// rescan re-runs the in-use scan after a destroy; nil disables x.
 	rescan  func() (*inuse.Report, error)
 	destroy destroyState
+	// tick schedules the next update of the destroy run's elapsed time.
+	tick          func() tea.Cmd
+	width, height int // the terminal; 0 until the first size message
 
 	done      bool
 	cancelled bool
@@ -118,14 +121,15 @@ type layoutModel struct {
 // setting does not apply to it, or when it has no serial (a teardown finds
 // the members by serial).
 func newLayoutModel(s settings.LayoutSetting, drives []DriveInfo, targets map[string]settings.Target, busy *inuse.Report, busyErr error) layoutModel {
-	m := layoutModel{setting: s, drives: drives, targets: targets, editIdx: -1}
+	m := layoutModel{setting: s, drives: drives, targets: targets, editIdx: -1, tick: defaultTick}
 	m.applyInUse(busy, busyErr)
 	return m
 }
 
 // applyInUse recomputes which disks are grayed, busy or carry data from an
 // in-use report (or its error). The layouts already in the list are kept
-// as they are: the confirmation and each build check their disks again.
+// as they are; one whose disk is now busy is marked on the list and c
+// refuses to continue until it is edited or deleted (busyLayout).
 func (m *layoutModel) applyInUse(busy *inuse.Report, busyErr error) {
 	s := m.setting
 	m.grayed, m.busy = map[string]string{}, map[string]bool{}
@@ -264,14 +268,18 @@ func (m layoutModel) freeDrives() []DriveInfo {
 }
 
 func (m layoutModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = ws.Width, ws.Height
+		return m, nil
+	}
 	k, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m.updateDestroyMsg(msg)
 	}
 	key := k.String()
 	if m.step == layoutStepDestroyRun {
-		// A teardown is running: no key, not even Ctrl+C, interrupts it.
-		return m, nil
+		// A teardown is running: Ctrl+C only asks it to stop between steps.
+		return m.updateDestroyRun(key)
 	}
 	if key == "ctrl+c" {
 		m.cancelled = true
@@ -292,7 +300,7 @@ func (m layoutModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case layoutStepDestroyConfirm:
 		return m.updateDestroyConfirm(key)
 	case layoutStepDestroyFailed:
-		m.step = layoutStepList
+		return m.updateDestroyFailed(key)
 	}
 	return m, nil
 }
@@ -315,7 +323,7 @@ func (m layoutModel) updateList(key string) (tea.Model, tea.Cmd) {
 	case "b":
 		m.addBaseline()
 	case "x":
-		if m.rescan != nil {
+		if m.canDestroy() {
 			return m.openDestroyPick()
 		}
 	case "enter":
@@ -336,9 +344,26 @@ func (m layoutModel) updateList(key string) (tea.Model, tea.Cmd) {
 			m.msg = "Add at least two layouts to compare (the no-array baseline counts as one)."
 			return m, nil
 		}
+		for i, e := range m.layouts {
+			if name, why := m.busyLayout(e); name != "" {
+				m.msg = fmt.Sprintf("Layout %d (%s) uses %s, which is now in use: %s; edit or delete it.", i+1, e.value.Label, name, why)
+				return m, nil
+			}
+		}
 		m.step = layoutStepConfirm
 	}
 	return m, nil
+}
+
+// busyLayout is the first disk of e that is now in use (after a re-scan,
+// or every disk when the re-scan failed) and why; "" when there is none.
+func (m layoutModel) busyLayout(e layoutEntry) (string, string) {
+	for _, d := range e.disks {
+		if m.busy[d.Name] {
+			return d.Name, m.grayed[d.Name]
+		}
+	}
+	return "", ""
 }
 
 // addLayout opens the backend picker, or the editor at once when the setting
@@ -615,14 +640,8 @@ func (m layoutModel) View() string {
 		m.editorView(&b)
 	case layoutStepConfirm:
 		m.confirmView(&b)
-	case layoutStepDestroyPick:
-		m.destroyPickView(&b)
-	case layoutStepDestroyConfirm:
-		m.destroyConfirmView(&b)
-	case layoutStepDestroyRun:
-		m.destroyRunView(&b)
-	case layoutStepDestroyFailed:
-		m.destroyFailedView(&b)
+	case layoutStepDestroyPick, layoutStepDestroyConfirm, layoutStepDestroyRun, layoutStepDestroyFailed:
+		return m.destroyView()
 	}
 	if m.msg != "" {
 		b.WriteString("\n  " + m.msg + "\n")
@@ -639,7 +658,7 @@ func cursorMark(on bool) string {
 
 func (m layoutModel) listView(b *strings.Builder) {
 	help := "a add, b add the no-array baseline, Enter edit, d delete, c continue, q quit"
-	if m.rescan != nil {
+	if m.canDestroy() {
 		help += ", x destroy an existing RAID configuration"
 	}
 	b.WriteString("\n  Layouts to compare (" + help + ")\n\n")
@@ -655,6 +674,9 @@ func (m layoutModel) listView(b *strings.Builder) {
 			names = append(names, d.Name)
 		}
 		fmt.Fprintf(b, "  %s%d. %s: %s\n", cursorMark(i == m.cursor), i+1, e.value.Label, strings.Join(names, ", "))
+		if name, why := m.busyLayout(e); name != "" {
+			fmt.Fprintf(b, "        disk %s is now in use: %s\n", name, why)
+		}
 	}
 	if m.all == "" {
 		var gray []string
