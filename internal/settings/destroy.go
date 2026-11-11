@@ -24,8 +24,10 @@ import (
 // compares strings; anything not declared is not the configuration's):
 //   - md array or superblock group: ExtraKind = KindMDValue, ID = the array
 //     uuid, ExtraOwnedNodes = the md node ("md127") when assembled.
-//   - volume group: ExtraOwnedVG = the VG name, ExtraOwnedNodes = the dm
-//     nodes of its LVs ("dm-0,dm-1"), Disks = the disks of all its PVs.
+//   - volume group: ExtraOwnedVG = the VG name, ExtraOwnedNodes = every dm
+//     node of the VG ("dm-0,dm-1"; lvs -a, hidden and internal sub-LVs
+//     included: thin pool data and metadata, raid images, mirror logs,
+//     snapshot -real/-cow), Disks = the disks of all its PVs.
 //   - orphan physical volume: ExtraOrphanPV = "yes", ExtraOwnedNodes = the
 //     PV's node ("sdb1", or "sdb" for a whole-disk PV).
 type Existing struct {
@@ -69,6 +71,10 @@ const maxStackDepth = 16
 // closed itself: use the tool's own refusals (mdadm --stop refusing an open
 // array, lvremove refusing an open LV, never a force flag), act only on the
 // members of the entry it was given and stop at the first step that fails.
+// Each atomic tool step runs to completion: once a mutation has started, it
+// and the read-back that verifies it are not abandoned when ctx is
+// cancelled (verify with context.WithoutCancel); ctx is checked only
+// between steps.
 //
 // A Destroy error must say what is done, what is left and the command for
 // what is left: the gate adds no command of its own to it. DestroyCommand
@@ -327,12 +333,17 @@ func (s *layout) destroyGate(ctx context.Context, e Existing) (*gated, []string,
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot check what uses the disks: %w", err)
 	}
+	var blockers []string
+	if rep.PVsIncomplete && (g.vg != "" || g.fresh.Extra[ExtraOrphanPV] == "yes") {
+		// A PV known only from udev has no volume group: a PV just moved
+		// into another VG could pass as this one's or as an orphan.
+		blockers = append(blockers, "the LVM physical volumes could not all be listed (see the scan warnings); which volume group each physical volume belongs to cannot be proven")
+	}
 	stacked, walked, err := s.walkOwned(g.nodes)
 	if err != nil {
 		return nil, nil, err
 	}
 	g.names = append(diskNames(g.fresh.Disks), walked...)
-	var blockers []string
 	for _, c := range rep.Blockers(g.names, func(c inuse.Cause) bool { return isOwned(g.fresh, g.nodes, g.vg, c) }) {
 		if c.Kind == inuse.KindAll {
 			blockers = append(blockers, c.Text)

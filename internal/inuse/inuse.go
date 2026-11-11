@@ -40,7 +40,16 @@ type Report struct {
 	// Causes has, for every disk in Busy, one Cause per reason, in the same
 	// order: the reason in a form a program can act on.
 	Causes map[string][]Cause
+	// PVsIncomplete is set when the scan could not list the LVM physical
+	// volumes (WarnCannotListPVs) or could not place one of them on a disk:
+	// a PV is then known only from its udev signature, without its volume
+	// group, so a PV of a volume group can look like an orphan.
+	PVsIncomplete bool
 }
+
+// WarnCannotListPVs starts the warning of a scan that could not list the
+// LVM physical volumes (Report.PVsIncomplete is then set).
+const WarnCannotListPVs = "cannot list LVM physical volumes"
 
 // Kind says what a Cause is.
 type Kind string
@@ -424,17 +433,20 @@ func (s *scanner) scanHolders() {
 func (s *scanner) scanPVs() {
 	pvs, err := s.o.PVs()
 	if err != nil {
-		s.warn(fmt.Sprintf("cannot list LVM physical volumes: %v; disks with an LVM signature are not offered", err))
+		s.r.PVsIncomplete = true
+		s.warn(fmt.Sprintf("%s: %v; disks with an LVM signature are not offered", WarnCannotListPVs, err))
 		return
 	}
 	for _, pv := range pvs {
 		_, rdev, err := s.o.Stat(pv.Device)
 		if err != nil {
+			s.r.PVsIncomplete = true
 			s.warn(fmt.Sprintf("cannot tell which disk holds the LVM physical volume %s: %v", pv.Device, err))
 			continue
 		}
 		node, leaves, ok := s.resolve(mmOf(rdev))
 		if !ok {
+			s.r.PVsIncomplete = true
 			s.warn(fmt.Sprintf("cannot tell which disk holds the LVM physical volume %s", pv.Device))
 			continue
 		}

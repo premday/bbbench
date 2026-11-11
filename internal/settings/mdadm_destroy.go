@@ -334,11 +334,14 @@ func (m *mdadm) partitions(node string) []string {
 
 // wholeDisk is the /sys/block node node is (a disk) or is a partition of,
 // "" when it is neither.
-func (m *mdadm) wholeDisk(node string) string {
+func (m *mdadm) wholeDisk(node string) string { return wholeDiskIn(m.env.Sys, node) }
+
+// wholeDiskIn is wholeDisk over the sysfs root sys.
+func wholeDiskIn(sys, node string) string {
 	if !safeNode(node) {
 		return ""
 	}
-	block := filepath.Join(m.env.Sys, "block")
+	block := filepath.Join(sys, "block")
 	if _, err := os.Stat(filepath.Join(block, node)); err == nil {
 		return node
 	}
@@ -356,8 +359,11 @@ func (m *mdadm) wholeDisk(node string) string {
 
 // diskTarget identifies disk from sysfs. A disk that cannot be read keeps
 // only its name, so the gate refuses it for having no serial.
-func (m *mdadm) diskTarget(disk string) Target {
-	d, err := blockdev.Lookup(blockdev.OSFS{}, filepath.Join(m.env.Sys, "block"), disk)
+func (m *mdadm) diskTarget(disk string) Target { return diskTargetIn(m.env.Sys, disk) }
+
+// diskTargetIn is diskTarget over the sysfs root sys.
+func diskTargetIn(sys, disk string) Target {
+	d, err := blockdev.Lookup(blockdev.OSFS{}, filepath.Join(sys, "block"), disk)
 	if err != nil {
 		return Target{Name: disk}
 	}

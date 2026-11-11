@@ -732,6 +732,13 @@ func (b *lvm) removeDevicesEntries(ctx context.Context, u ArrayUndo, skip map[st
 			}
 		}
 	}
+	return b.delDevicesEntries(ctx, paths)
+}
+
+// delDevicesEntries removes the devices-file entries of paths that are
+// listed (an unlisted path is skipped: pvremove may already have removed
+// it) and checks they are gone. No devices file means nothing to do.
+func (b *lvm) delDevicesEntries(ctx context.Context, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}

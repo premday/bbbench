@@ -336,6 +336,23 @@ func TestScan_PVsFail(t *testing.T) {
 		t.Fatal(r.Warnings)
 	}
 	eq(t, r.Busy["sdk"], []string{"is an LVM physical volume"})
+	if !r.PVsIncomplete || !strings.HasPrefix(r.Warnings[0], WarnCannotListPVs+": ") {
+		t.Errorf("PVsIncomplete %v, warning %q", r.PVsIncomplete, r.Warnings[0])
+	}
+	h.pvErr = nil
+	if h.scan().PVsIncomplete {
+		t.Error("PVsIncomplete set on a scan that listed the PVs")
+	}
+}
+
+// A PV that cannot be placed on a disk leaves the PV list incomplete.
+func TestScan_PVUnplacedIsIncomplete(t *testing.T) {
+	h := fakeHost(t)
+	h.disk("sdk", "8:160")
+	h.pvs = []PV{{"/dev/mapper/gone", "vg0"}}
+	if r := h.scan(); !r.PVsIncomplete {
+		t.Errorf("PVsIncomplete not set: %v", r.Warnings)
+	}
 }
 
 func TestScan_FreeDisk(t *testing.T) {

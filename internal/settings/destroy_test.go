@@ -626,3 +626,40 @@ func TestLayout_DestroyLeftoverOnUnconfirmedDisks(t *testing.T) {
 		t.Errorf("a command over disks never confirmed: %v", err)
 	}
 }
+
+// When the scan could not list the LVM physical volumes, a PV is known
+// only from udev, without its volume group: VG and orphan PV entries are
+// refused, an md entry is not.
+func TestLayout_DestroyRefusesLVMWhenThePVListIsIncomplete(t *testing.T) {
+	ctx := context.Background()
+	incomplete := func(r *inuse.Report) *inuse.Report {
+		r.PVsIncomplete = true
+		r.Warnings = []string{inuse.WarnCannotListPVs + ": boom; disks with an LVM signature are not offered"}
+		return r
+	}
+	vg := vgData()
+	r := newDestroyRig(t, sysHolders(t, map[string][]string{"dm-0": nil, "dm-1": {"dm-0"}}), vg)
+	r.reports = []*inuse.Report{incomplete(reportOf(map[string][]inuse.Cause{"sdb": {
+		{Kind: inuse.KindHolder, Disk: "sdb", Via: "dm-0", Device: "dm-0", Text: "used by dm-0"}}}))}
+	bs, err := r.s.DestroyBlockers(ctx, vg)
+	if err != nil || len(bs) != 1 || !strings.Contains(bs[0], "physical volumes could not all be listed") {
+		t.Errorf("vg: %v %v", bs, err)
+	}
+	if err := r.s.Destroy(ctx, vg); err == nil || len(r.d.destroyed) != 0 {
+		t.Errorf("vg destroyed: %v", err)
+	}
+
+	orphan := orphanSdb1()
+	r = newDestroyRig(t, t.TempDir(), orphan)
+	r.reports = []*inuse.Report{incomplete(reportOf(map[string][]inuse.Cause{"sdb": {
+		{Kind: inuse.KindPV, Disk: "sdb", Device: "sdb1", Text: "is an LVM physical volume"}}}))}
+	if bs, err := r.s.DestroyBlockers(ctx, orphan); err != nil || len(bs) != 1 || !strings.Contains(bs[0], "could not all be listed") {
+		t.Errorf("orphan: %v %v", bs, err)
+	}
+
+	r = newDestroyRig(t, sysHolders(t, map[string][]string{"md127": nil}), md127())
+	r.reports = []*inuse.Report{incomplete(reportOf(heldBy()))}
+	if bs, err := r.s.DestroyBlockers(ctx, md127()); err != nil || len(bs) != 0 {
+		t.Errorf("md: %v %v", bs, err)
+	}
+}
