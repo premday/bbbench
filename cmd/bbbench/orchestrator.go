@@ -253,7 +253,9 @@ func runOrchestrator(args []string) error {
 				return fmt.Errorf("%s takes layouts but has no layout screens", choice.Setting.Name())
 			}
 			busy, berr := scanInUse()
-			group, err = runLayoutSetupTUI(ls, drives, targets, busy, berr)
+			// x on the list destroys an existing configuration and re-runs the
+			// scan; the discovered drives stay the same disks.
+			group, err = runLayoutSetupTUI(ls, drives, targets, busy, berr, scanInUse)
 			if err != nil {
 				return err
 			}

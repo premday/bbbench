@@ -18,7 +18,9 @@ import (
 // The layout setup screens: the list of layouts, the backend picker, the
 // editor of one layout and the one destructive confirmation. They know the
 // backends only through settings.Backend and settings.LayoutSetting, and
-// change nothing: no command runs and nothing is built here.
+// build nothing: no command runs here except the x action
+// (group_layout_destroy.go), which destroys an existing configuration only
+// after its own confirmation.
 
 type layoutStep int
 
@@ -27,6 +29,10 @@ const (
 	layoutStepBackend
 	layoutStepEditor
 	layoutStepConfirm
+	layoutStepDestroyPick
+	layoutStepDestroyConfirm
+	layoutStepDestroyRun
+	layoutStepDestroyFailed
 )
 
 // layoutDraft is a layout being edited. backend is nil for the baseline.
@@ -98,6 +104,10 @@ type layoutModel struct {
 	editIdx int // -1: a new layout
 	msg     string
 
+	// rescan re-runs the in-use scan after a destroy; nil disables x.
+	rescan  func() (*inuse.Report, error)
+	destroy destroyState
+
 	done      bool
 	cancelled bool
 	result    *groupChoice
@@ -108,7 +118,18 @@ type layoutModel struct {
 // setting does not apply to it, or when it has no serial (a teardown finds
 // the members by serial).
 func newLayoutModel(s settings.LayoutSetting, drives []DriveInfo, targets map[string]settings.Target, busy *inuse.Report, busyErr error) layoutModel {
-	m := layoutModel{setting: s, drives: drives, targets: targets, grayed: map[string]string{}, busy: map[string]bool{}, editIdx: -1}
+	m := layoutModel{setting: s, drives: drives, targets: targets, editIdx: -1}
+	m.applyInUse(busy, busyErr)
+	return m
+}
+
+// applyInUse recomputes which disks are grayed, busy or carry data from an
+// in-use report (or its error). The layouts already in the list are kept
+// as they are: the confirmation and each build check their disks again.
+func (m *layoutModel) applyInUse(busy *inuse.Report, busyErr error) {
+	s := m.setting
+	m.grayed, m.busy = map[string]string{}, map[string]bool{}
+	m.all, m.warnings, m.carries = "", nil, nil
 	switch {
 	case busyErr != nil:
 		m.all = "in-use check failed: " + busyErr.Error()
@@ -119,7 +140,7 @@ func newLayoutModel(s settings.LayoutSetting, drives []DriveInfo, targets map[st
 		m.warnings = busy.Warnings
 		m.carries = busy.Carries
 	}
-	for _, d := range drives {
+	for _, d := range m.drives {
 		name := d.Device.Name
 		if m.all != "" {
 			m.grayed[name], m.busy[name] = m.all, true
@@ -137,7 +158,6 @@ func newLayoutModel(s settings.LayoutSetting, drives []DriveInfo, targets map[st
 			m.grayed[name] = "no serial: it could not be found again for a teardown"
 		}
 	}
-	return m
 }
 
 // target is the setting target of d. Its identity and node come from the
@@ -246,9 +266,13 @@ func (m layoutModel) freeDrives() []DriveInfo {
 func (m layoutModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	k, ok := msg.(tea.KeyMsg)
 	if !ok {
-		return m, nil
+		return m.updateDestroyMsg(msg)
 	}
 	key := k.String()
+	if m.step == layoutStepDestroyRun {
+		// A teardown is running: no key, not even Ctrl+C, interrupts it.
+		return m, nil
+	}
 	if key == "ctrl+c" {
 		m.cancelled = true
 		return m, tea.Quit
@@ -263,6 +287,12 @@ func (m layoutModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateEditor(key)
 	case layoutStepConfirm:
 		return m.updateConfirm(key)
+	case layoutStepDestroyPick:
+		return m.updateDestroyPick(key)
+	case layoutStepDestroyConfirm:
+		return m.updateDestroyConfirm(key)
+	case layoutStepDestroyFailed:
+		m.step = layoutStepList
 	}
 	return m, nil
 }
@@ -284,6 +314,10 @@ func (m layoutModel) updateList(key string) (tea.Model, tea.Cmd) {
 		m.addLayout()
 	case "b":
 		m.addBaseline()
+	case "x":
+		if m.rescan != nil {
+			return m.openDestroyPick()
+		}
 	case "enter":
 		if len(m.layouts) == 0 {
 			return m, nil
@@ -581,6 +615,14 @@ func (m layoutModel) View() string {
 		m.editorView(&b)
 	case layoutStepConfirm:
 		m.confirmView(&b)
+	case layoutStepDestroyPick:
+		m.destroyPickView(&b)
+	case layoutStepDestroyConfirm:
+		m.destroyConfirmView(&b)
+	case layoutStepDestroyRun:
+		m.destroyRunView(&b)
+	case layoutStepDestroyFailed:
+		m.destroyFailedView(&b)
 	}
 	if m.msg != "" {
 		b.WriteString("\n  " + m.msg + "\n")
@@ -596,7 +638,11 @@ func cursorMark(on bool) string {
 }
 
 func (m layoutModel) listView(b *strings.Builder) {
-	b.WriteString("\n  Layouts to compare (a add, b add the no-array baseline, Enter edit, d delete, c continue, q quit)\n\n")
+	help := "a add, b add the no-array baseline, Enter edit, d delete, c continue, q quit"
+	if m.rescan != nil {
+		help += ", x destroy an existing RAID configuration"
+	}
+	b.WriteString("\n  Layouts to compare (" + help + ")\n\n")
 	if m.all != "" {
 		fmt.Fprintf(b, "  No disk can be used: %s\n\n", m.all)
 	}
@@ -763,9 +809,14 @@ func (m layoutModel) confirmView(b *strings.Builder) {
 }
 
 // runLayoutSetupTUI lets the user list the layouts to compare and confirm
-// the erase once. Nothing is built or changed here.
-func runLayoutSetupTUI(s settings.LayoutSetting, drives []DriveInfo, targets map[string]settings.Target, busy *inuse.Report, busyErr error) (*groupChoice, error) {
-	final, err := runTea(newLayoutModel(s, drives, targets, busy, busyErr))
+// the erase once. Nothing is built here; the only change is the x action,
+// which destroys one existing configuration the user selected and confirmed
+// (through the setting's safety gate), then re-runs rescan. A nil rescan
+// disables x.
+func runLayoutSetupTUI(s settings.LayoutSetting, drives []DriveInfo, targets map[string]settings.Target, busy *inuse.Report, busyErr error, rescan func() (*inuse.Report, error)) (*groupChoice, error) {
+	m := newLayoutModel(s, drives, targets, busy, busyErr)
+	m.rescan = rescan
+	final, err := runTea(m)
 	if err != nil {
 		return nil, err
 	}
