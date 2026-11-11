@@ -619,7 +619,9 @@ func (m *mdadm) Destroy(ctx context.Context, e Existing) error {
 		if err := ctx.Err(); err != nil {
 			return refuse("%v", err)
 		}
-		if _, err := m.run(ctx, "--stop", "/dev/"+md); err != nil {
+		// A started step runs to completion: only the checks between steps
+		// see ctx.
+		if _, err := m.run(bg, "--stop", "/dev/"+md); err != nil {
 			if m.stopped(md) {
 				return m.partial(e, true, nil, devs, fmt.Errorf("mdadm --stop reported an error (%v) but %s is no longer assembled", err, md))
 			}
@@ -665,7 +667,7 @@ func (m *mdadm) Destroy(ctx context.Context, e Existing) error {
 			return m.partial(e, assembled, done, devs[i+1:],
 				fmt.Errorf("%s carries the superblock of another array (uuid %s), not of %s; do not zero it", dev, got, uuid))
 		}
-		if _, err := m.run(ctx, "--zero-superblock", dev); err != nil {
+		if _, err := m.run(bg, "--zero-superblock", dev); err != nil {
 			return m.partial(e, assembled, done, devs[i:], err)
 		}
 		after, err := m.examine(bg, dev)

@@ -28,9 +28,9 @@ const (
 	lvTiB = "1000000000000"
 )
 
-type lvdVG struct{ name, uuid, attr, size, lock, missing string }
+type lvdVG struct{ name, uuid, attr, size, lock, missing, shared, sysid string }
 type lvdLV struct{ vgUUID, name, uuid, attr string }
-type lvdPV struct{ path, uuid, size, vg, vgUUID string }
+type lvdPV struct{ path, uuid, size, vg, vgUUID, sysid string }
 
 // lvdSim is a fake lvm2 for the destroy provider: VGs, LVs and PVs it
 // answers the JSON reports from, dm nodes and disks in a fake sysfs, an
@@ -47,10 +47,13 @@ type lvdSim struct {
 	pvremDev bool              // pvremove also drops the devices-file entry
 	fail     map[string]error  // command prefix -> error returned instead
 	after    map[string]func() // command prefix -> run after it succeeded
+	before   map[string]func() // command prefix -> run before it is answered
+	sysID    string            // lvm systemid; "-" makes it fail
+	mutErrs  []error           // ctx.Err() seen by each mutation
 }
 
 func newLvdSim(t *testing.T) *lvdSim {
-	return &lvdSim{t: t, sys: t.TempDir(), dms: map[string]string{}, fail: map[string]error{}, after: map[string]func(){}}
+	return &lvdSim{t: t, sys: t.TempDir(), dms: map[string]string{}, fail: map[string]error{}, after: map[string]func(){}, before: map[string]func(){}}
 }
 
 func (s *lvdSim) env() Env {
@@ -110,9 +113,17 @@ func (s *lvdSim) pvByPath(p string) *lvdPV {
 	return nil
 }
 
-func (s *lvdSim) run(_ context.Context, name string, args ...string) ([]byte, error) {
+func (s *lvdSim) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	key := name + " " + strings.Join(args, " ")
 	s.calls = append(s.calls, key)
+	for p, f := range s.before {
+		if strings.HasPrefix(key, p) {
+			f()
+		}
+	}
+	if len(lvmMutations([]string{key})) > 0 {
+		s.mutErrs = append(s.mutErrs, ctx.Err())
+	}
 	for p, err := range s.fail {
 		if strings.HasPrefix(key, p) {
 			return nil, err
@@ -144,7 +155,8 @@ func (s *lvdSim) answer(name string, args []string) ([]byte, error) {
 				continue
 			}
 			rows = append(rows, map[string]string{"vg_name": v.name, "vg_uuid": v.uuid, "vg_attr": v.attr,
-				"vg_size": v.size, "vg_lock_type": v.lock, "vg_missing_pv_count": v.missing})
+				"vg_size": v.size, "vg_lock_type": v.lock, "vg_missing_pv_count": v.missing,
+				"vg_shared": v.shared, "vg_systemid": v.sysid})
 		}
 		if !listing && len(rows) == 0 {
 			return nil, exitErr("  Volume group \"" + last + "\" not found\n")
@@ -166,12 +178,18 @@ func (s *lvdSim) answer(name string, args []string) ([]byte, error) {
 			if !listing && p.path != last {
 				continue
 			}
-			rows = append(rows, map[string]string{"pv_name": p.path, "pv_uuid": p.uuid, "pv_size": p.size, "vg_name": p.vg, "vg_uuid": p.vgUUID})
+			rows = append(rows, map[string]string{"pv_name": p.path, "pv_uuid": p.uuid, "pv_size": p.size,
+				"vg_name": p.vg, "vg_uuid": p.vgUUID, "vg_systemid": p.sysid})
 		}
 		if !listing && len(rows) == 0 {
 			return nil, exitErr("  Failed to find physical volume \"" + last + "\".\n")
 		}
 		return report("pv", rows...), nil
+	case "systemid":
+		if s.sysID == "-" {
+			return nil, exitErr("  Failed\n")
+		}
+		return []byte("  system ID: " + s.sysID + "\n"), nil
 	case "lvremove":
 		v := s.vgByName(last)
 		if v == nil {
@@ -229,8 +247,8 @@ func dataVG(t *testing.T) *lvdSim {
 	s.disk("sdd", "sdd1")
 	s.vgs = []*lvdVG{{name: "data", uuid: vgU1, attr: "wz--n-", size: "2000000000000"}}
 	s.lvs = []*lvdLV{{vgU1, "home", lvU1, "-wi-ao----"}, {vgU1, "root", lvU2, "-wi-a-----"}}
-	s.pvs = []*lvdPV{{"/dev/sdb", pvU1, lvTiB, "data", vgU1}, {"/dev/sdc1", pvU2, lvTiB, "data", vgU1},
-		{"/dev/sdd1", pvU3, lvTiB, "", ""}}
+	s.pvs = []*lvdPV{{"/dev/sdb", pvU1, lvTiB, "data", vgU1, ""}, {"/dev/sdc1", pvU2, lvTiB, "data", vgU1, ""},
+		{"/dev/sdd1", pvU3, lvTiB, "", "", ""}}
 	s.dm("dm-0", vgU1, lvU1, "")
 	s.dm("dm-1", vgU1, lvU2, "")
 	return s
@@ -359,7 +377,7 @@ func TestLVMExistingBlocked(t *testing.T) {
 	s := dataVG(t)
 	s.pvs[2].vg, s.pvs[2].vgUUID = "far", vgU2
 	far := findExisting(t, listLVM(t, s), "far")
-	if !strings.Contains(far.Blocked, "not listed by vgs") || far.Disks[0].Name != "sdd" {
+	if !strings.Contains(far.Blocked, "not listed by vgs") || far.Disks[0].Name != "sdd" || far.ID != "foreign:far" {
 		t.Errorf("%+v", far)
 	}
 }
@@ -413,19 +431,21 @@ func TestLVMDestroyVGArgvOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	list := []string{
-		"lvm vgs --reportformat json --units b --nosuffix -o vg_name,vg_uuid,vg_attr,vg_size,vg_lock_type,vg_missing_pv_count",
-		"lvm lvs -a --reportformat json -o vg_uuid,lv_name,lv_attr",
-		"lvm pvs --reportformat json --units b --nosuffix -o pv_name,pv_uuid,pv_size,vg_name,vg_uuid",
+		"lvm vgs --foreign --shared --reportformat json --units b --nosuffix -o vg_name,vg_uuid,vg_attr,vg_size,vg_lock_type,vg_shared,vg_systemid,vg_missing_pv_count",
+		"lvm lvs -a --foreign --shared --reportformat json -o vg_uuid,lv_name,lv_attr",
+		"lvm pvs --foreign --shared --reportformat json --units b --nosuffix -o pv_name,pv_uuid,pv_size,vg_name,vg_uuid,vg_systemid",
+		"lvm systemid",
 	}
 	want := append(slices.Clone(list),
 		"lvm lvremove --yes --autobackup n data",
-		"lvm lvs -a --reportformat json -o lv_name --select vg_uuid="+vgU1,
+		"lvm lvs -a --foreign --shared --reportformat json -o lv_name --select vg_uuid="+vgU1,
 		list[2],
+		list[0],
 		"lvm vgremove --yes --autobackup n data",
-		"lvm vgs --reportformat json -o vg_name data")
+		list[0])
 	for _, p := range []string{"/dev/sdb", "/dev/sdc1"} {
-		want = append(want, "lvm pvs --reportformat json -o pv_name,pv_uuid,vg_name "+p, "lvm pvremove --yes "+p,
-			"lvm pvs --reportformat json -o pv_name,pv_uuid,vg_name "+p)
+		info := "lvm pvs --foreign --shared --reportformat json -o pv_name,pv_uuid,vg_name,vg_uuid,vg_systemid " + p
+		want = append(want, info, "lvm pvremove --yes "+p, info)
 	}
 	want = append(want, "lvm lvmdevices", "lvm lvmdevices --deldev /dev/sdb", "lvm lvmdevices --deldev /dev/sdc1", "lvm lvmdevices")
 	if !slices.Equal(s.calls, want) {
@@ -508,7 +528,7 @@ func TestLVMDestroyVGRemoveFailureLeavesThePVs(t *testing.T) {
 	}
 	if !strings.HasPrefix(err.Error(), "data: logical volumes removed; volume group data not removed; no physical volume label removed; left: physical volumes /dev/sdb, /dev/sdc1; ") ||
 		!strings.Contains(err.Error(), "lock failed") ||
-		!strings.HasSuffix(err.Error(), "; rest by hand: vgremove --yes data && pvremove --yes /dev/sdb /dev/sdc1") {
+		!strings.HasSuffix(err.Error(), "; rest by hand, after checking with vgs -o vg_name,vg_uuid that data is "+vgU1+": vgremove --yes data && pvremove --yes /dev/sdb /dev/sdc1") {
 		t.Errorf("error %q", err)
 	}
 	for _, c := range s.calls {
@@ -528,7 +548,7 @@ func TestLVMDestroyLVRemoveFailureStops(t *testing.T) {
 	vg := findExisting(t, listLVM(t, s), "data")
 	err := s.lvm().Destroy(context.Background(), vg)
 	if err == nil || !strings.HasPrefix(err.Error(), "data: logical volumes not all removed (left: home, root); volume group data not removed; no physical volume label removed; left: physical volumes /dev/sdb, /dev/sdc1; ") ||
-		!strings.HasSuffix(err.Error(), "; rest by hand: lvremove --yes data && vgremove --yes data && pvremove --yes /dev/sdb /dev/sdc1") {
+		!strings.HasSuffix(err.Error(), "; rest by hand, after checking with vgs -o vg_name,vg_uuid that data is "+vgU1+": lvremove --yes data && vgremove --yes data && pvremove --yes /dev/sdb /dev/sdc1") {
 		t.Errorf("error %v", err)
 	}
 	if m := lvmMutations(s.calls); len(m) != 1 {
@@ -562,7 +582,7 @@ func TestLVMDestroyRefusesAChangedEntry(t *testing.T) {
 				p.vg, p.vgUUID = "", ""
 			}
 		}, "no longer"},
-		{"pvs left without their vg", func(s *lvdSim) { s.vgs = nil }, "not listed by vgs"},
+		{"pvs left without their vg", func(s *lvdSim) { s.vgs = nil }, "no longer"},
 		{"now blocked", func(s *lvdSim) { s.vgs[0].attr = "wz-pn-" }, "missing physical volumes"},
 	}
 	for _, tc := range cases {
@@ -630,10 +650,10 @@ func TestLVMDestroyCancelledStillVerifies(t *testing.T) {
 	s.after["lvm lvremove"] = cancel
 	err := s.lvm().Destroy(ctx, vg)
 	if err == nil || !strings.Contains(err.Error(), "logical volumes removed") || !strings.Contains(err.Error(), "canceled") ||
-		!strings.HasSuffix(err.Error(), "rest by hand: vgremove --yes data && pvremove --yes /dev/sdb /dev/sdc1") {
+		!strings.HasSuffix(err.Error(), "rest by hand, after checking with vgs -o vg_name,vg_uuid that data is "+vgU1+": vgremove --yes data && pvremove --yes /dev/sdb /dev/sdc1") {
 		t.Errorf("error %v", err)
 	}
-	if !slices.Contains(s.calls, "lvm lvs -a --reportformat json -o lv_name --select vg_uuid="+vgU1) {
+	if !slices.Contains(s.calls, "lvm lvs -a --foreign --shared --reportformat json -o lv_name --select vg_uuid="+vgU1) {
 		t.Errorf("lvremove not verified: %q", s.calls)
 	}
 }
@@ -703,7 +723,7 @@ func TestLVMLeftoverCommand(t *testing.T) {
 	l := s.lvm()
 	fresh := vg
 	fresh.Extra = map[string]string{ExtraOwnedVG: "data", lvmExtraVGUUID: vgU1, lvmExtraPVs: "/dev/sdc1", lvmExtraLVs: ""}
-	if c := l.LeftoverCommand(vg, fresh); c != "vgremove --yes data && pvremove --yes /dev/sdc1" {
+	if c := l.LeftoverCommand(vg, fresh); c != "after checking with vgs -o vg_name,vg_uuid that data is "+vgU1+": vgremove --yes data && pvremove --yes /dev/sdc1" {
 		t.Errorf("%q", c)
 	}
 	fresh.Extra[lvmExtraPVs] = "/dev/sdc1,/dev/sdz"
@@ -764,5 +784,170 @@ func TestLVMDestroyVGGrewBeforeVGRemove(t *testing.T) {
 		if strings.Contains(c, "vgremove") || strings.Contains(c, "pvremove") {
 			t.Errorf("ran %q", c)
 		}
+	}
+}
+
+// renameAndRecreate renames data (vgU1) to data_old and creates a new VG
+// data (vgU2) on /dev/sdd1.
+func renameAndRecreate(s *lvdSim) {
+	s.vgs[0].name = "data_old"
+	for _, p := range s.pvs {
+		if p.vgUUID == vgU1 {
+			p.vg = "data_old"
+		}
+	}
+	s.vgs = append(s.vgs, &lvdVG{name: "data", uuid: vgU2, attr: "wz--n-", size: "1"})
+	s.pvs[2].vg, s.pvs[2].vgUUID = "data", vgU2
+}
+
+func TestLVMDestroyRenamedAndRecreatedBeforeLVRemove(t *testing.T) {
+	s := dataVG(t)
+	vg := findExisting(t, listLVM(t, s), "data")
+	renameAndRecreate(s)
+	err := s.lvm().Destroy(context.Background(), vg)
+	if err == nil || !strings.Contains(err.Error(), "uuid") || !strings.Contains(err.Error(), "nothing done") {
+		t.Errorf("error %v", err)
+	}
+	if m := lvmMutations(s.calls); len(m) != 0 {
+		t.Errorf("ran %q", m)
+	}
+}
+
+func TestLVMDestroyRenamedAndRecreatedBeforeVGRemove(t *testing.T) {
+	s := dataVG(t)
+	vg := findExisting(t, listLVM(t, s), "data")
+	s.after["lvm lvremove"] = func() { renameAndRecreate(s) }
+	err := s.lvm().Destroy(context.Background(), vg)
+	if err == nil || !strings.Contains(err.Error(), "volume group named data is not "+vgU1) ||
+		!strings.HasSuffix(err.Error(), "; nothing proven is left to run by hand") {
+		t.Errorf("error %v", err)
+	}
+	if m := lvmMutations(s.calls); len(m) != 1 {
+		t.Errorf("mutations %q", m)
+	}
+	if s.vgByName("data") == nil || s.vgByName("data_old") == nil {
+		t.Error("a volume group was removed")
+	}
+}
+
+func TestLVMExistingForeignAndShared(t *testing.T) {
+	cases := []struct {
+		name, local, vgSys, shared, lock, want string
+	}{
+		{"foreign system id", "myhost", "otherhost", "", "", "system ID"},
+		{"local id unknown", "-", "myhost", "", "", "system ID"},
+		{"no local id", "", "myhost", "", "", "system ID"},
+		{"local system id", "myhost", "myhost", "", "", ""},
+		{"shared", "", "", "shared", "", "shared/clustered"},
+		{"lockd", "", "", "", "dlm", "shared/clustered"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := dataVG(t)
+			s.sysID = tc.local
+			s.vgs[0].sysid, s.vgs[0].shared, s.vgs[0].lock = tc.vgSys, tc.shared, tc.lock
+			vg := findExisting(t, listLVM(t, s), "data")
+			if tc.want == "" && vg.Blocked != "" || !strings.Contains(vg.Blocked, tc.want) {
+				t.Errorf("blocked %q, want %q", vg.Blocked, tc.want)
+			}
+		})
+	}
+}
+
+// A PV that names a VG uuid or system ID without a VG name is never an
+// orphan.
+func TestLVMExistingPVOfAnUnnamedVGIsNotAnOrphan(t *testing.T) {
+	for _, set := range []func(*lvdPV){
+		func(p *lvdPV) { p.vgUUID = vgU2 },
+		func(p *lvdPV) { p.sysid = "otherhost" },
+	} {
+		s := dataVG(t)
+		set(s.pvs[2])
+		es := listLVM(t, s)
+		for _, e := range es {
+			if e.Extra[ExtraOrphanPV] == "yes" {
+				t.Errorf("orphan %+v", e)
+			}
+		}
+		e := es[len(es)-1]
+		if !strings.HasPrefix(e.ID, "foreign:") || e.Blocked == "" || e.Disks[0].Name != "sdd" {
+			t.Errorf("%+v", e)
+		}
+	}
+	// pvInfo: the orphan check before pvremove sees it too.
+	s := dataVG(t)
+	o := findExisting(t, listLVM(t, s), "sdd1")
+	s.before["lvm pvs --foreign --shared --reportformat json -o pv_name,pv_uuid,vg_name,vg_uuid,vg_systemid /dev/sdd1"] = func() { s.pvs[2].sysid = "otherhost" }
+	if err := s.lvm().Destroy(context.Background(), o); err == nil || !strings.Contains(err.Error(), "nothing done") {
+		t.Errorf("error %v", err)
+	}
+	if m := lvmMutations(s.calls); len(m) != 0 {
+		t.Errorf("ran %q", m)
+	}
+}
+
+// A step that has started is not killed by a cancel; the next one does not
+// start.
+func TestLVMDestroyCancelDuringAStepLetsItFinish(t *testing.T) {
+	s := dataVG(t)
+	vg := findExisting(t, listLVM(t, s), "data")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.before["lvm lvremove"] = cancel
+	err := s.lvm().Destroy(ctx, vg)
+	if err == nil || !strings.Contains(err.Error(), "logical volumes removed") || !strings.Contains(err.Error(), "canceled") {
+		t.Errorf("error %v", err)
+	}
+	if len(s.mutErrs) != 1 || s.mutErrs[0] != nil {
+		t.Errorf("lvremove ran with a cancelled context: %v", s.mutErrs)
+	}
+	if len(s.lvs) != 0 {
+		t.Error("lvremove did not complete")
+	}
+}
+
+func TestLVMDestroyPVCheckErrorNamesNoUncheckedPV(t *testing.T) {
+	s := dataVG(t)
+	vg := findExisting(t, listLVM(t, s), "data")
+	s.fail["lvm pvs --foreign --shared --reportformat json -o pv_name,pv_uuid,vg_name,vg_uuid,vg_systemid /dev/sdb"] = errors.New("lvm crashed")
+	err := s.lvm().Destroy(context.Background(), vg)
+	if err == nil || !strings.HasSuffix(err.Error(), "; nothing proven is left to run by hand") {
+		t.Errorf("error %v", err)
+	}
+}
+
+// A listed PV path that carries no label after vgremove (renamed: it may
+// now name another device) is not counted as removed.
+func TestLVMDestroyPVPathWithoutLabelIsNotRemoved(t *testing.T) {
+	s := dataVG(t)
+	s.devices = []string{"/dev/sdb", "/dev/sdc1"}
+	vg := findExisting(t, listLVM(t, s), "data")
+	s.after["lvm vgremove"] = func() { s.pvs[0].path = "/dev/sdz" }
+	err := s.lvm().Destroy(context.Background(), vg)
+	if err == nil || !strings.Contains(err.Error(), "/dev/sdb carries no LVM label") || strings.Contains(err.Error(), "labels removed from /dev/sdb") {
+		t.Errorf("error %v", err)
+	}
+	if !slices.Contains(s.devices, "/dev/sdb") {
+		t.Error("the devices-file entry of an unverified PV was removed")
+	}
+}
+
+func TestLVMPVPathRe(t *testing.T) {
+	for p, ok := range map[string]bool{"/dev/sdb": true, "/dev/sdc1": true, "/dev/mapper/vg-lv": true, "/dev/md/data": true,
+		"/dev/../sdb": false, "/dev/mapper/../sda": false, "/dev/./sdb": false, "/dev/-f": false, "/dev/sdb/": false, "/dev//sdb": false} {
+		if lvmPVPathRe.MatchString(p) != ok {
+			t.Errorf("%s: %v", p, !ok)
+		}
+	}
+}
+
+// Only the activation changed: the reason says so.
+func TestLVMDestroyActivationChangedSaysSo(t *testing.T) {
+	s := dataVG(t)
+	vg := findExisting(t, listLVM(t, s), "data")
+	os.RemoveAll(filepath.Join(s.sys, "block", "dm-1"))
+	err := s.lvm().Destroy(context.Background(), vg)
+	if err == nil || !strings.Contains(err.Error(), "activated or deactivated since it was listed") {
+		t.Errorf("error %v", err)
 	}
 }

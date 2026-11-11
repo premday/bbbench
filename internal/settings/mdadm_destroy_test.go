@@ -27,6 +27,8 @@ type mdDestroySim struct {
 	stopKeeps bool              // --stop succeeds but the array stays
 	onStop    func()            // called on --stop
 	levels    map[string]string // uuid -> level printed by the scan
+	onZero    func()            // called on --zero-superblock
+	mutErrs   []error           // ctx.Err() seen by each --stop and --zero-superblock
 }
 
 func newMdDestroySim(t *testing.T) *mdDestroySim {
@@ -38,10 +40,17 @@ func (d *mdDestroySim) run(ctx context.Context, name string, args ...string) ([]
 		d.calls = append(d.calls, name+" "+strings.Join(args, " "))
 		return []byte(d.scanOutput()), nil
 	}
+	if name == "mdadm" && len(args) > 0 && args[0] == "--zero-superblock" {
+		if d.onZero != nil {
+			d.onZero()
+		}
+		d.mutErrs = append(d.mutErrs, ctx.Err())
+	}
 	if name == "mdadm" && len(args) > 0 && args[0] == "--stop" {
 		if d.onStop != nil {
 			d.onStop()
 		}
+		d.mutErrs = append(d.mutErrs, ctx.Err())
 		if d.stopKeeps {
 			d.calls = append(d.calls, name+" "+strings.Join(args, " "))
 			return nil, nil
@@ -527,6 +536,33 @@ func TestMdDestroyCancelledDuringStopStillVerifies(t *testing.T) {
 		if strings.Contains(c, "--zero-superblock") {
 			t.Errorf("zeroed after cancel: %q", s.calls)
 		}
+	}
+	if len(s.mutErrs) != 1 || s.mutErrs[0] != nil {
+		t.Errorf("--stop ran with a cancelled context: %v", s.mutErrs)
+	}
+}
+
+// A cancel during a zero lets that zero finish and starts no other.
+func TestMdDestroyCancelledDuringZeroFinishesIt(t *testing.T) {
+	s, e := raid5Sim(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.onZero = cancel
+	err := s.mdadm().Destroy(ctx, e)
+	if err == nil || !strings.Contains(err.Error(), "superblocks zeroed on /dev/sdb") {
+		t.Fatalf("error %v", err)
+	}
+	if !slices.Equal(s.mutErrs, []error{nil, nil}) {
+		t.Errorf("a started step ran with a cancelled context: %v", s.mutErrs)
+	}
+	n := 0
+	for _, c := range s.calls {
+		if strings.Contains(c, "--zero-superblock") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("zeroed %d devices after cancel: %q", n, s.calls)
 	}
 }
 

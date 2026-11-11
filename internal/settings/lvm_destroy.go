@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -37,20 +38,31 @@ var (
 	// lvmVGNameRe is a VG name Destroy passes to lvm: LVM's characters,
 	// not starting with "-" (never read as a flag).
 	lvmVGNameRe = regexp.MustCompile(`^[A-Za-z0-9_.+][A-Za-z0-9_.+-]*$`)
-	// lvmPVPathRe is a PV path Destroy passes to lvm.
-	lvmPVPathRe = regexp.MustCompile(`^/dev/[A-Za-z0-9_.:+-][A-Za-z0-9_.:+/-]*$`)
+	// lvmPVPathRe is a PV path Destroy passes to lvm: /dev/ and segments
+	// that do not start with "." or "-" (no "..", never read as a flag).
+	lvmPVPathRe = regexp.MustCompile(`^/dev/[A-Za-z0-9_:+][A-Za-z0-9_.:+-]*(/[A-Za-z0-9_:+][A-Za-z0-9_.:+-]*)*$`)
 )
 
-// The listing commands of Existing.
+// The listing commands of Existing. --foreign and --shared make lvm show
+// the VGs of another host's system ID and shared (lvmlockd) VGs too, so
+// that they are listed as Blocked instead of passing unseen (their PVs
+// as orphans).
+//
+// UNVERIFIED on hardware: --foreign and --shared on vgs, lvs and pvs, the
+// vg_systemid and vg_shared fields, and the "system ID:" line of
+// lvm systemid.
 var (
-	lvmVGsArgs = []string{"vgs", "--reportformat", "json", "--units", "b", "--nosuffix", "-o", "vg_name,vg_uuid,vg_attr,vg_size,vg_lock_type,vg_missing_pv_count"}
-	lvmLVsArgs = []string{"lvs", "-a", "--reportformat", "json", "-o", "vg_uuid,lv_name,lv_attr"}
-	lvmPVsArgs = []string{"pvs", "--reportformat", "json", "--units", "b", "--nosuffix", "-o", "pv_name,pv_uuid,pv_size,vg_name,vg_uuid"}
+	lvmVGsArgs = []string{"vgs", "--foreign", "--shared", "--reportformat", "json", "--units", "b", "--nosuffix", "-o", "vg_name,vg_uuid,vg_attr,vg_size,vg_lock_type,vg_shared,vg_systemid,vg_missing_pv_count"}
+	lvmLVsArgs = []string{"lvs", "-a", "--foreign", "--shared", "--reportformat", "json", "-o", "vg_uuid,lv_name,lv_attr"}
+	lvmPVsArgs = []string{"pvs", "--foreign", "--shared", "--reportformat", "json", "--units", "b", "--nosuffix", "-o", "pv_name,pv_uuid,pv_size,vg_name,vg_uuid,vg_systemid"}
 )
 
-// lvmListing is one read of vgs, lvs -a and pvs.
+// lvmListing is one read of vgs, lvs -a, pvs and the local system ID
+// (localKnown false when lvm systemid failed).
 type lvmListing struct {
 	vgs, lvs, pvs []map[string]string
+	local         string
+	localKnown    bool
 }
 
 func (b *lvm) listing(ctx context.Context) (*lvmListing, error) {
@@ -70,7 +82,38 @@ func (b *lvm) listing(ctx context.Context) (*lvmListing, error) {
 		}
 		*q.dst = rows
 	}
+	l.local, l.localKnown = b.systemID(ctx)
 	return l, nil
+}
+
+// systemID is the local LVM system ID ("" when the host has none); ok is
+// false when it cannot be read.
+func (b *lvm) systemID(ctx context.Context) (string, bool) {
+	out, err := b.env.Run(ctx, "lvm", "systemid")
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if _, v, ok := strings.Cut(line, "system ID:"); ok {
+			return strings.TrimSpace(v), true
+		}
+	}
+	return "", false
+}
+
+// foreignVG is why a VG with system ID sys is another host's, "" when it
+// is this host's. When the local ID cannot be read, any system ID is.
+func (l *lvmListing) foreignVG(sys string) string {
+	sys = strings.TrimSpace(sys)
+	if sys == "" || (l.localKnown && sys == l.local) {
+		return ""
+	}
+	return fmt.Sprintf("volume group of another host (system ID %s); destroy it by hand on that host", sys)
+}
+
+// pvOrphan is whether a pvs row names no VG at all (name, uuid, system ID).
+func pvOrphan(r map[string]string) bool {
+	return r["vg_name"] == "" && r["vg_uuid"] == "" && r["vg_systemid"] == ""
 }
 
 // dmByVG maps the dash-less VG uuid to the dm nodes whose dm uuid is
@@ -159,23 +202,36 @@ func (b *lvm) Existing(ctx context.Context) ([]Existing, error) {
 				pvs = append(pvs, r)
 			}
 		}
-		out = append(out, b.existingVG(v, lvs, pvs, dms[dashless(v["vg_uuid"])], names[v["vg_name"]] > 1))
+		e := b.existingVG(v, lvs, pvs, dms[dashless(v["vg_uuid"])], names[v["vg_name"]] > 1)
+		if why := l.foreignVG(v["vg_systemid"]); why != "" {
+			e.Blocked = why
+		}
+		out = append(out, e)
 	}
 
-	// PVs of a VG vgs does not show, then orphan PVs.
+	// PVs of a VG vgs does not show, then orphan PVs. A PV that names a
+	// VG in any way (name, uuid, system ID) is never an orphan.
 	foreign := map[string][]string{}
 	var orphans []map[string]string
 	for _, r := range l.pvs {
 		switch {
-		case r["vg_name"] == "":
+		case pvOrphan(r):
 			orphans = append(orphans, r)
-		case !listed[r["vg_uuid"]] || names[r["vg_name"]] == 0:
-			foreign[r["vg_name"]] = append(foreign[r["vg_name"]], r["pv_name"])
+		case r["vg_name"] == "" || !listed[r["vg_uuid"]] || names[r["vg_name"]] == 0:
+			key := r["vg_name"]
+			if key == "" {
+				key = r["vg_uuid"]
+			}
+			if key == "" {
+				key = filepath.Base(r["pv_name"])
+			}
+			foreign[key] = append(foreign[key], r["pv_name"])
 		}
 	}
 	for _, name := range slices.Sorted(mapKeys(foreign)) {
 		paths := slices.Sorted(slices.Values(foreign[name]))
-		e := Existing{Backend: b.Name(), ID: name, Name: name,
+		// Its ID never equals a VG name: it is tied to no VG uuid.
+		e := Existing{Backend: b.Name(), ID: "foreign:" + name, Name: name,
 			Summary: fmt.Sprintf("vg %s: not listed by vgs, %s", name, plural(len(paths), "PV", "PVs")),
 			Disks:   b.disksOfPVs(paths), Stack: append([]string{"vg " + name}, pvLines(paths)...),
 			Extra:   map[string]string{ExtraOwnedVG: name, lvmExtraPVs: strings.Join(paths, ",")},
@@ -224,7 +280,9 @@ func sizeOf(s string) string {
 
 // existingVG is the entry of the volume group v. Stack holds only what
 // does not change while the VG is used (its visible LVs, its PVs); the
-// activity goes in Summary, which the gate does not compare.
+// activity goes in Summary, which the gate does not compare. The owned
+// nodes are the active dm nodes, so activating or deactivating an LV after
+// the listing makes the gate refuse the entry as changed: list it again.
 //
 // UNVERIFIED on hardware: the vg_attr characters read (3 x exported, 4 p
 // partial, 6 c clustered or s shared), vg_lock_type of a local VG ("" or
@@ -280,6 +338,7 @@ func (b *lvm) existingVG(v map[string]string, lvs, pvs []map[string]string, dms 
 		return 0
 	}
 	lock := strings.TrimSpace(v["vg_lock_type"])
+	shared := strings.TrimSpace(v["vg_shared"])
 	miss, _ := strconv.Atoi(strings.TrimSpace(v["vg_missing_pv_count"]))
 	switch {
 	case !lvmVGNameRe.MatchString(name):
@@ -288,7 +347,7 @@ func (b *lvm) existingVG(v map[string]string, lvs, pvs []map[string]string, dms 
 		e.Blocked = fmt.Sprintf("two volume groups are named %s; rename one by its uuid (vgrename <uuid> <new name>) first", name)
 	case missing || miss > 0 || at(3) == 'p':
 		e.Blocked = "volume group has missing physical volumes; fix it or remove it by hand (vgreduce --removemissing, then vgremove)"
-	case at(5) == 'c' || at(5) == 's' || (lock != "" && lock != "none"):
+	case at(5) == 'c' || at(5) == 's' || (lock != "" && lock != "none") || (shared != "" && shared != "0"):
 		e.Blocked = "shared/clustered volume group; remove it by hand with its lock manager running"
 	case at(2) == 'x':
 		e.Blocked = "exported volume group (vgexport); import it with vgimport first or remove it by hand"
@@ -399,6 +458,12 @@ func (b *lvm) relist(ctx context.Context, e Existing) string {
 		return fmt.Sprintf("its uuid is now %s, not %s", fresh.Extra[lvmExtraVGUUID], e.Extra[lvmExtraVGUUID])
 	}
 	if why := sameExisting(e, *fresh); why != "" {
+		same := *fresh
+		same.Extra = maps.Clone(fresh.Extra)
+		same.Extra[ExtraOwnedNodes] = e.Extra[ExtraOwnedNodes]
+		if sameExisting(e, same) == "" {
+			return "its logical volumes were activated or deactivated since it was listed; list it again"
+		}
 		return fmt.Sprintf("it changed since it was listed (%s)", why)
 	}
 	for _, k := range []string{lvmExtraPVs, lvmExtraLVs, lvmExtraPVUUID, lvmExtraPVPath} {
@@ -464,6 +529,10 @@ func (b *lvm) Destroy(ctx context.Context, e Existing) error {
 	return b.destroyVG(ctx, e, vg, e.Extra[lvmExtraVGUUID], pvs, splitList(e.Extra[lvmExtraLVs]))
 }
 
+// Every mutating step below runs with context.WithoutCancel: a step that
+// has started (lvremove, vgremove, pvremove) and its read-back finish even
+// when ctx is cancelled; ctx is checked only between steps.
+
 // lvmProgress is how far a VG teardown got.
 type lvmProgress struct {
 	lvsDone bool
@@ -489,7 +558,7 @@ func (b *lvm) destroyVG(ctx context.Context, e Existing, vg, uuid string, pvs, l
 	}
 
 	if len(lvs) > 0 {
-		if _, err := b.run(ctx, "lvremove", "--yes", "--autobackup", "n", vg); err != nil {
+		if _, err := b.run(bg, "lvremove", "--yes", "--autobackup", "n", vg); err != nil {
 			left, lerr := b.lvsLeft(bg, uuid)
 			if lerr == nil {
 				st.lvsLeft = left
@@ -532,13 +601,22 @@ func (b *lvm) destroyVG(ctx context.Context, e Existing, vg, uuid string, pvs, l
 		return fail(fmt.Errorf("the physical volumes of %s are now %s, not %s; vgremove not run", vg, strings.Join(now, ", "), strings.Join(pvs, ", ")))
 	}
 
-	if _, err := b.run(ctx, "vgremove", "--yes", "--autobackup", "n", vg); err != nil {
-		if still, cerr := b.vgExists(bg, vg); cerr == nil && !still {
+	// vgremove takes a name: the VG of that name must be this uuid now (a
+	// rename and a new VG of the same name since the listing).
+	if err := b.vgIs(ctx, vg, uuid); err != nil {
+		st.noHand = true
+		return fail(fmt.Errorf("%v; vgremove not run", err))
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	if _, err := b.run(bg, "vgremove", "--yes", "--autobackup", "n", vg); err != nil {
+		if still, cerr := b.vgUUIDExists(bg, uuid); cerr == nil && !still {
 			st.vgDone = true
 		}
 		return fail(err)
 	}
-	still, err := b.vgExists(bg, vg)
+	still, err := b.vgUUIDExists(bg, uuid)
 	if err != nil {
 		return fail(fmt.Errorf("cannot check that volume group %s is gone: %v", vg, err))
 	}
@@ -554,13 +632,15 @@ func (b *lvm) destroyVG(ctx context.Context, e Existing, vg, uuid string, pvs, l
 		}
 		isPV, other, pu, err := b.pvInfo(ctx, p)
 		if err != nil {
-			st.pvsHand = pvs[i+1:]
+			// lvm cannot be read: no PV is named that was not checked.
+			st.pvsHand = nil
 			return fail(fmt.Errorf("%s could not be checked (%v); do not remove it before pvs shows it in no volume group", p, err))
 		}
 		if !isPV {
-			slog.Info("physical volume carries no LVM label any more; nothing to remove", "pv", p, "vg", vg)
-			st.pvsDone = append(st.pvsDone, p)
-			continue
+			// Gone, or the path now names another device: not proven
+			// removed, so not counted and its devices entry kept.
+			st.pvsHand = pvs[i+1:]
+			return fail(fmt.Errorf("%s carries no LVM label: it may have been removed or the path may now name another device; check it by hand", p))
 		}
 		if other != "" {
 			st.pvsHand = pvs[i+1:]
@@ -570,7 +650,7 @@ func (b *lvm) destroyVG(ctx context.Context, e Existing, vg, uuid string, pvs, l
 			st.pvsHand = pvs[i+1:]
 			return fail(fmt.Errorf("%s now carries physical volume %s, not %s; do not remove it", p, pu, uuids[p]))
 		}
-		if _, err := b.run(ctx, "pvremove", "--yes", p); err != nil {
+		if _, err := b.run(bg, "pvremove", "--yes", p); err != nil {
 			return fail(err)
 		}
 		gone, err := b.pvGone(bg, p)
@@ -608,7 +688,7 @@ func (b *lvm) destroyOrphan(ctx context.Context, e Existing, path, uuid string, 
 		return refuse("%s now carries physical volume %s, not %s", path, pu, uuid)
 	}
 	hand := "rest by hand, " + orphanFirst(e.Name, "pvremove --yes "+shQuote(path))
-	if _, err := b.run(ctx, "pvremove", "--yes", path); err != nil {
+	if _, err := b.run(bg, "pvremove", "--yes", path); err != nil {
 		return fmt.Errorf("%s: label not removed; %v; %s", e.Name, err, hand)
 	}
 	gone, err := b.pvGone(bg, path)
@@ -634,9 +714,45 @@ func (b *lvm) pvRows(ctx context.Context) ([]map[string]string, error) {
 	return lvReport(out, "pv")
 }
 
-// pvInfo reports whether path is a PV, its VG and its uuid.
+// vgIs checks that exactly one VG is named vg and that it has uuid.
+func (b *lvm) vgIs(ctx context.Context, vg, uuid string) error {
+	rows, err := b.vgRows(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot list the volume groups: %v", err)
+	}
+	var got []string
+	for _, r := range rows {
+		if r["vg_name"] == vg {
+			got = append(got, r["vg_uuid"])
+		}
+	}
+	if len(got) != 1 || got[0] != uuid {
+		return fmt.Errorf("the volume group named %s is not %s (uuids now: %s); it may have been renamed", vg, uuid, strings.Join(got, ", "))
+	}
+	return nil
+}
+
+// vgUUIDExists is whether a VG with uuid is listed.
+func (b *lvm) vgUUIDExists(ctx context.Context, uuid string) (bool, error) {
+	rows, err := b.vgRows(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(rows, func(r map[string]string) bool { return r["vg_uuid"] == uuid }), nil
+}
+
+func (b *lvm) vgRows(ctx context.Context) ([]map[string]string, error) {
+	out, err := b.run(ctx, lvmVGsArgs...)
+	if err != nil {
+		return nil, err
+	}
+	return lvReport(out, "vg")
+}
+
+// pvInfo reports whether path is a PV, what VG it belongs to ("" for none:
+// no VG name, uuid or system ID) and its uuid.
 func (b *lvm) pvInfo(ctx context.Context, path string) (bool, string, string, error) {
-	out, ok, err := b.exists(ctx, pvNotFound, "pvs", "--reportformat", "json", "-o", "pv_name,pv_uuid,vg_name", path)
+	out, ok, err := b.exists(ctx, pvNotFound, "pvs", "--foreign", "--shared", "--reportformat", "json", "-o", "pv_name,pv_uuid,vg_name,vg_uuid,vg_systemid", path)
 	if err != nil || !ok {
 		return false, "", "", err
 	}
@@ -647,7 +763,17 @@ func (b *lvm) pvInfo(ctx context.Context, path string) (bool, string, string, er
 	if len(rows) != 1 {
 		return false, "", "", fmt.Errorf("pvs %s lists %d physical volumes", path, len(rows))
 	}
-	return true, rows[0]["vg_name"], rows[0]["pv_uuid"], nil
+	r := rows[0]
+	owner := ""
+	switch {
+	case r["vg_name"] != "":
+		owner = r["vg_name"]
+	case r["vg_uuid"] != "":
+		owner = "with uuid " + r["vg_uuid"]
+	case r["vg_systemid"] != "":
+		owner = "of system ID " + r["vg_systemid"]
+	}
+	return true, owner, r["pv_uuid"], nil
 }
 
 // pvGone checks that path carries no PV after pvremove.
@@ -661,7 +787,7 @@ func (b *lvm) pvGone(ctx context.Context, path string) (bool, error) {
 
 // lvsLeft are the LVs (hidden ones included) of the VG with uuid.
 func (b *lvm) lvsLeft(ctx context.Context, uuid string) ([]string, error) {
-	out, err := b.run(ctx, "lvs", "-a", "--reportformat", "json", "-o", "lv_name", "--select", "vg_uuid="+uuid)
+	out, err := b.run(ctx, "lvs", "-a", "--foreign", "--shared", "--reportformat", "json", "-o", "lv_name", "--select", "vg_uuid="+uuid)
 	if err != nil {
 		return nil, err
 	}
@@ -706,11 +832,17 @@ func (b *lvm) vgPartial(e Existing, vg string, st *lvmProgress, cause error) err
 			if st.vgDone {
 				hand = "rest by hand, " + orphanFirst("each", c)
 			} else {
-				hand = "rest by hand: " + c
+				hand = "rest by hand, " + vgFirst(vg, e.Extra[lvmExtraVGUUID], c)
 			}
 		}
 	}
 	return fmt.Errorf("%s: %s; %v; %s", e.Name, strings.Join(parts, "; "), cause, hand)
+}
+
+// vgFirst is cmd, which names vg, prefixed with the check that the VG of
+// that name is still the one with uuid.
+func vgFirst(vg, uuid, cmd string) string {
+	return "after checking with vgs -o vg_name,vg_uuid that " + vg + " is " + uuid + ": " + cmd
 }
 
 // orphanFirst is cmd prefixed with the check to make before running it.
@@ -799,5 +931,9 @@ func (b *lvm) LeftoverCommand(confirmed, fresh Existing) string {
 	if !within(lvmExtraPVs) || !within(lvmExtraLVs) {
 		return ""
 	}
-	return vgCommand(vg, len(splitList(fresh.Extra[lvmExtraLVs])) > 0, true, splitList(fresh.Extra[lvmExtraPVs]))
+	c := vgCommand(vg, len(splitList(fresh.Extra[lvmExtraLVs])) > 0, true, splitList(fresh.Extra[lvmExtraPVs]))
+	if c == "" {
+		return ""
+	}
+	return vgFirst(vg, confirmed.Extra[lvmExtraVGUUID], c)
 }

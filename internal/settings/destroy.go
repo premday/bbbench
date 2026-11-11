@@ -73,8 +73,8 @@ const maxStackDepth = 16
 // members of the entry it was given and stop at the first step that fails.
 // Each atomic tool step runs to completion: once a mutation has started, it
 // and the read-back that verifies it are not abandoned when ctx is
-// cancelled (verify with context.WithoutCancel); ctx is checked only
-// between steps.
+// cancelled (run both with context.WithoutCancel: Env.Run kills a command
+// whose ctx ends); ctx is checked only between steps.
 //
 // A Destroy error must say what is done, what is left and the command for
 // what is left: the gate adds no command of its own to it. DestroyCommand
