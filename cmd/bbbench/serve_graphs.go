@@ -472,6 +472,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             background: #fff; border-radius: 8px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         }
+        .sec-hdr .sec-trace { font-size: 11px; font-weight: 400; color: #64748b; margin-top: 2px; }
         .sec-hdr:hover { background: #f8fafc; }
         .sec-hdr .chev { display: inline-block; font-size: 10px; color: #94a3b8; transition: transform 0.18s; }
         .sec-hdr.collapsed .chev { transform: rotate(-90deg); }
@@ -798,11 +799,59 @@ __NAVBAR_HTML__
         warnEl.className = warnEl.className.includes('modal') ? 'modal-ts-warn' : 'ts-warn';
         warnEl.textContent = (warnEl.textContent ? warnEl.textContent + ' \u00b7 ' : '') + n;
     }
-    function srcBadge(metric) {
+    // ftraceRef is the static reference of the kernel tracepoints (trace
+    // events) behind an ftrace metric and the pair each latency spans, per
+    // source: NVMe vs everything else. '' for a metric without ftrace data.
+    function ftraceRef(metric) {
+        const flush = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (flush opcode); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (rwbs F, 0 sectors)';
+        const dev = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (read and write commands); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (read and write requests)';
+        const blk = 'every device, NVMe included: block_rq_insert -> block_rq_complete (a request issued without an insert counts from block_rq_issue; merges via block_rq_merge)';
+        switch (metric.key) {
+        case 'flush': return flush;
+        case 'iolat': return dev;
+        case 'iolatblk': return blk;
+        case 'lat': return 'device: ' + dev + ' \u00b7 block layer: ' + blk;
+        }
+        return '';
+    }
+    // ftraceEvents is the union of the tracepoint pairs actually monitored in
+    // the shown runs for a metric (Flush summary events, io_trace device
+    // events; the insert pair is the block-layer one), in first-seen order.
+    function ftraceEvents(data, metric) {
+        const out = [];
+        const add = e => { if (e && !out.includes(e)) out.push(e); };
+        (data || []).forEach(d => {
+            if (metric.key === 'flush') {
+                ((d.flush && d.flush.events) || []).forEach(add);
+                return;
+            }
+            if (metric.key !== 'iolat' && metric.key !== 'iolatblk' && metric.key !== 'lat') return;
+            ((d.io_trace && d.io_trace.devices) || []).forEach(dev => (dev.events || []).forEach((e, i) => {
+                // the block-layer pair is the last event when the device has one
+                const blk = !!dev.block_layer && i === dev.events.length - 1;
+                if (metric.key === 'lat' || (metric.key === 'iolatblk') === blk) add(e);
+            }));
+        });
+        return out;
+    }
+    // srcTitleOf is the tooltip of a metric's source badge: what measures it
+    // and, for the ftrace metrics, the kernel tracepoints (static reference)
+    // plus those monitored in the shown runs (data, when there are any).
+    function srcTitleOf(metric, data) {
+        let t = metric.srcTitle || SRC_TITLE[metric.source];
+        const ref = ftraceRef(metric);
+        if (!ref) return t;
+        t += metric.key === 'lat' ? '\nDashed ftrace lines, kernel tracepoints: ' + ref
+            : '\nKernel tracepoints: ' + ref;
+        const mon = ftraceEvents(data, metric);
+        if (mon.length) t += '\nMonitored in the shown runs: ' + mon.join('; ');
+        return t;
+    }
+    function srcBadge(metric, data) {
         const b = document.createElement('span');
         b.className = 'src src-' + metric.source;
         b.textContent = metric.source;
-        b.title = metric.srcTitle || SRC_TITLE[metric.source];
+        b.title = srcTitleOf(metric, data);
         return b;
     }
 
@@ -930,7 +979,7 @@ __NAVBAR_HTML__
             lbl.appendChild(cb);
             lbl.appendChild(document.createTextNode('\u00a0' + label));
             lbl.appendChild(document.createTextNode(' '));
-            lbl.appendChild(srcBadge(METRICS.find(m => m.key === v)));
+            lbl.appendChild(srcBadge(METRICS.find(m => m.key === v), allData));
             li.appendChild(lbl);
             ul.appendChild(li);
         });
@@ -1836,7 +1885,7 @@ __NAVBAR_HTML__
         t1.className = 'card-title';
         t1.textContent = d.disk + settingTag(d, RPV);
         t1.appendChild(document.createTextNode(' '));
-        t1.appendChild(srcBadge(metric));
+        t1.appendChild(srcBadge(metric, [d]));
         const mdh = mdHeader(d, metric);
         if (mdh) mdh.badges.forEach(b => { t1.appendChild(document.createTextNode(' ')); t1.appendChild(b); });
         card.appendChild(t1);
@@ -1914,7 +1963,14 @@ __NAVBAR_HTML__
             const secHdr = document.createElement('div');
             secHdr.className = 'sec-hdr';
             secHdr.innerHTML = '<span class="chev">▼</span>' + metric.label + ' ';
-            secHdr.appendChild(srcBadge(metric));
+            secHdr.appendChild(srcBadge(metric, data));
+            const mon = ftraceEvents(data, metric);
+            if (mon.length) {
+                const sub = document.createElement('div');
+                sub.className = 'sec-trace';
+                sub.textContent = 'tracepoints monitored: ' + mon.join('; ');
+                secHdr.appendChild(sub);
+            }
             section.appendChild(secHdr);
 
             const secBody = document.createElement('div');

@@ -515,6 +515,18 @@ shown series, and the choice is kept in the page only until it is reloaded. The
 compare page does not draw this data. See
 [documentation/web-ui.md](documentation/web-ui.md).
 
+**Tracepoints behind each ftrace metric.**
+
+| Metric (graph type) | Kernel tracepoints (trace events) and the pair the latency spans |
+|---|---|
+| Flush latency | Device Flush commands. NVMe: `nvme_setup_cmd` -> `nvme_complete_rq` (flush opcode, I/O queues, paired exactly by controller, queue, command id). Any other device, and NVMe without those tracepoints: `block_rq_issue` -> `block_rq_complete` (rwbs `F`, 0 sectors, first-in first-out) |
+| Device latency (ftrace) | Each read and write. NVMe: `nvme_setup_cmd` -> `nvme_complete_rq` (read and write commands, exact). Any other device (SATA, SAS, HDDs, array members), and NVMe without those tracepoints: `block_rq_issue` -> `block_rq_complete` (first-in first-out per sector) |
+| Block-layer latency (ftrace) | Every device, NVMe included: `block_rq_insert` -> `block_rq_complete` (a request issued without an insert counts from `block_rq_issue`; merges via `block_rq_merge`), so it adds the I/O scheduler and software queues |
+| Latency chart, dashed ftrace lines | Both of the previous: the Device latency and the Block-layer latency means |
+
+The same text is the tooltip of each metric's source badge (the `ftrace` badge in the graph-type list, the section headers and the card titles; the Latency badge says `fio` and its tooltip adds the dashed lines). The tooltip and the section header then also list the tracepoints actually monitored in the shown runs, from the data (`io_trace.devices[].events`, `flush.events` in the run summary JSON), so they match reality when a kernel lacks one.
+
+
 ---
 
 ## Config and template discovery

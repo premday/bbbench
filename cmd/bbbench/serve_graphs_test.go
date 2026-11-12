@@ -782,9 +782,11 @@ func TestGraphsPageLegendsNameSource(t *testing.T) {
 	}
 }
 
-// Tracepoint names come from the data (io_trace.text, flush_source), never from the page.
+// Per-card tracepoint names come from the data (io_trace.text, flush_source),
+// never from the page; only the metric-level help (ftraceRef) is static.
 func TestGraphsPageNoNVMeAssumption(t *testing.T) {
 	body := graphsPageBody(t)
+	body = strings.Replace(body, jsFunction(t, body, "ftraceRef"), "", 1)
 	for _, bad := range []string{"nvme_", "block_rq"} {
 		if strings.Contains(body, bad) {
 			t.Errorf("graphs page hard-codes %q", bad)
@@ -1380,6 +1382,55 @@ setShown('lat', 'ftrace.device.mean.r', false);
 made.length = 0;
 seriesRow({disk: 'sda'}, M, 'normal', 'lat:p:0');
 assert.deepStrictEqual(made.filter(e => e.tag === 'input').map(b => b.checked), [true, false]);
+console.log('OK');
+`)
+}
+
+func TestGraphsPageSrcBadgeTracepoints(t *testing.T) {
+	runPageJS(t, []string{"ftraceRef", "ftraceEvents", "srcTitleOf", "srcBadge"}, `
+const assert = require('assert');
+const SRC_TITLE = {fio: 'Measured by fio'};
+const document = {createElement: () => ({})};
+const M = (key, source, srcTitle) => ({key, source, srcTitle});
+const flush = M('flush', 'ftrace', 'Measured from kernel ftrace events (device Flush commands), not by fio');
+const iolat = M('iolat', 'ftrace', 'Measured from kernel ftrace events (dev)');
+const blk = M('iolatblk', 'ftrace', 'Measured from kernel ftrace events (blk)');
+const lat = M('lat', 'fio');
+const iops = M('iops', 'fio');
+const nv = {flush: {events: ['nvme_setup_cmd -> nvme_complete_rq']},
+  io_trace: {devices: [{block_layer: true, events: ['nvme_setup_cmd -> nvme_complete_rq', 'block_rq_insert -> block_rq_complete']}]}};
+const hdd = {flush: {events: ['block_rq_issue -> block_rq_complete']},
+  io_trace: {devices: [{events: ['block_rq_issue -> block_rq_complete']}]}};
+// static reference: every ftrace metric names its tracepoints, NVMe vs the rest
+for (const m of [flush, iolat, blk, lat]) {
+  const r = ftraceRef(m);
+  assert.ok(r.includes('->') && r.includes('_complete'), m.key);
+}
+assert.ok(ftraceRef(flush).includes('nvme_setup_cmd -> nvme_complete_rq') && ftraceRef(flush).includes('block_rq_issue -> block_rq_complete') && ftraceRef(flush).includes('rwbs F'));
+assert.ok(ftraceRef(iolat).includes('NVMe') && ftraceRef(iolat).includes('any other device'));
+assert.ok(ftraceRef(blk).includes('block_rq_insert -> block_rq_complete') && ftraceRef(blk).includes('block_rq_merge'));
+assert.ok(ftraceRef(lat).includes(ftraceRef(iolat)) && ftraceRef(lat).includes(ftraceRef(blk)));
+assert.strictEqual(ftraceRef(iops), '');
+// monitored events: union, per kind, in first-seen order
+assert.deepStrictEqual(ftraceEvents([nv, hdd], flush), ['nvme_setup_cmd -> nvme_complete_rq', 'block_rq_issue -> block_rq_complete']);
+assert.deepStrictEqual(ftraceEvents([nv, hdd], iolat), ['nvme_setup_cmd -> nvme_complete_rq', 'block_rq_issue -> block_rq_complete']);
+assert.deepStrictEqual(ftraceEvents([nv, hdd], blk), ['block_rq_insert -> block_rq_complete']);
+assert.deepStrictEqual(ftraceEvents([hdd], blk), []);
+assert.deepStrictEqual(ftraceEvents([nv], lat), ['nvme_setup_cmd -> nvme_complete_rq', 'block_rq_insert -> block_rq_complete']);
+assert.deepStrictEqual(ftraceEvents([nv], iops), []);
+assert.deepStrictEqual(ftraceEvents(undefined, flush), []);
+// the badge title: the source, the static reference, then what the data monitored
+let t = srcBadge(flush, [hdd]).title;
+assert.ok(t.startsWith('Measured from kernel ftrace events (device Flush commands)'), t);
+assert.ok(t.includes('\nKernel tracepoints: NVMe: nvme_setup_cmd -> nvme_complete_rq'), t);
+assert.ok(t.endsWith('\nMonitored in the shown runs: block_rq_issue -> block_rq_complete'), t);
+assert.ok(!srcBadge(flush, []).title.includes('Monitored'), 'no data, no monitored line');
+assert.ok(!srcBadge(flush).title.includes('Monitored'));
+t = srcBadge(blk, [nv]).title;
+assert.ok(t.includes('block_rq_insert -> block_rq_complete') && t.endsWith('Monitored in the shown runs: block_rq_insert -> block_rq_complete'), t);
+t = srcBadge(lat, [nv]).title;
+assert.ok(t.startsWith('Measured by fio\nDashed ftrace lines, kernel tracepoints: device: '), t);
+assert.strictEqual(srcBadge(iops, [nv]).title, 'Measured by fio');
 console.log('OK');
 `)
 }
