@@ -622,11 +622,17 @@ __NAVBAR_HTML__
         // Device Flush latency, timed from kernel trace events (not fio).
         { key: 'flush', label: 'Flush latency', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
           has:  d => !!d.flush || !!d.skipped || !!(d.ts_flush && d.ts_flush.length),
+          srcTitle: 'Measured from kernel ftrace events (device Flush commands), not by fio',
           sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns||0)/1000 : 0 },
+        // Read and write request latency of the device, timed from kernel
+        // trace events (any device: NVMe, SATA, SAS, md members).
+        { key: 'iolat', label: 'Device latency (ftrace)', unit: '\u03bcs', tsKey: 'ts_iolat', source: 'ftrace',
+          srcTitle: 'Measured from kernel ftrace events (each read and write request, issue to completion), not by fio',
+          has:  d => !!d.io_trace || !!d.io_trace_note,
+          sumR: d => iolatMean(d, 'r'), sumW: d => iolatMean(d, 'w') },
     ];
     const SRC_TITLE = {
-        fio:    'Measured by fio',
-        ftrace: 'Measured from kernel ftrace events (device Flush commands), not by fio',
+        fio: 'Measured by fio',
     };
     // flushNone explains a Flush phase that was traced but saw no Flush.
     function flushNone(d, metric) {
@@ -634,6 +640,79 @@ __NAVBAR_HTML__
         return 'ftrace saw 0 Flush commands' + (d.flush.write_cache === 'write through'
             ? ': the kernel sends no Flush to this drive (write cache: write through, i.e. its volatile write cache is disabled or absent).'
             : '.');
+    }
+    // iolatMean is the traced device's summary mean latency (us) of a
+    // direction: the first traced device is the target.
+    function iolatMean(d, dir) {
+        const dev = d.io_trace && d.io_trace.devices ? d.io_trace.devices[0] : null;
+        const st = dev && dev.stats && dev.stats.device && dev.stats.device[dir];
+        return st && st.mean_ns > 0 ? st.mean_ns / 1000 : 0;
+    }
+    // iolatNone explains a Device latency card that has nothing to draw: the
+    // reason ftrace was off, or that the target saw no read or write request
+    // (a bio-based md/dm node has no request events; its members do).
+    function iolatNone(d, metric) {
+        if (metric.key !== 'iolat') return '';
+        if (!d.io_trace) return d.io_trace_note || '';
+        const dev = d.io_trace.devices && d.io_trace.devices[0];
+        const st = dev && dev.stats;
+        const any = st && Object.values(st).some(k => k && Object.keys(k).length > 0);
+        return any ? '' : 'ftrace saw no read or write requests on ' + (dev ? dev.name : '?');
+    }
+    // iolatPoints turns the points of one kind and direction into chart
+    // points: x on the member window grid, y = stat in us (negative for
+    // writes); windows without a request are left out.
+    function iolatPoints(d, pts, kind, dir, stat) {
+        const step = memberStep(d);
+        return (pts || []).filter(p => p.kind === kind && p.dir === dir && p.n > 0)
+            .map(p => ({x: memberKey(p.t, step), y: (dir === 'w' ? -1 : 1) * p[stat]}));
+    }
+    // ftraceDatasets are the ftrace lines of a chart: the Latency card gets
+    // the mean device and block layer latency of the target next to fio's,
+    // the Device latency card mean and p99 of both plus each member's device
+    // mean. A kind and direction without points has no dataset.
+    function ftraceDatasets(d, metric) {
+        const out = [];
+        if (metric.key !== 'lat' && metric.key !== 'iolat') return out;
+        const full = metric.key === 'iolat';
+        const base = {fill: false, tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5, spanGaps: true};
+        const rgb = {r: [37, 99, 235], w: [220, 38, 38]};
+        const kinds = [['device', 'device', [6, 3]], ['blocklayer', 'block layer', [2, 2]]];
+        ['r', 'w'].forEach(dir => kinds.forEach(([kind, kname, dash]) => {
+            (full ? [['mean', ' mean', dash, 0.9], ['p99', ' p99', [8, 3, 2, 3], 0.6]] : [['mean', '', dash, 0.9]]).forEach(([stat, sname, dsh, a]) => {
+                const data = iolatPoints(d, d.ts_iolat, kind, dir, stat);
+                if (!data.length) return;
+                const c = rgba(rgb[dir], a);
+                out.push(Object.assign({}, base, {
+                    label: (dir === 'r' ? 'Read ' : 'Write ') + kname + sname + ' (ftrace)', data,
+                    ftrace: true, dir, borderColor: c, backgroundColor: c, borderDash: dsh,
+                }));
+            });
+        }));
+        if (full && d.ts_iolat_members) {
+            const names = Object.keys(d.ts_iolat_members).sort(), colors = memberColors(names);
+            ['r', 'w'].forEach(dir => names.forEach(n => {
+                const data = iolatPoints(d, d.ts_iolat_members[n], 'device', dir, 'mean');
+                if (!data.length) return;
+                const c = rgba(colors[n], 0.9);
+                out.push(Object.assign({}, base, {
+                    label: n + (dir === 'r' ? ' read' : ' write') + ' device mean (ftrace)', data,
+                    ftrace: true, dir, borderColor: c, backgroundColor: c, borderDash: dir === 'w' ? [4, 2] : [],
+                    borderWidth: 1.2,
+                }));
+            }));
+        }
+        return out;
+    }
+    // ftraceExtent is the highest read and write value (us) of the ftrace
+    // lines a card draws, so the phase's y range includes them.
+    function ftraceExtent(d, metric) {
+        let r = 0, w = 0;
+        ftraceDatasets(d, metric).forEach(ds => ds.data.forEach(p => {
+            if (p.y > r) r = p.y;
+            if (-p.y > w) w = -p.y;
+        }));
+        return {r, w};
     }
     // sourceLine says where each series of a card comes from: fio, the
     // kernel's per-disk counters of the members, the monitored ftrace
@@ -672,7 +751,7 @@ __NAVBAR_HTML__
         const b = document.createElement('span');
         b.className = 'src src-' + metric.source;
         b.textContent = metric.source;
-        b.title = SRC_TITLE[metric.source];
+        b.title = metric.srcTitle || SRC_TITLE[metric.source];
         return b;
     }
 
@@ -784,7 +863,7 @@ __NAVBAR_HTML__
 
     function initFilters() {
         // graph_type: static list
-        const GT = [['iops','IOPS'],['bw','Bandwidth'],['lat','Latency'],['flush','Flush latency']];
+        const GT = [['iops','IOPS'],['bw','Bandwidth'],['lat','Latency'],['flush','Flush latency'],['iolat', 'Device latency (ftrace)']];
         const ul = document.getElementById('list-graph_type');
         GT.forEach(([v, label]) => {
             SEL.graph_type.add(v);
@@ -998,6 +1077,8 @@ __NAVBAR_HTML__
             array[x] = p;
             keys.add(x);
         });
+        // The ftrace lines share the grid (the tooltip pairs points by position).
+        ftraceDatasets(d, metric).forEach(ds => ds.data.forEach(p => keys.add(p.x)));
         Object.values(members).forEach(m => Object.keys(m).forEach(x => {
             const s = totals[x] || (totals[x] = {r: 0, w: 0});
             s.r += m[x].r || 0;
@@ -1095,6 +1176,15 @@ __NAVBAR_HTML__
         });
         return out;
     }
+    // ftraceOnGrid: the ftrace lines on the member chart's x grid (null where
+    // a line has no window).
+    function ftraceOnGrid(d, metric, xs) {
+        return ftraceDatasets(d, metric).map(ds => {
+            const at = {};
+            ds.data.forEach(p => { at[p.x] = p.y; });
+            return Object.assign({}, ds, {data: xs.map(x => ({x, y: at[x] === undefined ? null : at[x]}))});
+        });
+    }
     function makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl) {
         tsWarn(warnEl, d[metric.tsKey] || []);
         const stacked = metric.key !== 'lat';
@@ -1102,7 +1192,7 @@ __NAVBAR_HTML__
         const members = stacked ? stackedMemberDatasets(d, g, colors) : memberLatencyDatasets(d, g, colors);
         const array = arrayDatasets(g, stacked);
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
-        const datasets = toBase(members.concat(array), sc);
+        const datasets = toBase(members.concat(array, ftraceOnGrid(d, metric, xs)), sc);
         const totals = stacked ? g.totals : {};
         const dirs = ['r', 'w'].filter(dir => members.some(m => m.dir === dir));
         // v in the base unit; the stack totals are in the metric's units.
@@ -1377,14 +1467,16 @@ __NAVBAR_HTML__
     function makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode) {
         const ts = d[metric.tsKey];
         if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
+        if (metric.key === 'iolat') return makeIOLatChart(canvas, d, metric, yLow, yHigh);
         if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl);
         // One unit for every card of the phase: chosen from the phase's scale.
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
-        if (ts && ts.length > 0) {
-            tsWarn(warnEl, ts);
+        const ftrace = ftraceDatasets(d, metric);
+        if ((ts && ts.length > 0) || ftrace.length > 0) {
+            tsWarn(warnEl, ts || []);
             const ramp = rampOf(d), shift = fioShift(d);
-            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));
-            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));
+            const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));
+            const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));
             const datasets = [];
             if (readPts.length > 0) datasets.push({
                 label: 'Read (fio)',  data: readPts,
@@ -1396,6 +1488,7 @@ __NAVBAR_HTML__
                 borderColor: 'rgba(220,38,38,0.9)', backgroundColor: 'rgba(220,38,38,0.07)',
                 fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
             });
+            toBase(ftrace, sc).forEach(ds => datasets.push(ds));
             return new Chart(canvas, {
                 type: 'line', data: { datasets }, plugins: chartPlugins(d, metric),
                 options: {
@@ -1442,6 +1535,54 @@ __NAVBAR_HTML__
                 }
             });
         }
+    }
+
+    // makeIOLatChart draws the Device latency card: the ftrace lines alone
+    // (bars of the summary means when the phase has no series).
+    function makeIOLatChart(canvas, d, metric, yLow, yHigh) {
+        const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
+        const datasets = toBase(ftraceDatasets(d, metric), sc);
+        const yAxis = { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
+            ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
+            grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } };
+        if (datasets.length > 0) {
+            return new Chart(canvas, {
+                type: 'line', data: { datasets }, plugins: [rampPlugin],
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    plugins: {
+                        rampZone: { sec: rampOf(d) },
+                        legend: { display: true, position: 'top',
+                            labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
+                        tooltip: { callbacks: {
+                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
+                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
+                        }}
+                    },
+                    scales: {
+                        x: { type: 'linear', min: 0, max: X_MAX || undefined,
+                             title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
+                             ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
+                        y: yAxis
+                    }
+                }
+            });
+        }
+        const r = metric.sumR(d), w = metric.sumW(d);
+        const lbls = [], vals = [], cols = [];
+        if (r > 0) { lbls.push('Read device (ftrace)');  vals.push(r * sc.mul);  cols.push('rgba(37,99,235,0.75)'); }
+        if (w > 0) { lbls.push('Write device (ftrace)'); vals.push(-w * sc.mul); cols.push('rgba(220,38,38,0.75)'); }
+        if (!lbls.length) { lbls.push('\u2014'); vals.push(0); cols.push('#e2e8f0'); }
+        return new Chart(canvas, {
+            type: 'bar',
+            data: { labels: lbls, datasets: [{ data: vals, backgroundColor: cols, borderWidth: 1 }] },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                plugins: { legend: { display: false },
+                    tooltip: { callbacks: { label: ctx => fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit } } },
+                scales: { y: yAxis }
+            }
+        });
     }
 
     // ── Modal ──
@@ -1526,7 +1667,7 @@ __NAVBAR_HTML__
 
         const warnEl = document.createElement('div');
         card.appendChild(warnEl);
-        const why = d.skipped ? 'Skipped: ' + d.skipped : flushNone(d, metric);
+        const why = d.skipped ? 'Skipped: ' + d.skipped : flushNone(d, metric) || iolatNone(d, metric);
         if (why) {
             // Traced, but no Flush command reached the device: say why
             // instead of drawing an empty chart.
@@ -1563,6 +1704,7 @@ __NAVBAR_HTML__
         X_MAX = 0;
         data.forEach(d => selMetrics.forEach(m => {
             X_MAX = Math.max(X_MAX, seriesMaxT(d, m), memberMetric(d, m) ? memberMaxT(d, m) : 0);
+            ftraceDatasets(d, m).forEach(ds => ds.data.forEach(p => { X_MAX = Math.max(X_MAX, p.x); }));
         }));
 
         selMetrics.forEach(metric => {
@@ -1610,7 +1752,12 @@ __NAVBAR_HTML__
                 let yMax = 0, yMin = 0;
                 phaseData.forEach(d => {
                     const ts = d[metric.tsKey];
-                    if (metric.key === 'flush') {
+                    if (metric.key === 'iolat') {
+                        const e = ftraceExtent(d, metric);
+                        const r = e.r || e.w ? e.r : metric.sumR(d), w = e.r || e.w ? e.w : metric.sumW(d);
+                        if (r > yMax) yMax = r;
+                        if (w > 0 && -w < yMin) yMin = -w;
+                    } else if (metric.key === 'flush') {
                         const top = Math.max(metric.sumW(d), ...(ts || []).map(p => p.w || 0));
                         if (top > yMax) yMax = top;
                     } else if (ts && ts.length > 0) {
@@ -1622,6 +1769,11 @@ __NAVBAR_HTML__
                         const r = metric.sumR(d), w = metric.sumW(d);
                         if (r > yMax) yMax = r;
                         if (w > 0 && -w < yMin) yMin = -w;
+                    }
+                    if (metric.key === 'lat') {
+                        const f = ftraceExtent(d, metric);
+                        if (f.r > yMax) yMax = f.r;
+                        if (f.w > 0 && -f.w < yMin) yMin = -f.w;
                     }
                     if (mode !== 'normal' && memberMetric(d, metric)) {
                         const e = memberExtent(d, metric);

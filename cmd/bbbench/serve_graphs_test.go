@@ -370,8 +370,8 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 	body := graphsPageBody(t)
 	// The plain Read/Write series of a drive, as before.
 	for _, want := range []string{
-		"const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
-		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
+		"const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
+		"const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
 		"label: 'Read (fio)',  data: readPts,",
 		"label: 'Write (fio)', data: writePts,",
 		"if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(",
@@ -476,7 +476,8 @@ func TestGraphsPageMemberGrid(t *testing.T) {
 	body := graphsPageBody(t)
 	var js strings.Builder
 	for _, f := range []string{"rampOf", "windowOf", "fioShift", "memberNames", "memberStep", "memberKey",
-		"memberGrid", "memberExtent", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets"} {
+		"memberGrid", "memberExtent", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets",
+		"iolatPoints", "ftraceDatasets", "memberColors"} {
 		js.WriteString(jsFunction(t, body, f))
 		js.WriteString("\n")
 	}
@@ -612,8 +613,8 @@ console.log('OK');
 `)
 	body := graphsPageBody(t)
 	for _, want := range []string{
-		"const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
-		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
+		"const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
+		"const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
 		"type: 'line', plugins: [rampPlugin],", // the Flush chart keeps its plugin list
 		"array busy: results include administrative work",
 	} {
@@ -859,6 +860,140 @@ openModal(lossy, {key: 'lat', label: 'Latency', source: 'fio'}, 0, 1, 'normal');
 assert.ok(el('modal-ts-warn').textContent.includes('4 trace events lost'));
 openModal({disk: 'sda'}, {key: 'bw', label: 'BW', source: 'fio'}, 0, 1, 'normal');
 assert.strictEqual(el('modal-ts-warn').textContent, '');
+console.log('OK');
+`)
+}
+
+// ftraceFuncs are the page functions of the ftrace latency overlay.
+var ftraceFuncs = []string{"windowOf", "memberStep", "memberKey", "memberColors", "rgba",
+	"iolatPoints", "iolatMean", "ftraceDatasets", "ftraceExtent", "iolatNone", "siScale", "fmtScaled", "toBase"}
+
+const ftraceTestPrelude = `
+const assert = require('assert');
+const MEMBER_PALETTE = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
+const LAT = {key: 'lat', unit: 'μs', tsKey: 'ts_lat'}, IOLAT = {key: 'iolat', unit: 'μs', tsKey: 'ts_iolat'};
+const pt = (t, kind, dir, n, mean, p99) => ({t, kind, dir, n, mean, p50: mean, p99});
+function entry(src, scale) {
+    const ev = src === 'nvme' ? 'nvme_setup_cmd -> nvme_complete_rq' : 'block_rq_issue -> block_rq_complete';
+    return {
+        log_avg_msec: 1000,
+        io_trace: {text: 'ftrace: ' + ev, devices: [{name: 'dev', source: src,
+            stats: {device: {r: {count: 5, mean_ns: 100 * scale * 1000}, w: {count: 5, mean_ns: 200 * scale * 1000}}}}]},
+        ts_iolat: [
+            pt(0, 'device', 'r', 4, 100 * scale, 150 * scale), pt(0, 'device', 'w', 4, 200 * scale, 250 * scale),
+            pt(0, 'blocklayer', 'r', 4, 110 * scale, 160 * scale), pt(0, 'blocklayer', 'w', 4, 210 * scale, 260 * scale),
+            pt(1, 'device', 'r', 0, 0, 0), pt(1, 'device', 'w', 3, 300 * scale, 350 * scale)],
+        ts_iolat_members: {sdb: [pt(0, 'device', 'r', 2, 50 * scale, 60 * scale), pt(0, 'device', 'w', 2, 60 * scale, 70 * scale)]},
+    };
+}
+`
+
+func TestGraphsPageIOLatDatasets(t *testing.T) {
+	runPageJS(t, ftraceFuncs, ftraceTestPrelude+`
+for (const [src, scale, prefix] of [['nvme', 1, 'μ'], ['block', 1e6, '']]) {
+    const d = entry(src, scale);
+    const lat = ftraceDatasets(d, LAT);
+    assert.deepStrictEqual(lat.map(x => x.label), ['Read device (ftrace)', 'Read block layer (ftrace)',
+        'Write device (ftrace)', 'Write block layer (ftrace)']);
+    assert.deepStrictEqual(lat.map(x => x.borderDash), [[6, 3], [2, 2], [6, 3], [2, 2]]);
+    assert.ok(lat.every(x => x.fill === false));
+    assert.ok(lat[0].borderColor.startsWith('rgba(37,99,235'));
+    assert.ok(lat[2].borderColor.startsWith('rgba(220,38,38'));
+    // the n: 0 read window is skipped; writes are negative
+    assert.deepStrictEqual(lat[0].data, [{x: 0, y: 100 * scale}]);
+    assert.deepStrictEqual(lat[2].data, [{x: 0, y: -200 * scale}, {x: 1, y: -300 * scale}]);
+    const sc = siScale(LAT, 300 * scale);
+    assert.strictEqual(sc.prefix, prefix === 'μ' ? 'μ' : '');
+    const based = toBase(ftraceDatasets(d, LAT), sc);
+    assert.strictEqual(fmtScaled(based[2].data[1].y, sc, true), prefix === 'μ' ? '300.00μ' : '300.00');
+    const io = ftraceDatasets(d, IOLAT);
+    assert.deepStrictEqual(io.map(x => x.label), [
+        'Read device mean (ftrace)', 'Read device p99 (ftrace)', 'Read block layer mean (ftrace)', 'Read block layer p99 (ftrace)',
+        'Write device mean (ftrace)', 'Write device p99 (ftrace)', 'Write block layer mean (ftrace)', 'Write block layer p99 (ftrace)',
+        'sdb read device mean (ftrace)', 'sdb write device mean (ftrace)']);
+    assert.deepStrictEqual(io[1].borderDash, [8, 3, 2, 3]);
+    assert.ok(io[1].borderColor.endsWith('0.6)'));
+    assert.strictEqual(io[1].data[0].y, 150 * scale);
+    assert.strictEqual(io[9].data[0].y, -60 * scale);
+}
+// a kind and direction without points yields no dataset
+const e = entry('nvme', 1);
+e.ts_iolat = e.ts_iolat.filter(p => p.kind === 'device' && p.dir === 'r');
+assert.deepStrictEqual(ftraceDatasets(e, LAT).map(x => x.label), ['Read device (ftrace)']);
+console.log('OK');
+`)
+}
+
+func TestGraphsPageIOLatNone(t *testing.T) {
+	runPageJS(t, ftraceFuncs, ftraceTestPrelude+`
+assert.strictEqual(iolatNone({io_trace_note: 'no ftrace latency: no tracefs'}, IOLAT), 'no ftrace latency: no tracefs');
+assert.strictEqual(iolatNone({}, IOLAT), '');
+assert.strictEqual(iolatNone({io_trace: {text: 'x', devices: [{name: 'md0', stats: {}}]}}, IOLAT),
+    'ftrace saw no read or write requests on md0');
+assert.strictEqual(iolatNone({io_trace: {text: 'x', devices: [{name: 'md0'}]}}, IOLAT),
+    'ftrace saw no read or write requests on md0');
+assert.strictEqual(iolatNone(entry('nvme', 1), IOLAT), '');
+assert.strictEqual(iolatNone({io_trace_note: 'n'}, LAT), '');
+// an entry without io_trace has no ftrace dataset on lat
+assert.deepStrictEqual(ftraceDatasets({log_avg_msec: 1000, ts_lat: [{t: 1, r: 5, w: 0}]}, LAT), []);
+assert.deepStrictEqual(ftraceDatasets({}, IOLAT), []);
+console.log('OK');
+`)
+}
+
+func TestGraphsPageIOLatExtent(t *testing.T) {
+	runPageJS(t, ftraceFuncs, ftraceTestPrelude+`
+const d = entry('nvme', 1);
+d.ts_iolat.push(pt(2, 'device', 'r', 1, 90, 9000));
+const lat = ftraceExtent(d, LAT), io = ftraceExtent(d, IOLAT);
+assert.strictEqual(lat.r, 110);
+assert.strictEqual(lat.w, 300);
+assert.strictEqual(io.r, 9000);
+assert.strictEqual(io.w, 350);
+assert.deepStrictEqual(ftraceExtent({}, LAT), {r: 0, w: 0});
+console.log('OK');
+`)
+}
+
+func TestGraphsPageIOLatMetric(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{"key: 'iolat'", "Device latency (ftrace)", "['iolat', 'Device latency (ftrace)']",
+		"metric.srcTitle || SRC_TITLE[metric.source]", "function makeIOLatChart("} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graphs page lacks %q", want)
+		}
+	}
+	shared := chartSharedJS
+	if !strings.Contains(shared, "metric.key === 'flush' || metric.key === 'iolat' ? 0") {
+		t.Error("seriesMaxT must not shift flush and iolat points")
+	}
+}
+
+// TestGraphsPageIOLatCharts: the Latency chart appends the ftrace lines in
+// the phase's base unit (HDD seconds included), the Device latency chart
+// draws them alone, with bars of the summary means when there is no series.
+func TestGraphsPageIOLatCharts(t *testing.T) {
+	runPageJS(t, chartFuncs, chartStubJS+`
+const LAT = {key: 'lat', unit: 'μs', tsKey: 'ts_lat', sumR: d => 0, sumW: d => 0};
+const IOLAT = {key: 'iolat', unit: 'μs', tsKey: 'ts_iolat', sumR: d => iolatMeanStub(d, 'r'), sumW: d => iolatMeanStub(d, 'w')};
+const iolatMeanStub = (d, dir) => d.mean ? d.mean[dir] : 0;
+const pt = (t, kind, dir, n, mean, p99) => ({t, kind, dir, n, mean, p50: mean, p99});
+const label = (k, i) => last.options.plugins.tooltip.callbacks.label({dataset: last.data.datasets[k], raw: last.data.datasets[k].data[i]});
+// An HDD with second-scale latencies: s, two decimals in the tooltip.
+const d = {log_avg_msec: 1000, ts_lat: [{t: 1, r: 2e6, w: 0}],
+    ts_iolat: [pt(0, 'device', 'r', 3, 2.5e6, 4e6), pt(0, 'blocklayer', 'r', 3, 2.6e6, 4.1e6)]};
+makeChart({}, d, LAT, 0, 4.6e6);
+assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read (fio)', 'Read device (ftrace)', 'Read block layer (ftrace)']);
+assert.strictEqual(yTitle(), 's');
+assert.strictEqual(last.data.datasets[1].data[0].y, 2.5);
+assert.strictEqual(label(1, 0), 'Read device (ftrace): 2.50 s');
+makeChart({}, d, IOLAT, 0, 4.6e6);
+assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read device mean (ftrace)', 'Read device p99 (ftrace)',
+    'Read block layer mean (ftrace)', 'Read block layer p99 (ftrace)']);
+assert.strictEqual(label(1, 0), 'Read device p99 (ftrace): 4.00 s');
+// No series: bars of the summary means.
+makeChart({}, {mean: {r: 100, w: 200}}, IOLAT, -230, 115);
+assert.deepStrictEqual(last.data.labels, ['Read device (ftrace)', 'Write device (ftrace)']);
 console.log('OK');
 `)
 }

@@ -98,7 +98,7 @@ var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "siScale", "fmtScale
 	"memberNames", "memberColors", "memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "rgba",
 	"stackedMemberDatasets", "memberLatencyDatasets", "arrayDatasets", "makeMembersChart",
 	"mdMetric", "hasMD", "mdBusy", "mdActions", "mdBands", "mdIndex", "mdTipLines", "mdMarkers", "mdOptions",
-	"chartPlugins", "yAxisTitle", "makeFlushChart", "makeChart"}
+	"chartPlugins", "yAxisTitle", "makeFlushChart", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart"}
 
 // TestGraphsPageChartPhaseScale: a card plots its values in the base unit,
 // its ticks and tooltips carry the SI prefix chosen from the phase's data
@@ -191,7 +191,7 @@ func TestChartPagesDropFixedUnit(t *testing.T) {
 		}
 	}
 	if !strings.Contains(jsFunction(t, pages["graphs"], "yAxisTitle"), "text: sc.unit") ||
-		strings.Count(pages["graphs"], "title: yAxisTitle(sc)") != 5 {
+		strings.Count(pages["graphs"], "title: yAxisTitle(sc)") != 6 {
 		t.Error("graphs page cards have no y axis unit title")
 	}
 	if strings.Count(pages["compare"], "text: axisTitle(metric, sc)") != 2 {
