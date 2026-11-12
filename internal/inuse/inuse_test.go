@@ -779,3 +779,54 @@ func TestCausesKeepEveryNode(t *testing.T) {
 		t.Errorf("busy %v causes %v", r.Busy["sdb"], r.Causes["sdb"])
 	}
 }
+
+// A member of an assembled md array carries the array's own superblock: the
+// reason must not say that the array is not assembled.
+func TestScan_SuperblockOfAnAssembledMemberIsNotCalledUnassembled(t *testing.T) {
+	// Reuse the fixture of the unassembled case, then add the md holder.
+	for _, assembled := range []bool{false, true} {
+		root := t.TempDir()
+		sys := filepath.Join(root, "sys")
+		mkdir := func(p string) {
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mkdir(filepath.Join(sys, "block", "sdb"))
+		write := func(p, v string) {
+			if err := os.WriteFile(p, []byte(v), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(filepath.Join(sys, "block", "sdb", "dev"), "8:16\n")
+		mkdir(filepath.Join(root, "proc", "self"))
+		write(filepath.Join(root, "proc", "self", "mountinfo"), "")
+		write(filepath.Join(root, "proc", "swaps"), "Filename\t\tType\t\tSize\t\tUsed\t\tPriority\n")
+		udev := filepath.Join(root, "udev")
+		mkdir(udev)
+		write(filepath.Join(udev, "b8:16"), "E:ID_FS_TYPE=linux_raid_member\nE:ID_FS_UUID=a1b2c3d4-0000-1111-2222-333344445555\n")
+		if assembled {
+			mkdir(filepath.Join(sys, "block", "sdb", "holders"))
+			mkdir(filepath.Join(sys, "block", "md127"))
+			write(filepath.Join(sys, "block", "md127", "dev"), "9:127\n")
+			if err := os.Symlink(filepath.Join(sys, "block", "md127"), filepath.Join(sys, "block", "sdb", "holders", "md127")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r, err := Scan(Options{Sys: sys, Proc: filepath.Join(root, "proc"), Udev: udev, PVs: func() ([]PV, error) { return nil, nil },
+			Stat: func(string) (uint64, uint64, error) { return 0, 0, os.ErrNotExist }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := r.Reason("sdb")
+		if assembled && strings.Contains(got, "not assembled") {
+			t.Errorf("assembled member: %q", got)
+		}
+		if !assembled && !strings.Contains(got, "not assembled") {
+			t.Errorf("unassembled superblock: %q", got)
+		}
+		if !strings.Contains(got, "md RAID superblock") {
+			t.Errorf("superblock missing from %q", got)
+		}
+	}
+}

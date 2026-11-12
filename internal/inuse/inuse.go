@@ -463,10 +463,13 @@ func (s *scanner) scanPVs() {
 func (s *scanner) scanSignatures() {
 	disks := s.disks()
 	for _, name := range sortedKeys(disks) {
-		hasPV := false
+		hasPV, inMD := false, false
 		for _, have := range s.r.Busy[name] {
 			if strings.HasPrefix(have, "is an LVM physical volume") {
 				hasPV = true
+			}
+			if strings.HasPrefix(have, "member of md") {
+				inMD = true
 			}
 		}
 		var carries []string
@@ -484,7 +487,14 @@ func (s *scanner) scanSignatures() {
 			node := filepath.Base(d.dir)
 			switch fs {
 			case "linux_raid_member":
-				s.add(name, "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)", KindMD, udevProp(udev, "ID_FS_UUID"), node)
+				// The disk is already listed as a member of an assembled array
+				// (holders are scanned first): its superblock is that array's
+				// own, not an array waiting to be assembled.
+				why := "has an md RAID superblock (an array that is not assembled; check with mdadm --examine)"
+				if inMD {
+					why = "has an md RAID superblock"
+				}
+				s.add(name, why, KindMD, udevProp(udev, "ID_FS_UUID"), node)
 			case "zfs_member":
 				s.add(name, "has a ZFS pool label", KindSignature, "", node)
 			case "LVM2_member":
