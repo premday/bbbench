@@ -763,3 +763,83 @@ assert(arrCard.includes('Status: Running') && arrCard.includes('Phase: randwrite
 assert(cards.includes('sda (SSD)</div>') && !cards.slice(cards.indexOf('sda (SSD)')).includes('&middot; array'), 'drive card: ' + cards);
 console.log('ok: layout steps, progress, variant, members, array status card');
 `
+
+// The Queue, md and dm_mod rows of the configuration card, the queue of each
+// member and the array node's own configuration, in node against the real
+// status page script. Skipped without node.
+func TestStatusPage_QueueScript(t *testing.T) {
+	node := requireNode(t)
+	dir := t.TempDir()
+	page := filepath.Join(dir, "page.js")
+	if err := os.WriteFile(page, []byte(pageScript(t)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	harness := filepath.Join(dir, "harness.js")
+	if err := os.WriteFile(harness, []byte(queueStatusHarness), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(node, harness, page).CombinedOutput()
+	if err != nil {
+		t.Fatalf("harness: %v\n%s", err, out)
+	}
+	t.Log(strings.TrimSpace(string(out)))
+}
+
+const queueStatusHarness = `
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const byId = {};
+const ctx = {
+  document: { addEventListener() {}, getElementById(id) { return byId[id] || (byId[id] = { style: {}, innerHTML: '', textContent: '' }); } },
+  fetch: () => new Promise(() => {}), setInterval() {}, console, Date, Math, String, Set, JSON, Object, Array,
+};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx);
+const run = s => vm.runInContext(s, ctx);
+
+// An NVMe drive: blk-mq with 2 hardware queues, dm_mod with all three.
+const nvme = JSON.stringify({interface: 'NVMe (PCIe)', queue: {scheduler: 'none', schedulers: ['none', 'mq-deadline'], mq: true, nr_hw_queues: 2,
+  nr_requests: '1023', read_ahead_kb: '128', nvme_queue_count: '5',
+  dm_mod: {loaded: true, use_blk_mq: 'Y', dm_mq_nr_hw_queues: '0', dm_mq_queue_depth: '2048', params: {use_blk_mq: 'Y', reserved_bio_based_ios: '16', dm_mq_queue_depth: '2048', dm_mq_nr_hw_queues: '0'}}}});
+let h = run('configHTML(' + nvme + ')');
+assert(h.includes('<span class="k">Queue</span><span class="v">blk-mq: yes, 2 hardware queues, scheduler none'), h);
+assert(h.includes('nr_requests 1023') && h.includes('read_ahead_kb 128') && h.includes('nvme queue_count 5') && h.includes('schedulers none mq-deadline'), h);
+assert(h.includes('<span class="k">dm_mod</span><span class="v">use_blk_mq Y &middot; dm_mq_nr_hw_queues 0 &middot; dm_mq_queue_depth 2048'), h);
+assert(h.includes('all dm_mod parameters (4)') && h.includes('reserved_bio_based_ios = 16'), h);
+assert(!h.includes('<span class="k">md</span>'), 'no md row on a drive: ' + h);
+
+// A newer kernel without use_blk_mq: the row says so.
+h = run('configHTML({queue: {mq: true, nr_hw_queues: 1, scheduler: "mq-deadline", dm_mod: {loaded: true, dm_mq_nr_hw_queues: "1", dm_mq_queue_depth: "2048"}}})');
+assert(h.includes('blk-mq: yes, 1 hardware queue, scheduler mq-deadline'), h);
+assert(h.includes('use_blk_mq <span class="dim">n/a (not on this kernel)</span> &middot; dm_mq_nr_hw_queues 1 &middot; dm_mq_queue_depth 2048'), h);
+assert(!h.includes('all dm_mod parameters'), h);
+
+// A dm node with dm_mod not in sysfs, and a host without dm_mod: no row.
+h = run('configHTML({interface: "device-mapper", queue: {mq: false, dm_mod: {loaded: false}}})');
+assert(h.includes('blk-mq: no (bio-based)') && h.includes('<span class="k">dm_mod</span><span class="v"><span class="dim">not loaded</span>'), h);
+h = run('configHTML({interface: "SATA", queue: {mq: true, nr_hw_queues: 1, scheduler: "bfq"}})');
+assert(!h.includes('dm_mod'), h);
+// Old runs without queue data render as before.
+h = run('configHTML({interface: "SATA"})');
+assert(!h.includes('Queue') && !h.includes('dm_mod'), h);
+// Values are escaped.
+h = run('configHTML({queue: {mq: false, scheduler: "<b>x</b>", dm_mod: {loaded: true, use_blk_mq: "<i>", params: {"<k>": "<v>"}}}})');
+assert(!h.includes('<b>x') && !h.includes('<i>') && !h.includes('<k>') && h.includes('&lt;k&gt; = &lt;v&gt;'), h);
+
+// md row of an md node.
+h = run('configHTML({interface: "md", queue: {mq: false, scheduler: "none", md: {level: "raid1", raid_disks: "2", chunk_size: "0", sync_action: "idle", bitmap: "+8"}}})');
+assert(h.includes('<span class="k">md</span><span class="v">raid1 · 2 disks · chunk 0 · sync idle · bitmap +8'), h);
+
+// Members show their queue mode.
+const m = run('membersHTML({name: "md127", kind: "array", members: [{name: "sdb", model: "M", serial: "S1", role: "data", config: {queue: {mq: true, nr_hw_queues: 1, scheduler: "mq-deadline"}}}]})');
+assert(m.includes('queue blk-mq: yes, 1 hardware queue, scheduler mq-deadline'), m);
+
+// The array card shows its own node's configuration above the members.
+run('updateStatusDisplay({running: true, total_phases: 1, completed_phases: 0, current_phase: 0, mode: "sequential", drives: [' +
+  '{name:"md127",type:"SSD",kind:"array",vendor:"Linux",model:"raid1",status:"running",' +
+  'config:{interface:"md",queue:{mq:false,scheduler:"none",md:{level:"raid1"},dm_mod:{loaded:true,use_blk_mq:"N",dm_mq_nr_hw_queues:"0",dm_mq_queue_depth:"2048"}}},' +
+  'members:[{name:"sdb",model:"M",serial:"S1",role:"data"}]}]})');
+const card = byId['drives-list'].innerHTML;
+assert(card.includes('blk-mq: no (bio-based), scheduler none') && card.includes('raid1') && card.includes('use_blk_mq N'), card);
+assert(card.indexOf('blk-mq: no') < card.indexOf('Members'), 'node config above the members: ' + card);
+console.log('ok: queue, md, dm_mod rows, members, array node');
+`

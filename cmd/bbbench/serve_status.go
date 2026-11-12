@@ -606,8 +606,60 @@ __NAVBAR_HTML__
                     ctrl += ' <span class="dim">(' + esc(ct.mode) + ')</span>';
                 }
             }
+            const q = c.queue;
             return '<div class="cfg">' + row('Interface', esc(c.interface || 'unknown')) + row('Slot', slot) + row('Controller', ctrl) + row('Link', link) +
-                row('Power', power) + row('Write cache', wc) + row('SMART', smart) + '</div>';
+                row('Power', power) + row('Write cache', wc) + row('SMART', smart) +
+                row('Queue', queueHTML(q)) + row('md', q ? mdHTML(q.md) : '') + row('dm_mod', q ? dmModHTML(q.dm_mod) : '') + '</div>';
+        }
+
+        // The request queue read from sysfs: blk-mq or bio-based, hardware
+        // queues, active scheduler, then the tunables. '' when unknown.
+        function queueMode(q) {
+            const n = q.nr_hw_queues || 0;
+            let s = q.mq ? 'blk-mq: yes, ' + n + ' hardware queue' + (n === 1 ? '' : 's') : 'blk-mq: no (bio-based)';
+            if (q.scheduler) s += ', scheduler ' + q.scheduler;
+            return s;
+        }
+        function queueHTML(q) {
+            if (!q) return '';
+            const bits = [
+                q.schedulers && q.schedulers.length > 1 ? 'schedulers ' + q.schedulers.join(' ') : '',
+                q.nr_requests ? 'nr_requests ' + q.nr_requests : '',
+                q.rotational ? 'rotational ' + q.rotational : '',
+                q.read_ahead_kb ? 'read_ahead_kb ' + q.read_ahead_kb : '',
+                q.max_sectors_kb ? 'max_sectors_kb ' + q.max_sectors_kb : '',
+                q.wbt_lat_usec ? 'wbt_lat_usec ' + q.wbt_lat_usec : '',
+                q.rq_affinity ? 'rq_affinity ' + q.rq_affinity : '',
+                q.nomerges ? 'nomerges ' + q.nomerges : '',
+                q.io_poll ? 'io_poll ' + q.io_poll : '',
+                q.device_queue_depth ? 'queue_depth ' + q.device_queue_depth : '',
+                q.nvme_queue_count ? 'nvme queue_count ' + q.nvme_queue_count : '',
+                q.nvme_sqsize ? 'nvme sqsize ' + q.nvme_sqsize : ''
+            ].filter(Boolean);
+            return esc(queueMode(q)) + (bits.length ? '<br><span class="dim">' + esc(bits.join(' \u00b7 ')) + '</span>' : '');
+        }
+        // An md array's own configuration (an md node, or a dm-raid node
+        // that shows its md state).
+        function mdHTML(m) {
+            if (!m) return '';
+            return esc([m.level, m.raid_disks ? m.raid_disks + ' disks' : '', m.chunk_size ? 'chunk ' + m.chunk_size : '',
+                m.stripe_cache_size ? 'stripe cache ' + m.stripe_cache_size : '', m.sync_action ? 'sync ' + m.sync_action : '',
+                m.bitmap ? 'bitmap ' + m.bitmap : ''].filter(Boolean).join(' \u00b7 '));
+        }
+        // The device-mapper core module's queue parameters; one this kernel
+        // does not have is said so, never hidden. Every parameter is in the
+        // collapsed list.
+        function dmModHTML(d) {
+            if (!d) return '';
+            if (!d.loaded) return '<span class="dim">not loaded</span>';
+            const v = k => d[k] ? esc(d[k]) : '<span class="dim">n/a (not on this kernel)</span>';
+            let h = ['use_blk_mq', 'dm_mq_nr_hw_queues', 'dm_mq_queue_depth'].map(k => k + ' ' + v(k)).join(' &middot; ');
+            const ks = Object.keys(d.params || {}).sort();
+            if (ks.length) {
+                h += '<details><summary class="dim">all dm_mod parameters (' + ks.length + ')</summary>' +
+                    ks.map(k => esc(k) + ' = ' + esc(d.params[k])).join('<br>') + '</details>';
+            }
+            return h;
         }
 
         // The member disks of an array target, one row each: model, serial,
@@ -627,6 +679,7 @@ __NAVBAR_HTML__
                     bits.push('link ' + esc(c.link_speed) + (c.link_max ? ' <span class="dim">(max ' + esc(c.link_max) + ')</span>' : '') +
                         (c.link_below_max ? ' <span class="warn">below max</span>' : ''));
                 }
+                if (c.queue) bits.push('queue ' + esc(queueMode(c.queue)));
                 const st = c.smart && c.smart.status;
                 if (st) bits.push('SMART <span class="' + (st === 'PASSED' ? 'ok' : 'bad') + '">' + esc(st) + '</span>');
                 return '<div class="row"><span class="k">' + esc(m.name) + '</span><span class="v">' +
@@ -853,9 +906,9 @@ __NAVBAR_HTML__
                         html += '<div class="drive-detail">Capacity: ' + drive.capacity_gb + ' GB</div>';
                     }
                     html += settingBadgesHTML(drive, status.group);
-                    // An array's configuration is its members' (the
-                    // composite itself has none to read).
-                    html += drive.kind === 'array' ? membersHTML(drive) : configHTML(drive.config);
+                    // An array shows its own node (queue, md/dm state) once
+                    // read, then its members' configuration.
+                    html += drive.kind === 'array' ? (drive.config ? configHTML(drive.config) : '') + membersHTML(drive) : configHTML(drive.config);
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
                         html += '<div class="drive-detail">Phase: ' + esc(drive.phase_name) + '</div>';
