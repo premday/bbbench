@@ -14,10 +14,7 @@
 //     are only trustworthy when one Flush is in flight at a time.
 package flushtrace
 
-import (
-	"regexp"
-	"strings"
-)
+import "strings"
 
 // Event is one parsed line of the ftrace text format.
 type Event struct {
@@ -26,34 +23,132 @@ type Event struct {
 	Payload string // the event's own fields, as printed by the kernel
 }
 
-// lineRe matches e.g.
+// ParseLine parses one ftrace text line, e.g.
 //
 //	fio-1234  [003] .....  1234.567890: block_rq_issue: 259,0 F 0 () 0 + 0 ...
 //
-// The task name may itself contain '-' and spaces, hence the greedy prefix.
-var lineRe = regexp.MustCompile(`^\s*.+-\d+\s+\[\d+\]\s+\S+\s+(\d+)\.(\d+):\s+(\w+):\s?(.*)$`)
-
-// ParseLine parses one ftrace text line. ok is false for anything that is not
-// an event line (headers, comments, trace_marker writes parse fine but are
-// ignored later because their name matches no collector).
+// The task name may itself contain '-' and spaces, so the "[cpu]" column is
+// looked for rather than assumed. ok is false for anything that is not an
+// event line (headers, comments, "[LOST N EVENTS]" lines). trace_marker
+// writes parse fine but are ignored later because their name matches no
+// collector. It runs for every traced I/O, so it is written by hand.
 func ParseLine(line string) (ev Event, ok bool) {
-	m := lineRe.FindStringSubmatch(strings.TrimRight(line, "\r\n"))
-	if m == nil {
+	line = strings.TrimRight(line, "\r\n")
+	for from := 0; ; {
+		k := strings.IndexByte(line[from:], '[')
+		if k < 0 {
+			return Event{}, false
+		}
+		k += from
+		from = k + 1
+		if ev, ok := parseAfterTask(line, k); ok {
+			return ev, true
+		}
+	}
+}
+
+func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\v' || c == '\f' }
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// parseAfterTask tries the line with "[cpu]" starting at index k.
+func parseAfterTask(line string, k int) (Event, bool) {
+	// "<task>-<pid>" then whitespace, before the '['.
+	j := k
+	for j > 0 && isSpace(line[j-1]) {
+		j--
+	}
+	if j == k { // no whitespace before '['
 		return Event{}, false
 	}
-	var sec, frac int64
-	for _, c := range m[1] {
-		sec = sec*10 + int64(c-'0')
+	d := j
+	for d > 0 && isDigit(line[d-1]) {
+		d--
 	}
-	f := m[2]
-	if len(f) > 9 {
-		f = f[:9]
+	if d == j || d < 2 || line[d-1] != '-' {
+		return Event{}, false
 	}
-	for len(f) < 9 {
-		f += "0"
+	if strings.TrimLeft(line[:d-1], " \t\v\f") == "" { // task name must not be empty
+		return Event{}, false
 	}
-	for _, c := range f {
-		frac = frac*10 + int64(c-'0')
+	// "[cpu]"
+	p := k + 1
+	for p < len(line) && isDigit(line[p]) {
+		p++
 	}
-	return Event{TimeNs: sec*1_000_000_000 + frac, Name: m[3], Payload: m[4]}, true
+	if p == k+1 || p >= len(line) || line[p] != ']' {
+		return Event{}, false
+	}
+	p++
+	// whitespace, flags column, whitespace
+	q := p
+	for q < len(line) && isSpace(line[q]) {
+		q++
+	}
+	if q == p {
+		return Event{}, false
+	}
+	p = q
+	for q < len(line) && !isSpace(line[q]) {
+		q++
+	}
+	if q == p {
+		return Event{}, false
+	}
+	p = q
+	for q < len(line) && isSpace(line[q]) {
+		q++
+	}
+	if q == p {
+		return Event{}, false
+	}
+	p = q
+	// seconds.fraction:
+	var sec int64
+	for q < len(line) && isDigit(line[q]) {
+		sec = sec*10 + int64(line[q]-'0')
+		q++
+	}
+	if q == p || q >= len(line) || line[q] != '.' {
+		return Event{}, false
+	}
+	q++
+	fs := q
+	var frac int64
+	digits := 0
+	for q < len(line) && isDigit(line[q]) {
+		if digits < 9 {
+			frac = frac*10 + int64(line[q]-'0')
+			digits++
+		}
+		q++
+	}
+	if q == fs || q >= len(line) || line[q] != ':' {
+		return Event{}, false
+	}
+	for ; digits < 9; digits++ {
+		frac *= 10
+	}
+	q++
+	// whitespace, event name, ':'
+	p = q
+	for q < len(line) && isSpace(line[q]) {
+		q++
+	}
+	if q == p {
+		return Event{}, false
+	}
+	p = q
+	for q < len(line) && (line[q] == '_' || isDigit(line[q]) || line[q]|0x20 >= 'a' && line[q]|0x20 <= 'z') {
+		q++
+	}
+	if q == p || q >= len(line) || line[q] != ':' {
+		return Event{}, false
+	}
+	name := line[p:q]
+	q++
+	if q < len(line) && isSpace(line[q]) {
+		q++
+	}
+	return Event{TimeNs: sec*1_000_000_000 + frac, Name: name, Payload: line[q:]}, true
 }
