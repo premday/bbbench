@@ -111,6 +111,23 @@ func TestWindows(t *testing.T) {
 	}
 }
 
+// A Flush that completed before the last start marker (a session opened
+// before a start gate) has a negative time: it is in no window and not in the
+// summary, with or without a ramp.
+func TestNegativeTimesLeftOut(t *testing.T) {
+	all := []Sample{{TimeNs: -200e6, LatencyNs: 9000}, {TimeNs: 100e6, LatencyNs: 100}}
+	w := Windows(all, 1000)
+	if len(w) != 1 || w[0].Count != 1 || w[0].MeanNs != 100 {
+		t.Errorf("windows = %+v", w)
+	}
+	for _, off := range []int{0, 50} {
+		sum := Finish(Summary{Source: "nvme", Exact: true, OffsetMs: off}, all)
+		if sum.Count != 1 || sum.MaxNs != 100 {
+			t.Errorf("offset %d: summary = %+v", off, sum)
+		}
+	}
+}
+
 func TestLog_WriteCacheRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	sum := Summarize("nvme", true, 0, nil)

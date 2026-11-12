@@ -416,6 +416,36 @@ func TestSession_PendingAtStopIsUnpaired(t *testing.T) {
 	}
 }
 
+// A session opened before a start gate sees two start markers: the gate's
+// (MarkStart) is time zero. A completion between the markers is not counted,
+// against either; a request issued before the second marker and completed
+// after it still pairs and counts.
+func TestSession_TwoStartMarkers(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"sdb": "8:16"}, "sdb")
+	gate := 5 * sec
+	ms := int64(1_000_000)
+	res, _ := run(t, []string{"sdb"}, issueOnly, sys, Options{AvgMsec: 1000},
+		marker(start, "bbbench-start"),
+		blk(2*sec, "block_rq_issue", "8,16", "R", 0, 8),
+		blk(2*sec+9*ms, "block_rq_complete", "8,16", "R", 0, 8), // between the markers
+		blk(gate-ms, "block_rq_issue", "8,16", "R", 8, 8),
+		marker(gate, "bbbench-start"),
+		blk(gate+ms, "block_rq_complete", "8,16", "R", 8, 8), // 2 ms, at 1 ms
+		blk(gate+sec+500*ms, "block_rq_issue", "8,16", "W", 16, 8),
+		blk(gate+sec+504*ms, "block_rq_complete", "8,16", "W", 16, 8), // 4 ms, at 1.504 s
+	)
+	d := dev(t, res.Summary, "sdb")
+	wantStat(t, d, KindDevice, DirRead, 1, 2e6, 2e6, 2e6)
+	wantStat(t, d, KindDevice, DirWrite, 1, 4e6, 4e6, 4e6)
+	if d.Unpaired != 0 {
+		t.Errorf("unpaired = %d", d.Unpaired)
+	}
+	if len(res.Windows) != 2 || res.Windows[0].EndMs != 1000 || res.Windows[0].Count != 1 ||
+		res.Windows[1].EndMs != 2000 || res.Windows[1].Count != 1 {
+		t.Errorf("windows = %+v", res.Windows)
+	}
+}
+
 func TestSession_NoInsertTracepoint(t *testing.T) {
 	sys := fakeSys(t, map[string]string{"sdb": "8:16"}, "sdb")
 	res, inst := run(t, []string{"sdb"}, issueOnly, sys, Options{},

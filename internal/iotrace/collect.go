@@ -227,6 +227,7 @@ type collector struct {
 	byCtrl   map[string]*device // nvme controller -> its only traced namespace (nil = ambiguous)
 	block    map[blockKey][]blockEntry
 	nvme     map[nvmeKey]nvmeEntry
+	startNs  int64 // start marker of the counted completions (0 = none yet)
 	finished bool
 }
 
@@ -260,9 +261,23 @@ func (c *collector) addDevice(d *device) {
 	}
 }
 
-// feed takes one event; startNs is the trace-clock time of the start marker
-// (0 = not seen yet). Completions before it are not counted.
+// feed takes one event; startNs is the trace-clock time of the last start
+// marker (0 = not seen yet). Completions before it are not counted.
+//
+// A session opened before a start gate sees a second marker (MarkStart) once
+// the gate opens: what was aggregated against the first one is discarded and
+// counting starts again from the new time zero. The pending requests are kept,
+// so a request in flight at the gate still pairs and counts when it completes
+// after it. (Dropping the completions that came between the markers instead
+// is not possible while streaming: they arrive before the second marker is
+// known.)
 func (c *collector) feed(ev flushtrace.Event, startNs int64) {
+	if startNs != c.startNs {
+		if c.startNs != 0 {
+			c.agg.reset()
+		}
+		c.startNs = startNs
+	}
 	switch ev.Name {
 	case "block_rq_insert", "block_rq_issue", "block_rq_merge":
 		c.blockQueued(ev)

@@ -49,6 +49,11 @@ func newAggregator(windowMs, offsetMs int) *aggregator {
 	}
 }
 
+// reset discards every window and the phase summary (time zero moved).
+func (a *aggregator) reset() {
+	a.open, a.phase, a.done = map[seriesKey]*openWindow{}, map[seriesKey]*Hist{}, nil
+}
+
 func (a *aggregator) close(k seriesKey, w *openWindow) {
 	a.done = append(a.done, Window{EndMs: (w.idx + 1) * a.windowMs, Dev: k.dev, Kind: k.kind, Dir: k.dir, Stats: w.hist.Stats()})
 }
