@@ -39,6 +39,9 @@ type Info struct {
 	Power      PowerInfo   `json:"power"`
 	WriteCache WriteCache  `json:"write_cache"`
 	Smart      Smart       `json:"smart"`
+	// Queue is the request queue and scheduling state; nil without a
+	// queue directory.
+	Queue *Queue `json:"queue,omitempty"`
 }
 
 // PowerInfo is the power management configuration.
@@ -92,6 +95,12 @@ type Options struct {
 	SMBIOS func(sys string) (*smbios.Table, error)
 	// Label heads a dump ("nvme0n1 - model, serial"); only used by CollectDump.
 	Label string
+	// Debug is the debugfs root, default /sys/kernel/debug (blk-mq state,
+	// root only; only CollectDump reads it).
+	Debug string
+	// MaxFile caps each file the queue dump reads (default 64 KiB) and
+	// MaxDevice each device's queue section (default 4 MiB).
+	MaxFile, MaxDevice int
 }
 
 func (o *Options) fill() {
@@ -108,6 +117,15 @@ func (o *Options) fill() {
 	}
 	if o.DriveWCE == nil {
 		o.DriveWCE = scsi.GetWCE
+	}
+	if o.Debug == "" {
+		o.Debug = "/sys/kernel/debug"
+	}
+	if o.MaxFile <= 0 {
+		o.MaxFile = defMaxFile
+	}
+	if o.MaxDevice <= 0 {
+		o.MaxDevice = defMaxDevice
 	}
 	if o.Timeout <= 0 {
 		o.Timeout = 10 * time.Second
@@ -143,22 +161,37 @@ func collect(name string, opts Options, extras bool) (Info, *collector) {
 	c.sys = func(parts ...string) string { return filepath.Join(append([]string{opts.Sys}, parts...)...) }
 
 	info.WriteCache.Kernel = c.read(c.sys("block", name, "queue", "write_cache"))
-	real, err := filepath.EvalSymlinks(c.sys("block", name))
-	if err != nil {
-		real = ""
+	c.virt = c.virtualKind()
+	switch c.virt {
+	case "md":
+		// A software node has no drive behind it: no SMART, firmware,
+		// drive cache or slot to read, and no command runs.
+		info.Interface = "md"
+	case "dm":
+		info.Interface = "device-mapper"
+	default:
+		real, err := filepath.EvalSymlinks(c.sys("block", name))
+		if err != nil {
+			real = ""
+		}
+		nvmeCtrl := ""
+		if m := nvmeNameRe.FindStringSubmatch(name); m != nil {
+			nvmeCtrl = m[1]
+			c.nvme(&info, m[1])
+		} else {
+			c.scsi(&info, real)
+		}
+		info.Firmware = c.firmware()
+		c.topology(&info, real, nvmeCtrl)
+		info.Smart = c.smart(name, nvmeNameRe.MatchString(name))
+		if extras {
+			c.extraReports(info)
+		}
 	}
-	nvmeCtrl := ""
-	if m := nvmeNameRe.FindStringSubmatch(name); m != nil {
-		nvmeCtrl = m[1]
-		c.nvme(&info, m[1])
-	} else {
-		c.scsi(&info, real)
-	}
-	info.Firmware = c.firmware()
-	c.topology(&info, real, nvmeCtrl)
-	info.Smart = c.smart(name, nvmeNameRe.MatchString(name))
+	info.Queue = c.queueSummary(c.virt)
 	if extras {
-		c.extraReports(info)
+		c.queueText = c.queueDump(c.virt)
+		c.moduleText = c.moduleDump()
 	}
 	return info, c
 }
@@ -175,6 +208,9 @@ type collector struct {
 	smbiosTried bool
 	sysfs       []logged // sysfs files read: path -> value
 	cmds        []logged // commands run: command line -> output
+	virt        string   // "md" or "dm" for a software node, "" for a disk
+	queueText   string   // the queue sections of the dump
+	moduleText  string   // the module parameter section of the dump
 }
 
 func (c *collector) read(path string) string {

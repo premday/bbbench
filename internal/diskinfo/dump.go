@@ -18,13 +18,17 @@ func (c *collector) dump(info Info) string {
 	b.WriteString("This dump is a read-only collection: gathering it does not change the drive's configuration.\n\n")
 	b.WriteString("== Summary ==\n")
 	b.WriteString(Format(info))
-	c.smbiosDump(&b)
+	if c.virt == "" {
+		c.smbiosDump(&b)
+	}
 	if len(c.sysfs) > 0 {
 		b.WriteString("\n== sysfs ==\n")
 		for _, s := range c.sysfs {
 			fmt.Fprintf(&b, "%s = %s\n", s.label, s.body)
 		}
 	}
+	b.WriteString(c.queueText)
+	b.WriteString(c.moduleText)
 	for _, s := range c.cmds {
 		fmt.Fprintf(&b, "\n== %s ==\n%s\n", s.label, s.body)
 	}
@@ -84,6 +88,7 @@ func Format(info Info) string {
 	num("Media errors", s.MediaErrors, "")
 	num("Reallocated", s.Reallocated, "")
 	num("Pending", s.Pending, "")
+	formatQueue(info.Queue, line)
 	if b.Len() == 0 {
 		return "(nothing could be read)\n"
 	}
