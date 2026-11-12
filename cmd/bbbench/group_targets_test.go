@@ -249,12 +249,14 @@ func TestCollectDiskConfig_ArrayMembers(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		d := GetStatus().Drives[0]
-		if len(d.Members) == 2 && d.Members[0].Config != nil && d.Members[1].Config != nil {
+		if len(d.Members) == 2 && d.Members[0].Config != nil && d.Members[1].Config != nil && d.Config != nil {
 			if d.Members[0].Config.Interface != "iface-sdb" || d.Members[1].Config.Interface != "iface-sdc" {
 				t.Fatalf("member configs mixed up: %+v %+v", d.Members[0].Config, d.Members[1].Config)
 			}
-			if d.Config != nil {
-				t.Errorf("the composite got a config: %+v", d.Config)
+			// The composite's own node is read too (its queue and md/dm
+			// state), next to its members.
+			if d.Config.Interface != "iface-md127" {
+				t.Errorf("the composite's config: %+v", d.Config)
 			}
 			break
 		}
@@ -267,7 +269,7 @@ func TestCollectDiskConfig_ArrayMembers(t *testing.T) {
 		t.Error("the members slice a reader held was changed in place")
 	}
 	names := map[string]DriveInfo{}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 3; i++ {
 		d := <-called
 		names[d.Device.Name] = d
 	}
@@ -276,11 +278,11 @@ func TestCollectDiskConfig_ArrayMembers(t *testing.T) {
 		t.Errorf("collect called for %s too", d.Device.Name)
 	default:
 	}
-	if names["sdb"].Device.Serial != "S1" || names["sdc"].Device.Model != "M" || len(names) != 2 {
+	if names["sdb"].Device.Serial != "S1" || names["sdc"].Device.Model != "M" || names["md127"].Device.Serial != "0a:0b" || len(names) != 3 {
 		t.Errorf("collect calls = %+v", names)
 	}
 
-	for _, dev := range []string{"sdb", "sdc"} {
+	for _, dev := range []string{"sdb", "sdc", "md127"} {
 		path := filepath.Join(ec.outputDir, dev+"_diskinfo_1793969936.txt")
 		var b []byte
 		for time.Now().Before(deadline) {
@@ -292,9 +294,6 @@ func TestCollectDiskConfig_ArrayMembers(t *testing.T) {
 		if string(b) != "dump of "+dev+"\n" {
 			t.Errorf("%s: dump file = %q", path, b)
 		}
-	}
-	if _, err := os.Stat(filepath.Join(ec.outputDir, "md127_diskinfo_1793969936.txt")); err == nil {
-		t.Error("a dump was written for the composite")
 	}
 }
 

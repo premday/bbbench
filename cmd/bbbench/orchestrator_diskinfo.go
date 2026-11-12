@@ -27,8 +27,9 @@ func (ec *ExecutionCoordinator) collectDiskConfig() {
 	for _, drive := range ec.drives {
 		if drive.IsArray() {
 			ec.collectMembers(drive, collect)
-			continue
 		}
+		// An array's own node is read too: its queue, its md or dm state
+		// and its members' queues (diskinfo skips the drive-only reads).
 		go func() {
 			info, dump := collect(drive)
 			markDrive(drive.Device.Name, func(d *DriveStatus) { d.Config = &info })
@@ -42,8 +43,9 @@ func (ec *ExecutionCoordinator) collectDiskConfig() {
 }
 
 // collectMembers collects each member disk of a composite target (an
-// array), not the composite: the drive's interface, SMART and topology
-// belong to the disks, while the benchmark results attach to the composite.
+// array): the drive's interface, SMART and topology belong to the disks,
+// while the benchmark results attach to the composite (whose own node,
+// queue and array state collectDiskConfig reads separately).
 // Each member's configuration lands in the composite's status entry, keyed
 // by name and serial, on a fresh slice (a reader may hold the old one), and
 // its dump is written as <member>_diskinfo_<start>.txt.
