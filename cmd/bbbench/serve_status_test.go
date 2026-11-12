@@ -745,6 +745,22 @@ assert(m.includes('fw FW&lt;1&gt;') && !m.includes('FW<1>'), 'firmware: ' + m);
 assert(m.includes('slot Bay 3 <span class="dim">(SAS bay)</span>'), 'slot: ' + m);
 assert(m.includes('link 6.0 Gbps') && m.includes('max 12.0 Gbps') && m.includes('below max'), 'link: ' + m);
 assert(!m.includes('slot undefined') && m.split('slot ').length === 2, 'sdc has no slot: ' + m);
+// The 2 s poll must not undo what the user did: an expanded <details> stays
+// expanded (dm_mod list, keyed per card) and identical markup is not rebuilt.
+const dm = '{loaded:true, use_blk_mq:"Y", params:{use_blk_mq:"Y", dm_mq_queue_depth:"2048"}}';
+let dh = run('dmModHTML(' + dm + ', "md127")');
+assert(dh.includes('<details data-key="dmmod:md127">') && !dh.includes(' open>'), dh);
+run('openKeys.add("dmmod:md127")');
+dh = run('dmModHTML(' + dm + ', "md127")');
+assert(dh.includes('<details data-key="dmmod:md127" open>'), 'expanded state kept: ' + dh);
+assert(!run('dmModHTML(' + dm + ', "sda")').includes(' open>'), 'keyed per card');
+ctx.el = { innerHTML: '' };
+run('setHTML(el, "<b>a</b>")');
+ctx.el.innerHTML = 'user-changed dom';
+run('setHTML(el, "<b>a</b>")');
+assert.strictEqual(ctx.el.innerHTML, 'user-changed dom', 'same markup must not be rebuilt');
+run('setHTML(el, "<b>b</b>")');
+assert.strictEqual(ctx.el.innerHTML, '<b>b</b>');
 assert.strictEqual(run('membersHTML({name:"sda"})'), '');
 assert.strictEqual(run('membersHTML({name:"sda",members:[]})'), '');
 

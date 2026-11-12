@@ -425,6 +425,16 @@ __NAVBAR_HTML__
         // user expanded, since the lists are re-rendered every 2 seconds.
         let phasesByDrive = {};
         let phasesFor = '';
+
+        // setHTML replaces an element's content only when it changed. The
+        // page polls every 2 seconds; rebuilding identical markup would still
+        // collapse what the user expanded, reset scroll positions and drop a
+        // text selection or a hovered tooltip.
+        function setHTML(el, html) {
+            if (el._html === html) return;
+            el._html = html;
+            el.innerHTML = html;
+        }
         const openKeys = new Set();
 
         document.addEventListener('toggle', e => {
@@ -555,7 +565,7 @@ __NAVBAR_HTML__
 
         // The disk configuration read at the start of the run: interface, link,
         // power, write cache and SMART health. Anything unreadable is left out.
-        function configHTML(c) {
+        function configHTML(c, scope) {
             if (!c) return '<div class="cfg"><span class="dim">Reading configuration&hellip;</span></div>';
             const row = (k, v) => v ? '<div class="row"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>' : '';
             const sp = (cls, t) => '<span class="' + cls + '">' + esc(t) + '</span>';
@@ -609,7 +619,7 @@ __NAVBAR_HTML__
             const q = c.queue;
             return '<div class="cfg">' + row('Interface', esc(c.interface || 'unknown')) + row('Slot', slot) + row('Controller', ctrl) + row('Link', link) +
                 row('Power', power) + row('Write cache', wc) + row('SMART', smart) +
-                row('Queue', queueHTML(q)) + row('md', q ? mdHTML(q.md) : '') + row('dm_mod', q ? dmModHTML(q.dm_mod) : '') + '</div>';
+                row('Queue', queueHTML(q)) + row('md', q ? mdHTML(q.md) : '') + row('dm_mod', q ? dmModHTML(q.dm_mod, scope) : '') + '</div>';
         }
 
         // The request queue read from sysfs: blk-mq or bio-based, hardware
@@ -649,14 +659,15 @@ __NAVBAR_HTML__
         // The device-mapper core module's queue parameters; one this kernel
         // does not have is said so, never hidden. Every parameter is in the
         // collapsed list.
-        function dmModHTML(d) {
+        function dmModHTML(d, scope) {
             if (!d) return '';
             if (!d.loaded) return '<span class="dim">not loaded</span>';
             const v = k => d[k] ? esc(d[k]) : '<span class="dim">n/a (not on this kernel)</span>';
             let h = ['use_blk_mq', 'dm_mq_nr_hw_queues', 'dm_mq_queue_depth'].map(k => k + ' ' + v(k)).join(' &middot; ');
             const ks = Object.keys(d.params || {}).sort();
             if (ks.length) {
-                h += '<details><summary class="dim">all dm_mod parameters (' + ks.length + ')</summary>' +
+                const key = 'dmmod:' + (scope || '');
+                h += '<details data-key="' + esc(key) + '"' + (openKeys.has(key) ? ' open' : '') + '><summary class="dim">all dm_mod parameters (' + ks.length + ')</summary>' +
                     ks.map(k => esc(k) + ' = ' + esc(d.params[k])).join('<br>') + '</details>';
             }
             return h;
@@ -843,12 +854,12 @@ __NAVBAR_HTML__
             const progressText = document.getElementById('progress-text');
             const benchmarkDetails = document.getElementById('benchmark-details');
             const drivesList = document.getElementById('drives-list');
-            document.getElementById('group-banner').innerHTML = groupBannerHTML(status.group, status.drives, phasesByDrive);
+            setHTML(document.getElementById('group-banner'), groupBannerHTML(status.group, status.drives, phasesByDrive));
             const lastUpdate = document.getElementById('last-update');
 
             // Update status badge
             if (status.running) {
-                statusInfo.innerHTML = '<span class="status-badge status-running">Running</span>';
+                setHTML(statusInfo, '<span class="status-badge status-running">Running</span>');
                 progressContainer.style.display = 'block';
 
                 // Update progress
@@ -859,14 +870,14 @@ __NAVBAR_HTML__
                 progressText.textContent = progress + '%';
 
                 // Show benchmark details
-                benchmarkDetails.innerHTML =
+                setHTML(benchmarkDetails,
                     '<div class="drive-detail">Mode: ' + esc(status.mode) + '</div>' +
                     '<div class="drive-detail">Phase: ' + (status.current_phase + 1) + ' / ' + status.total_phases + '</div>' +
-                    '<div class="drive-detail">Completed: ' + status.completed_phases + ' / ' + status.total_phases + '</div>';
+                    '<div class="drive-detail">Completed: ' + status.completed_phases + ' / ' + status.total_phases + '</div>');
             } else {
-                statusInfo.innerHTML = '<span class="status-badge status-idle">Idle</span>';
+                setHTML(statusInfo, '<span class="status-badge status-idle">Idle</span>');
                 progressContainer.style.display = 'none';
-                benchmarkDetails.innerHTML = '';
+                setHTML(benchmarkDetails, '');
             }
 
             // Update drives list
@@ -908,7 +919,7 @@ __NAVBAR_HTML__
                     html += settingBadgesHTML(drive, status.group);
                     // An array shows its own node (queue, md/dm state) once
                     // read, then its members' configuration.
-                    html += drive.kind === 'array' ? (drive.config ? configHTML(drive.config) : '') + membersHTML(drive) : configHTML(drive.config);
+                    html += drive.kind === 'array' ? (drive.config ? configHTML(drive.config, drive.name) : '') + membersHTML(drive) : configHTML(drive.config, drive.name);
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
                         html += '<div class="drive-detail">Phase: ' + esc(drive.phase_name) + '</div>';
@@ -926,10 +937,10 @@ __NAVBAR_HTML__
                     html += '</div>';
                 });
                 html += '</div>';
-                drivesList.innerHTML = html;
+                setHTML(drivesList, html);
                 loadPhases(sortedDrives);
             } else {
-                drivesList.innerHTML = '<div class="no-data">No active benchmarks</div>';
+                setHTML(drivesList, '<div class="no-data">No active benchmarks</div>');
             }
 
             // Update last update time
