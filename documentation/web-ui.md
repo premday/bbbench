@@ -57,7 +57,7 @@ The left sidebar provides filters that update the displayed graphs in real time:
 
 | Filter | Description |
 |--------|-------------|
-| **Graph Type** | Toggle IOPS, Bandwidth (MB/s), and Latency (µs) charts independently. |
+| **Graph Type** | Toggle IOPS, Bandwidth, Latency and Flush latency charts independently. |
 | **Drive Type** | Narrow down to HDD or SSD results. |
 | **Vendor / Model / Serial** | Select specific hardware identities. |
 | **Disk** | Choose which drives to include. |
@@ -68,6 +68,8 @@ The left sidebar provides filters that update the displayed graphs in real time:
 `/graphs?group=<group id>` shows the member runs of a group together (`/api/groups/graphs`); `/graphs?id=<run id>` shows one run; a member run of a group viewed by its own id still carries its label, so it gets the **Setting value** filter and hides invalid results by default, while a plain run shows neither. In a group, a card is titled `disk · value`, and `disk · value · round N` when a value was measured in several runs (parallel-swap), since the same disk appears in each run. A card of an array target adds its members to the subtitle (`members: sdb (data), sdc (data), sdd (spare)`), and so does the enlarged chart's title.
 
 Each matching combination of disk × phase is rendered as its own graph card. Click a card to maximize it; press **Esc** to return to the grid.
+
+**Units.** The unit of a chart is chosen from the largest value of its phase, so every card of a phase uses the same one and the y axis is titled with it: MB/s, GB/s or TB/s for bandwidth, IOPS, kIOPS or MIOPS, and μs, ms or s for latency and Flush latency (the largest unit the phase's axis reaches at least 1 of). Ticks and hover values are in that unit. The data is unchanged: bandwidth is fio's KiB/s divided by 1024, labelled MB/s, and the steps above it are x1000. The compare chart picks its unit the same way from the largest value it plots, in its axis title (`Bandwidth (GB/s)`).
 
 **Time axis.** All time-series graphs use one x axis, in seconds from the start of the phase, from 0 to the longest series shown, so cards line up. fio's `ramp_time` is shaded as **ramp-up**: fio logs nothing during it, so the fio curves start where it ends. A point is the average over one polling window (`--log-avg-msec`) and is drawn at the start of its window; hover it to see the window. fio stamps the end of a window, so its points are moved back by one window, which keeps the first point at the end of the ramp-up instead of one interval later.
 

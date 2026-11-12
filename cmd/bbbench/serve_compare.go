@@ -181,14 +181,16 @@ __NAVBAR_HTML__
     let cmpChart = null;
 
     const METRICS = [
-        { key: 'iops', label: 'IOPS',            unit: 'IOPS', tsKey: 'ts_iops', source: 'fio',
+        // label names the metric without a unit: the axis title adds the
+        // unit chosen from the chart's largest value (chartScale).
+        { key: 'iops', label: 'IOPS',          unit: 'IOPS', tsKey: 'ts_iops', source: 'fio',
           sumR: d => d.read_iops    || 0, sumW: d => d.write_iops    || 0 },
-        { key: 'bw',   label: 'Bandwidth (MB/s)', unit: 'MB/s', tsKey: 'ts_bw', source: 'fio',
+        { key: 'bw',   label: 'Bandwidth',     unit: 'MB/s', tsKey: 'ts_bw', source: 'fio',
           sumR: d => d.read_bw_mbps || 0, sumW: d => d.write_bw_mbps || 0 },
-        { key: 'lat',  label: 'Latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
+        { key: 'lat',  label: 'Latency',       unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
           sumR: d => d.read_lat_us  || 0, sumW: d => d.write_lat_us  || 0 },
         // Device Flush latency, timed from kernel trace events (not fio).
-        { key: 'flush', label: 'Flush latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
+        { key: 'flush', label: 'Flush latency', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
           has:  d => !!(d.flush && d.flush.count > 0) || !!(d.ts_flush && d.ts_flush.length),
           none: d => !!d.flush && !(d.flush.count > 0),
           sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns || 0) / 1000 : 0 },
@@ -377,6 +379,17 @@ __NAVBAR_HTML__
 
     __CHART_SHARED_JS__
 
+    // chartScale is the unit of one compare chart, from the largest value it
+    // plots (points {x, y} of the time series or the bars' numbers).
+    function chartScale(metric, datasets) {
+        let max = 0;
+        datasets.forEach(ds => ds.data.forEach(p => {
+            const v = Math.abs(typeof p === 'number' ? p : (p && p.y) || 0);
+            if (v > max) max = v;
+        }));
+        return unitScale(metric.unit, max);
+    }
+
     function renderCompare() {
         if (cmpChart) { cmpChart.destroy(); cmpChart = null; }
         const main = document.getElementById('main');
@@ -493,6 +506,7 @@ __NAVBAR_HTML__
                 return;
             }
 
+            const sc = chartScale(metric, datasets), tick = v => fmtScaled(v, sc);
             cmpChart = new Chart(canvas, {
                 type: 'line', plugins: [rampPlugin],
                 data: { datasets },
@@ -504,8 +518,7 @@ __NAVBAR_HTML__
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: items => 'at ' + items[0].raw.x + ' s',
-                            label: ctx => ctx.dataset.label + ': ' +
-                                         (metric.key === 'flush' ? ctx.raw.y.toFixed(1) : fmtTick(ctx.raw.y)) + ' ' + metric.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc) + ' ' + sc.unit,
                         }}
                     },
                     scales: {
@@ -513,10 +526,10 @@ __NAVBAR_HTML__
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 10} },
                              ticks: { font: {size: 10}, color: '#64748b', maxTicksLimit: 8 } },
                         y: { min: 0,
-                             ticks: { callback: fmtTick, font: {size: 10}, color: '#64748b' },
+                             ticks: { callback: tick, font: {size: 10}, color: '#64748b' },
                              grid: { color: '#f1f5f9' },
                              title: { display: true,
-                                      text: metric.label + ' (' + metric.unit + ')',
+                                      text: metric.label + ' (' + sc.unit + ')',
                                       color: '#64748b', font: {size: 10} } }
                     }
                 }
@@ -549,6 +562,7 @@ __NAVBAR_HTML__
                 };
             });
 
+            const sc = chartScale(metric, datasets), tick = v => fmtScaled(v, sc);
             cmpChart = new Chart(canvas, {
                 type: 'bar',
                 data: { labels: dirLabels, datasets },
@@ -558,15 +572,14 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'right',
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { callbacks: {
-                            label: ctx => ctx.dataset.label + ': ' +
-                                         fmtTick(ctx.raw) + ' ' + metric.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw, sc) + ' ' + sc.unit,
                         }}
                     },
                     scales: {
                         y: { min: 0,
-                             ticks: { callback: fmtTick, font: {size: 10}, color: '#64748b' },
+                             ticks: { callback: tick, font: {size: 10}, color: '#64748b' },
                              title: { display: true,
-                                      text: metric.label + ' (' + metric.unit + ')',
+                                      text: metric.label + ' (' + sc.unit + ')',
                                       color: '#64748b', font: {size: 10} } }
                     }
                 }

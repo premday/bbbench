@@ -579,14 +579,16 @@ __NAVBAR_HTML__
     const charts = {};
 
     const METRICS = [
-        { key: 'iops', label: 'IOPS',           unit: 'IOPS',  tsKey: 'ts_iops', source: 'fio',
+        // label names the metric without a unit: each card's y axis shows the
+        // unit chosen from its phase's scale (unitScale).
+        { key: 'iops', label: 'IOPS',          unit: 'IOPS',  tsKey: 'ts_iops', source: 'fio',
           sumR: d => d.read_iops||0,    sumW: d => d.write_iops||0    },
-        { key: 'bw',   label: 'Bandwidth MB/s', unit: 'MB/s',  tsKey: 'ts_bw', source: 'fio',
+        { key: 'bw',   label: 'Bandwidth',     unit: 'MB/s',  tsKey: 'ts_bw', source: 'fio',
           sumR: d => d.read_bw_mbps||0, sumW: d => d.write_bw_mbps||0 },
-        { key: 'lat',  label: 'Latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
+        { key: 'lat',  label: 'Latency',       unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
           sumR: d => d.read_lat_us||0,  sumW: d => d.write_lat_us||0  },
         // Device Flush latency, timed from kernel trace events (not fio).
-        { key: 'flush', label: 'Flush latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
+        { key: 'flush', label: 'Flush latency', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
           has:  d => !!d.flush || !!d.skipped || !!(d.ts_flush && d.ts_flush.length),
           sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns||0)/1000 : 0 },
     ];
@@ -717,7 +719,7 @@ __NAVBAR_HTML__
 
     function initFilters() {
         // graph_type: static list
-        const GT = [['iops','IOPS'],['bw','Bandwidth (MB/s)'],['lat','Latency (\u03bcs)'],['flush','Flush latency (\u03bcs)']];
+        const GT = [['iops','IOPS'],['bw','Bandwidth'],['lat','Latency'],['flush','Flush latency']];
         const ul = document.getElementById('list-graph_type');
         GT.forEach(([v, label]) => {
             SEL.graph_type.add(v);
@@ -775,8 +777,14 @@ __NAVBAR_HTML__
     let X_MAX = 0;
     __CHART_SHARED_JS__
 
+    // yAxisTitle is the y axis title of a card: the unit its ticks are in.
+    function yAxisTitle(sc) {
+        return { display: true, text: sc.unit, color: '#94a3b8', font: {size: 9} };
+    }
+
     function makeFlushChart(canvas, d, metric, yHigh) {
         const ts = d[metric.tsKey];
+        const sc = unitScale(metric.unit, yHigh || 0), tick = v => fmtScaled(v, sc);
         const color = 'rgba(124,58,237,0.9)';
         if (ts && ts.length > 0) {
             const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w}));
@@ -793,15 +801,15 @@ __NAVBAR_HTML__
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
                             title: items => 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
-                            label: ctx => 'Flush latency: ' + ctx.raw.y.toFixed(1) + ' ' + metric.unit +
+                            label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc) + ' ' + sc.unit +
                                 ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
                     },
                     scales: {
                         x: { type: 'linear', min: 0, max: X_MAX || undefined,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                              ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
-                        y: { min: 0, max: yHigh,
-                             ticks: { callback: fmtTick, font: {size: 9}, color: '#64748b' },
+                        y: { min: 0, max: yHigh, title: yAxisTitle(sc),
+                             ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
                              grid: { color: '#f1f5f9' } }
                     }
                 }
@@ -813,8 +821,10 @@ __NAVBAR_HTML__
                 backgroundColor: 'rgba(124,58,237,0.75)', borderWidth: 1 }] },
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
-                plugins: { legend: { display: false } },
-                scales: { y: { min: 0, max: yHigh, ticks: { callback: fmtTick, font: {size: 9} } } }
+                plugins: { legend: { display: false },
+                    tooltip: { callbacks: { label: ctx => fmtScaled(ctx.raw, sc) + ' ' + sc.unit } } },
+                scales: { y: { min: 0, max: yHigh, title: yAxisTitle(sc),
+                    ticks: { callback: tick, font: {size: 9} } } }
             }
         });
     }
@@ -1010,7 +1020,8 @@ __NAVBAR_HTML__
         const datasets = members.concat(array);
         const totals = stacked ? g.totals : {};
         const dirs = ['r', 'w'].filter(dir => members.some(m => m.dir === dir));
-        const fmt = v => fmtTick(Math.abs(v)) + ' ' + metric.unit;
+        const sc = unitScale(metric.unit, Math.max(yHigh || 0, -(yLow || 0))), tick = v => fmtScaled(v, sc);
+        const fmt = v => fmtScaled(v, sc) + ' ' + sc.unit;
         const totalLines = i => {
             const s = totals[xs[i]];
             if (!s) return [];
@@ -1051,8 +1062,8 @@ __NAVBAR_HTML__
                     x: { type: 'linear', min: 0, max: X_MAX || undefined,
                          title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                          ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
-                    y: { stacked: stacked, min: yLow, max: yHigh,
-                         ticks: { callback: fmtTick, font: {size: 9}, color: '#64748b' },
+                    y: { stacked: stacked, min: yLow, max: yHigh, title: yAxisTitle(sc),
+                         ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
                          grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } }
                 }
             }
@@ -1282,6 +1293,8 @@ __NAVBAR_HTML__
         const ts = d[metric.tsKey];
         if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
         if (memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl);
+        // One unit for every card of the phase: chosen from the phase's scale.
+        const sc = unitScale(metric.unit, Math.max(yHigh || 0, -(yLow || 0))), tick = v => fmtScaled(v, sc);
         if (ts && ts.length > 0) {
             tsWarn(warnEl, ts);
             const ramp = rampOf(d), shift = fioShift(d);
@@ -1310,7 +1323,7 @@ __NAVBAR_HTML__
                         tooltip: { callbacks: {
                             title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
-                                          fmtTick(Math.abs(ctx.raw.y)) + ' ' + metric.unit,
+                                          fmtScaled(ctx.raw.y, sc) + ' ' + sc.unit,
                             afterBody: items => mdTipLines(d, items)
                         }}
                     },
@@ -1318,8 +1331,8 @@ __NAVBAR_HTML__
                         x: { type: 'linear', min: 0, max: X_MAX || undefined,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                              ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
-                        y: { min: yLow, max: yHigh,
-                             ticks: { callback: fmtTick, font: {size: 9}, color: '#64748b' },
+                        y: { min: yLow, max: yHigh, title: yAxisTitle(sc),
+                             ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
                              grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } }
                     }
                 }
@@ -1337,10 +1350,10 @@ __NAVBAR_HTML__
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: { legend: { display: false },
                         tooltip: { callbacks: { label: ctx =>
-                            fmtTick(Math.abs(ctx.raw)) + ' ' + metric.unit } }
+                            fmtScaled(ctx.raw, sc) + ' ' + sc.unit } }
                     },
-                    scales: { y: { min: yLow, max: yHigh,
-                        ticks: { callback: fmtTick, font: {size: 9} } } }
+                    scales: { y: { min: yLow, max: yHigh, title: yAxisTitle(sc),
+                        ticks: { callback: tick, font: {size: 9} } } }
                 }
             });
         }

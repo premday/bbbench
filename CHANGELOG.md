@@ -36,6 +36,7 @@
 
 ### Changed
 
+- Graphs and compare pages scale their units: a chart's axis, ticks and hover use GB/s or TB/s instead of thousands of MB/s, kIOPS or MIOPS, and ms or s instead of thousands of μs, chosen from the largest value of the phase (all cards of a phase share one unit) or of the compare chart, and the y axis is titled with that unit. The data and JSON are unchanged (MB/s = fio's KiB/s / 1024; the steps above it are x1000)
 - The orchestrator drops the template's `log_avg_msec=30000` from the fio files it runs, so `--log-avg-msec` (default 1 s) is the only polling interval. The file's value could override the flag, giving 30 s points and a 30 s blank after the ramp-up on the graphs; hand-run fio on a generated file keeps the 30 s
 - CI workflows use Node 24 action versions (`checkout@v7`, `setup-go@v7`, `upload-artifact@v7`) and run on `ubuntu-26.04` instead of `ubuntu-latest`
 - `make` builds with `CGO_ENABLED=0` instead of musl-gcc: the code is pure Go, so binaries stay static without a C toolchain

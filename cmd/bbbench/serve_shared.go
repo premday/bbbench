@@ -67,6 +67,37 @@ const chartSharedJS = `function rampOf(d) {
         return a >= 1000 ? (a/1000).toFixed(1)+'k' : a.toFixed(0);
     }
 
+    // Unit ladders of the chart axes and tooltips. The data stays in the base
+    // unit (IOPS, MB/s, us); only the display is divided. Bandwidth values
+    // are fio's KiB/s divided by 1024, labelled MB/s; the ladder above it is
+    // decimal (x1000) like that label.
+    //
+    // unitScale returns {div, unit}: the largest unit of the ladder of unit
+    // whose divisor is at most maxAbs, so the axis maximum reads 1 or more.
+    // maxAbs 0 or not a number gives the base unit; a unit without a ladder
+    // is kept as it is.
+    function unitScale(unit, maxAbs) {
+        const ladder = {
+            'MB/s':    [[1, 'MB/s'], [1e3, 'GB/s'], [1e6, 'TB/s']],
+            'IOPS':    [[1, 'IOPS'], [1e3, 'kIOPS'], [1e6, 'MIOPS']],
+            '\u03bcs': [[1, '\u03bcs'], [1e3, 'ms'], [1e6, 's']],
+        }[unit];
+        let sc = {div: 1, unit: unit};
+        if (!ladder || !(maxAbs > 0)) return sc;
+        ladder.forEach(([div, u]) => { if (div <= maxAbs) sc = {div: div, unit: u}; });
+        return sc;
+    }
+    // fmtScaled formats |v| in the unit of sc (writes are drawn below zero,
+    // their ticks show the magnitude): no decimals from 100, one from 10, two
+    // from 1, two significant digits below 1; trailing zeros trimmed.
+    function fmtScaled(v, sc) {
+        const x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
+        if (!isFinite(x) || x === 0) return '0';
+        let s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toPrecision(2);
+        if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
+        return s;
+    }
+
     function esc(s) {
         return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
