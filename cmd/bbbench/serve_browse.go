@@ -128,13 +128,19 @@ func handleBrowsePage(w http.ResponseWriter, r *http.Request) {
             color: #999;
             font-size: 12px;
         }
-        .group-row { background: #fafbff; }
+        /* A group is a white line; the runs nested in it are a bright grey, indented
+           on the whole line (a bar, then the timestamp and the ID cells pushed in). */
+        .group-row { background: #fff; }
+        .group-row:hover { background: #f9f9f9; }
         .group-row .expand {
             border: 1px solid #ddd; background: #fff; border-radius: 3px;
             cursor: pointer; font-size: 11px; padding: 0 5px; margin-right: 6px;
         }
         .badge-group { background: #e8f5e9; color: #2e7d32; }
-        .member td:first-child { padding-left: 32px; }
+        .member { background: #eceff3; }
+        .member:hover { background: #e2e6ec; }
+        .member td:first-child { padding-left: 32px; border-left: 4px solid #b6bcc6; }
+        .member td:nth-child(2) { padding-left: 32px; }
         .group-of a { color: #2196f3; text-decoration: none; }
     </style>
 </head>
@@ -176,8 +182,8 @@ __NAVBAR_HTML__
     <script>
         let allResults = [];
         let allGroups = [];
-        // Run groups whose member runs are shown.
-        const EXPANDED = new Set();
+        // Run groups the user folded: every group starts expanded.
+        const COLLAPSED = new Set();
 
         function esc(s) {
             return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -258,7 +264,7 @@ __NAVBAR_HTML__
                 if (!g) { rows.push(runRow(r, false, false)); return; }
                 if (shown.has(g.id)) return;
                 shown.add(g.id);
-                const open = EXPANDED.has(g.id);
+                const open = !COLLAPSED.has(g.id);
                 rows.push(groupRow(g, members[g.id], open));
                 members[g.id].forEach(m => rows.push(runRow(m, true, open)));
             });
@@ -266,7 +272,7 @@ __NAVBAR_HTML__
         }
 
         function toggleGroup(id) {
-            if (EXPANDED.has(id)) EXPANDED.delete(id); else EXPANDED.add(id);
+            if (COLLAPSED.has(id)) COLLAPSED.delete(id); else COLLAPSED.add(id);
             filterResults();
         }
 

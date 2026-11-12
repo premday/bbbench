@@ -336,18 +336,18 @@ case 'results': {
   assert(rows.includes('href="/group?id=g2"') && rows.includes('href="/graphs?group=g2"') && rows.includes('href="/compare?group=g2"'), rows);
   assert(rows.includes('<a href="/group?id=g2">Details</a>') && !rows.includes('>Group</a>'), 'group row action is Details: ' + rows);
   assert(rows.includes('write_cache: on, &lt;b&gt;off&lt;/b&gt;'), 'group setting/values: ' + rows);
-  assert((rows.match(/class="member" data-group="g2" style="display:none"/g) || []).length === 2, 'members not collapsed: ' + rows);
+  assert((rows.match(/class="member" data-group="g2"/g) || []).length === 2 && !rows.includes('display:none') && rows.includes('\u25be'), 'groups start expanded: ' + rows);
   assert(rows.includes('group <a href="/group?id=g2">g2</a> · &lt;b&gt;off&lt;/b&gt;, on'), 'member group link/value: ' + rows);
   assert(!rows.includes('<b>off'), 'unescaped value');
   const plainRow = '<tr><td class="timestamp">' + run('formatTimestamp(__r.find(r => r.id === "p1").timestamp)') + '</td><td><code>p1</code></td>' +
     '<td><span class="badge badge-sequential">Sequential</span></td><td class="stats">1 drive(s)</td><td class="stats">1 phase(s)</td>' +
     '<td class="actions"><a href="/result?id=p1">Details</a><a href="/summary?id=p1">Summary</a><a href="/graphs?id=p1">Graphs</a><a href="/compare?id=p1">Compare</a></td></tr>';
   assert(rows.startsWith(plainRow), 'plain row changed: ' + rows.slice(0, 400));
-  run('EXPANDED.add("g2")');
+  run('COLLAPSED.add("g2")');
   rows = run('buildRows(__r, __g)');
-  assert(!rows.includes('display:none') && rows.includes('▾'), 'expanded group still collapsed');
+  assert((rows.match(/class="member" data-group="g2" style="display:none"/g) || []).length === 2 && rows.includes('\u25b8'), 'folded group still shown: ' + rows);
   // without the group API every run is a row of its own
-  rows = run('EXPANDED.clear(); buildRows(__r, [])');
+  rows = run('COLLAPSED.clear(); buildRows(__r, [])');
   assert(!rows.includes('group-row') && !rows.includes('class="member"') && rows.includes('href="/group?id=g2"'), rows);
   console.log('results ok: group row, collapsed members, links, escaped values, plain row unchanged');
   break;
