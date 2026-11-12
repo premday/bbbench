@@ -3,25 +3,37 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 
 	"bbbench/internal/iotrace"
 )
 
+// ioTraceRun is the I/O latency trace of one phase on one drive. Its methods
+// are no-ops on a nil run (tracing off or not started).
+type ioTraceRun struct {
+	sess      *iotrace.Session
+	device    string
+	logPrefix string
+	once      sync.Once
+	sum       *iotrace.Summary
+}
+
 // startIOTraceWith times every read and write of a phase from kernel trace
 // events: one session for the drive, or for an array target together with
 // its members (an md or dm node is bio-based and has no request events of
 // its own: its members carry the series). opts sets the host paths and the
-// ring buffer; AvgMsec and OffsetMs come from avgMsec and rampMs. Tracing never fails a phase: when it cannot
-// start, note says why ("no ftrace latency: <reason>", for the phase's
-// io_trace_notes) and stop returns nil. Otherwise stop ends the session,
-// stores the log next to fio's and returns the summary; it is idempotent.
+// ring buffer; AvgMsec and OffsetMs come from avgMsec and rampMs. Tracing
+// never fails a phase: when it cannot start, the run is nil and note says
+// why ("no ftrace latency: <reason>", for the phase's io_trace_notes).
 //
 // Not verified on a real kernel yet: the NVMe tracepoint filter on ctrl_id
 // and the NVMe native multipath sysfs layout (iotrace.nvmeControllers). If
-// either differs, the NVMe source may see no events (the source line then
-// says "no request events seen") but the phase still runs.
-func startIOTraceWith(drive DriveInfo, logPrefix string, avgMsec, rampMs int, opts iotrace.Options) (stop func() *iotrace.Summary, note string) {
+// either differs, the NVMe source may see more events than needed or none
+// (the source line then says "no request events seen"); the phase still runs.
+func startIOTraceWith(drive DriveInfo, logPrefix string, avgMsec, rampMs int, opts iotrace.Options) (run *ioTraceRun, note string) {
 	devices := []string{drive.Device.Name}
 	for _, m := range drive.Members {
 		devices = append(devices, m.Name)
@@ -29,27 +41,45 @@ func startIOTraceWith(drive DriveInfo, logPrefix string, avgMsec, rampMs int, op
 	opts.AvgMsec, opts.OffsetMs = avgMsec, rampMs
 	sess, err := iotrace.Start(devices, opts)
 	if err != nil {
-		note = "no ftrace latency: " + err.Error()
 		if logger != nil {
 			logger.Warn("I/O latency tracing unavailable", "device", drive.Device.Name, "err", err)
 		}
-		return func() *iotrace.Summary { return nil }, note
+		return nil, "no ftrace latency: " + err.Error()
 	}
-	var once sync.Once
-	var sum *iotrace.Summary
-	return func() *iotrace.Summary {
-		once.Do(func() {
-			res, err := sess.Stop()
-			if err != nil && logger != nil {
-				logger.Warn("I/O latency tracing cleanup", "device", drive.Device.Name, "err", err)
-			}
-			if err := writeIOLatLog(logPrefix, res); err != nil && logger != nil {
-				logger.Warn("storing I/O latency", "device", drive.Device.Name, "err", err)
-			}
-			sum = &res.Summary
-		})
-		return sum
-	}, ""
+	return &ioTraceRun{sess: sess, device: drive.Device.Name, logPrefix: logPrefix}, ""
+}
+
+// MarkStart moves the trace's time zero to now (the start gate opened).
+func (r *ioTraceRun) MarkStart() {
+	if r != nil {
+		r.sess.MarkStart()
+	}
+}
+
+// Stop ends the session, stores the log next to fio's and returns the
+// summary (nil for a nil run). Idempotent.
+func (r *ioTraceRun) Stop() *iotrace.Summary {
+	if r == nil {
+		return nil
+	}
+	r.once.Do(func() {
+		res, err := r.sess.Stop()
+		if err != nil && logger != nil {
+			logger.Warn("I/O latency tracing cleanup", "device", r.device, "err", err)
+		}
+		if err := writeIOLatLog(r.logPrefix, res); err != nil && logger != nil {
+			logger.Warn("storing I/O latency", "device", r.device, "err", err)
+		}
+		r.sum = &res.Summary
+	})
+	return r.sum
+}
+
+// Close ends the session quickly without storing anything (force quit).
+func (r *ioTraceRun) Close() {
+	if r != nil {
+		_ = r.sess.Close()
+	}
 }
 
 // I/O trace ring buffer sizing. The kernel allocates buffer_size_kb for every
@@ -150,4 +180,43 @@ func applyIOLatLog(phase *PhaseResult, device, logPrefix string) {
 		}
 		phase.IOTraceSeries[device] = series
 	}
+}
+
+// possibleCPUsPath lists the CPUs the kernel allocates a ring buffer for
+// (every possible CPU, not only the online ones or this process's affinity).
+const possibleCPUsPath = "/sys/devices/system/cpu/possible"
+
+// traceCPUs is the number of per-CPU ring buffers of one trace instance:
+// the possible CPUs, else runtime.NumCPU.
+func traceCPUs() int {
+	if b, err := os.ReadFile(possibleCPUsPath); err == nil {
+		if n, ok := parseCPUList(string(b)); ok {
+			return n
+		}
+	}
+	return runtime.NumCPU()
+}
+
+// parseCPUList counts the CPUs of a kernel CPU list ("0-63", "0,2-3,8").
+func parseCPUList(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, part := range strings.Split(s, ",") {
+		lo, hi, isRange := strings.Cut(part, "-")
+		a, err := strconv.Atoi(lo)
+		if err != nil || a < 0 {
+			return 0, false
+		}
+		b := a
+		if isRange {
+			if b, err = strconv.Atoi(hi); err != nil || b < a {
+				return 0, false
+			}
+		}
+		n += b - a + 1
+	}
+	return n, true
 }

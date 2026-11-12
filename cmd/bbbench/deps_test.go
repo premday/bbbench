@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -91,5 +92,31 @@ func TestCheckFioEngines(t *testing.T) {
 	// If the engine list could not be read, fio itself reports it later.
 	if err := checkFioEngines(nil, w); err != nil {
 		t.Error(err)
+	}
+}
+
+// The tracefs warnings print once per process, not once per run of a group.
+func TestWarnTracingOncePerProcess(t *testing.T) {
+	tracingWarned = struct{ flush, io sync.Once }{}
+	t.Cleanup(func() { tracingWarned = struct{ flush, io sync.Once }{} })
+	fsync := []FioJob{{Name: "j", Section: "[j]\nfsync=1\n"}}
+	ec := &ExecutionCoordinator{flushTrace: true, ioTrace: true,
+		workloads: map[string]*FioWorkload{"sda": {Phases: [][]FioJob{fsync}}}}
+	missing := func() error { return errors.New("tracefs not found") }
+	var out strings.Builder
+	ec.warnTracing(missing, &out)
+	ec.warnTracing(missing, &out)
+	got := out.String()
+	if strings.Count(got, "warning: I/O latency cannot be traced: tracefs not found") != 1 ||
+		strings.Count(got, "warning: Flush latency cannot be traced") != 1 ||
+		!strings.Contains(got, "           the phases still run and report fio's latency only\n") {
+		t.Errorf("output:\n%s", got)
+	}
+	// Flush tracing off: the I/O warning still comes.
+	tracingWarned = struct{ flush, io sync.Once }{}
+	out.Reset()
+	(&ExecutionCoordinator{ioTrace: true}).warnTracing(missing, &out)
+	if !strings.Contains(out.String(), "I/O latency cannot be traced") || strings.Contains(out.String(), "Flush") {
+		t.Errorf("output:\n%s", out.String())
 	}
 }

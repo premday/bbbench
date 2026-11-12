@@ -100,6 +100,13 @@ func (s *Session) Stop() (Summary, error) {
 	return sum, err
 }
 
+// MarkStart moves time zero to now (see Instance.MarkStart).
+func (s *Session) MarkStart() { s.inst.MarkStart() }
+
+// Close ends the trace quickly without a result, for a force quit; a later
+// Stop still returns what was collected.
+func (s *Session) Close() error { return s.inst.Close() }
+
 // Samples returns every completed Flush with its completion time relative to
 // the start of tracing (so comparable with fio's own time-series logs). Call
 // it after Stop.

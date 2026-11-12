@@ -720,3 +720,18 @@ func TestSourceLine(t *testing.T) {
 		t.Errorf("Fill: %+v", s)
 	}
 }
+
+// A session opened before a start gate is re-marked when the gate opens: the
+// windows count from the last start marker.
+func TestSession_LastStartMarkerIsTimeZero(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"sdb": "8:16"}, "sdb")
+	res, _ := run(t, []string{"sdb"}, issueOnly, sys, Options{AvgMsec: 1000},
+		marker(start, "bbbench-start"),
+		marker(3*sec, "bbbench-start"),
+		blk(3*sec+400*1000*usec, "block_rq_issue", "8,16", "R", 0, 8),
+		blk(3*sec+500*1000*usec, "block_rq_complete", "8,16", "R", 0, 8),
+	)
+	if len(res.Windows) != 1 || res.Windows[0].EndMs != 1000 {
+		t.Errorf("windows = %+v, want one ending at 1000 ms after the last marker", res.Windows)
+	}
+}

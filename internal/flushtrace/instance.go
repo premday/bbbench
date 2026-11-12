@@ -95,8 +95,10 @@ type Instance struct {
 	mu       sync.Mutex
 	done     chan struct{}
 	stopSeen chan struct{} // closed when the stop marker was read
-	startNs  int64         // trace-clock time of the start marker (0 = not seen)
+	startNs  int64         // trace-clock time of the last start marker (0 = not seen)
 	overrun  int64         // events the kernel dropped ([LOST N EVENTS])
+	stopOnce sync.Once
+	stopErr  error
 }
 
 // OpenInstance creates instances/<name>, sets its buffer size (bufferKB > 0),
@@ -114,6 +116,7 @@ func OpenInstance(root, name string, bufferKB int, enable []string, filters map[
 // before the start from events after it while streaming: StartNs cannot be
 // called from inside feed (the mutex is held).
 func OpenInstanceStart(root, name string, bufferKB int, enable []string, filters map[string]string, feed func(ev Event, startNs int64)) (*Instance, error) {
+	RemoveStale(root)
 	dir := filepath.Join(root, "instances", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create trace instance: %w", err)
@@ -174,9 +177,7 @@ func (i *Instance) read() {
 			i.mu.Lock()
 			switch {
 			case ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, startMarker):
-				if i.startNs == 0 {
-					i.startNs = ev.TimeNs
-				}
+				i.startNs = ev.TimeNs // MarkStart moves time zero
 			case ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, stopMarker):
 				select {
 				case <-i.stopSeen:
@@ -216,10 +217,30 @@ func lostEvents(line string) int64 {
 	return n
 }
 
+// MarkStart writes a new start marker: time zero becomes now (the last
+// marker read wins). An instance opened before a start gate calls it once
+// the gate opens, so the samples line up with fio's clock.
+func (i *Instance) MarkStart() {
+	_ = i.write("trace_marker", startMarker)
+}
+
 // Stop disables the events, wakes the reader with a stop marker and waits for
 // it (at most 3 s), turns tracing off and removes the instance. The error
 // describes a cleanup problem (reader not finishing, instance not removable).
-func (i *Instance) Stop() error {
+// Stop and Close are idempotent: a later call waits for the first one and
+// returns its error.
+func (i *Instance) Stop() error { return i.stopWithin(3 * time.Second) }
+
+// Close is Stop with a short wait for the reader, for a force quit: the
+// instance must not outlive the process with its events enabled.
+func (i *Instance) Close() error { return i.stopWithin(500 * time.Millisecond) }
+
+func (i *Instance) stopWithin(wait time.Duration) error {
+	i.stopOnce.Do(func() { i.stopErr = i.stop(wait) })
+	return i.stopErr
+}
+
+func (i *Instance) stop(wait time.Duration) error {
 	i.disable()
 	// Wake the reader with a marker while tracing is still on, and wait until
 	// it has read everything up to it. (On a real kernel trace_pipe does not
@@ -229,7 +250,7 @@ func (i *Instance) Stop() error {
 	select {
 	case <-i.stopSeen:
 	case <-i.done: // pipe ended by itself (e.g. a plain file)
-	case <-time.After(3 * time.Second):
+	case <-time.After(wait):
 		errs = append(errs, "trace reader did not finish")
 	}
 	_ = i.write("tracing_on", "0")

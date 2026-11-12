@@ -273,6 +273,14 @@ func (s *Session) Stop() (Result, error) {
 	return res, err
 }
 
+// MarkStart moves time zero to now, e.g. once a start gate opens: windows
+// count from the last start marker (flushtrace.Instance.MarkStart).
+func (s *Session) MarkStart() { s.inst.MarkStart() }
+
+// Close ends the trace quickly without a result, for a force quit; a later
+// Stop still returns what was collected.
+func (s *Session) Close() error { return s.inst.Close() }
+
 // nvmeControllers returns the controllers ("nvme1") of an NVMe namespace,
 // from sysfs: <sysBlock>/<name>/device links to the controller, or, for a
 // native multipath head, to the subsystem, and then the path devices under

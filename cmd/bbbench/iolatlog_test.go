@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,15 +122,17 @@ func TestStartIOTraceNoteOnFailure(t *testing.T) {
 	quietLogger(t)
 	drive := DriveInfo{Device: blockdev.Device{Name: "sda"}}
 	prefix := filepath.Join(t.TempDir(), "sda_phase0_1_log")
-	stop, note := startIOTraceWith(drive, prefix, 1000, 0, iotrace.Options{TracefsRoot: t.TempDir()})
-	if !strings.HasPrefix(note, "no ftrace latency: ") {
-		t.Errorf("note = %q", note)
+	run, note := startIOTraceWith(drive, prefix, 1000, 0, iotrace.Options{TracefsRoot: t.TempDir()})
+	if !strings.HasPrefix(note, "no ftrace latency: ") || run != nil {
+		t.Errorf("note = %q, run = %v", note, run)
 	}
-	if s := stop(); s != nil {
-		t.Errorf("stop() = %+v, want nil", s)
+	run.MarkStart()
+	run.Close()
+	if s := run.Stop(); s != nil {
+		t.Errorf("Stop() = %+v, want nil", s)
 	}
-	if s := stop(); s != nil {
-		t.Errorf("second stop() = %+v, want nil", s)
+	if s := run.Stop(); s != nil {
+		t.Errorf("second Stop() = %+v, want nil", s)
 	}
 	if _, err := os.Stat(iotrace.LogName(prefix)); err == nil {
 		t.Error("a log was written for an untraced phase")
@@ -170,17 +173,17 @@ func TestStartIOTraceWritesLog(t *testing.T) {
 	drive := DriveInfo{Device: blockdev.Device{Name: "md0"}, Members: []rungroup.Member{
 		{Name: "sdb", Role: "data"}, {Name: "sdc", Role: "data"}}}
 	prefix := filepath.Join(t.TempDir(), "md0_phase0_1_log")
-	stop, note := startIOTraceWith(drive, prefix, 1000, 0,
+	run, note := startIOTraceWith(drive, prefix, 1000, 0,
 		iotrace.Options{TracefsRoot: root, SysBlock: sys, InstanceName: "test"})
 	if note != "" {
 		t.Fatalf("note = %q", note)
 	}
-	sum := stop()
+	sum := run.Stop()
 	if sum == nil {
-		t.Fatal("stop() = nil")
+		t.Fatal("Stop() = nil")
 	}
-	if again := stop(); again != sum {
-		t.Errorf("second stop() = %p, want the same summary %p", again, sum)
+	if again := run.Stop(); again != sum {
+		t.Errorf("second Stop() = %p, want the same summary %p", again, sum)
 	}
 	var names []string
 	for _, d := range sum.Devices {
@@ -287,5 +290,79 @@ func TestExecutePhaseIOTraceNoteNotError(t *testing.T) {
 	}
 	if !strings.HasPrefix(res.IOTraceNote, "no ftrace latency: ") || res.IOTrace != nil {
 		t.Errorf("note = %q, trace = %+v", res.IOTraceNote, res.IOTrace)
+	}
+}
+
+func TestParseCPUList(t *testing.T) {
+	for in, want := range map[string]int{"0": 1, "0-63\n": 64, "0,2-3,8-11": 7, " 0-1 ": 2} {
+		if n, ok := parseCPUList(in); !ok || n != want {
+			t.Errorf("parseCPUList(%q) = %d, %v, want %d", in, n, ok, want)
+		}
+	}
+	for _, bad := range []string{"", "x", "3-1", "0-", "-1", "0,,1"} {
+		if _, ok := parseCPUList(bad); ok {
+			t.Errorf("parseCPUList(%q) ok", bad)
+		}
+	}
+	if traceCPUs() < 1 {
+		t.Error("traceCPUs() < 1")
+	}
+}
+
+// A force quit (cleanup) ends the trace sessions of the running phases;
+// a finished phase is no longer tracked.
+func TestCleanupClosesTraces(t *testing.T) {
+	quietLogger(t)
+	ec := &ExecutionCoordinator{}
+	var closed []string
+	var mu sync.Mutex
+	add := func(name string) func() {
+		return ec.registerTrace(func() { mu.Lock(); closed = append(closed, name); mu.Unlock() })
+	}
+	add("a")
+	done := add("b")
+	done()
+	ec.cleanup()
+	if len(closed) != 1 || closed[0] != "a" {
+		t.Errorf("closed = %v, want [a]", closed)
+	}
+}
+
+// Close on a running I/O trace switches its events off at once; the phase's
+// own Stop afterwards still returns.
+func TestIOTraceCloseThenStop(t *testing.T) {
+	quietLogger(t)
+	root := t.TempDir()
+	inst := filepath.Join(root, "instances", "test")
+	for _, base := range []string{root, inst} {
+		for _, e := range []string{"block/block_rq_issue", "block/block_rq_complete"} {
+			if err := os.MkdirAll(filepath.Join(base, "events", e), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(inst, "trace_pipe"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sys, "sdb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sys, "sdb", "dev"), []byte("8:16\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run, note := startIOTraceWith(DriveInfo{Device: blockdev.Device{Name: "sdb"}}, filepath.Join(t.TempDir(), "p_log"), 1000, 0,
+		iotrace.Options{TracefsRoot: root, SysBlock: sys, InstanceName: "test"})
+	if run == nil {
+		t.Fatalf("note = %q", note)
+	}
+	run.Close()
+	for _, f := range []string{"tracing_on", "events/block/block_rq_issue/enable"} {
+		if b, _ := os.ReadFile(filepath.Join(inst, f)); strings.TrimSpace(string(b)) != "0" {
+			t.Errorf("%s = %q after Close", f, b)
+		}
+	}
+	if run.Stop() == nil {
+		t.Error("Stop after Close = nil")
 	}
 }

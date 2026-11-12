@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +41,11 @@ type ExecutionCoordinator struct {
 	finishOnce  sync.Once
 	tempFiles   []string
 	tempFilesMu sync.Mutex
+	// traces closes the trace sessions of the running phases on a force quit
+	// (cleanup): registerTrace.
+	traces      map[int]func()
+	traceSeq    int
+	tracesMu    sync.Mutex
 	stateFile   string
 	resumeState *ExecutionState
 	startTime   time.Time
@@ -85,7 +89,7 @@ func (ec *ExecutionCoordinator) ioTraceBufferKB() int {
 	if ec.mode == "parallel-sync" {
 		sessions = len(ec.drives)
 	}
-	return ioTraceBufferKB(sessions, runtime.NumCPU())
+	return ioTraceBufferKB(sessions, traceCPUs())
 }
 
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
@@ -310,16 +314,52 @@ func (ec *ExecutionCoordinator) onSecondSignal(exit func(int)) {
 	exit(exitCodeSIGINT)
 }
 
-// cleanup removes temporary files.
+// cleanup removes temporary files and ends the running trace sessions.
 func (ec *ExecutionCoordinator) cleanup() {
 	ec.tempFilesMu.Lock()
-	defer ec.tempFilesMu.Unlock()
-
 	for _, tmpFile := range ec.tempFiles {
 		if err := os.Remove(tmpFile); err != nil {
 			logger.Debug("cleanup temp file", "path", tmpFile, "err", err)
 		}
 	}
+	ec.tempFilesMu.Unlock()
+
+	ec.tracesMu.Lock()
+	closers := make([]func(), 0, len(ec.traces))
+	for _, c := range ec.traces {
+		closers = append(closers, c)
+	}
+	ec.tracesMu.Unlock()
+	closeAll(closers...)
+}
+
+// registerTrace adds the closer of a phase's trace sessions to the cleanup
+// list; the returned function removes it again.
+func (ec *ExecutionCoordinator) registerTrace(close func()) (unregister func()) {
+	ec.tracesMu.Lock()
+	defer ec.tracesMu.Unlock()
+	if ec.traces == nil {
+		ec.traces = map[int]func(){}
+	}
+	ec.traceSeq++
+	id := ec.traceSeq
+	ec.traces[id] = close
+	return func() {
+		ec.tracesMu.Lock()
+		defer ec.tracesMu.Unlock()
+		delete(ec.traces, id)
+	}
+}
+
+// closeAll runs the closers in parallel (each may wait for its trace reader)
+// and returns when all are done.
+func closeAll(closers ...func()) {
+	var wg sync.WaitGroup
+	wg.Add(len(closers))
+	for _, c := range closers {
+		go func() { defer wg.Done(); c() }()
+	}
+	wg.Wait()
 }
 
 // registerTempFile adds a temporary file to the cleanup list.
@@ -1058,52 +1098,38 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	result.OutputPath = outputFile
 	result.LogPrefix = logPrefix
 
+	logAvgMsec := ec.avgMsec()
+	rampMs := phaseRampMs(workload, phase)
+
+	// The trace sessions are set up before the start gate (their buffers
+	// take time to allocate, which must not delay one drive's fio behind
+	// another's) and re-marked when it opens, so their time zero is fio's.
+	// Failure to trace never fails the phase: Flush tracing logs it, I/O
+	// tracing leaves a note for the phase.
+	var flush *flushTraceRun
+	if ec.flushTrace && phaseHasFsync(phase) {
+		flush = startFlushTrace(drive.Device.Name, logPrefix, logAvgMsec, rampMs,
+			flushtrace.Options{SysBlock: ec.sysBlock})
+	}
+	var ioTrace *ioTraceRun
+	if ec.ioTrace {
+		ioTrace, result.IOTraceNote = startIOTraceWith(drive, logPrefix, logAvgMsec, rampMs,
+			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ec.ioTraceBufferKB()})
+	}
+	// A force quit (cleanup) must not leave the instances behind.
+	untrack := ec.registerTrace(func() {
+		closeAll(flush.Close, ioTrace.Close)
+	})
+	defer untrack()
+
 	// All setup done — wait for start gate so all drives launch fio together.
 	signalReady()
 	result.StartTime = time.Now()
-
-	logAvgMsec := ec.avgMsec()
-
-	// For phases that fsync, time the device's Flush commands from kernel
-	// trace events while fio runs. Failure to trace never fails the phase.
-	stopTrace := func() {}
-	rampMs := phaseRampMs(workload, phase)
-	if ec.flushTrace && phaseHasFsync(phase) {
-		if sess, err := flushtrace.Start(drive.Device.Name, flushtrace.Options{}); err != nil {
-			logger.Warn("flush tracing unavailable",
-				"device", drive.Device.Name, "phase", phaseIdx, "err", err)
-		} else {
-			stopTrace = func() {
-				sum, err := sess.Stop()
-				if err != nil {
-					logger.Warn("flush tracing cleanup", "device", drive.Device.Name, "err", err)
-				}
-				sum.AvgMsec = logAvgMsec // series follow fio's polling interval
-				sum.OffsetMs = rampMs    // and fio's clock, which starts after its ramp
-				samples := sess.Samples()
-				// Same statistics as a later load of the log: without the ramp.
-				final := flushtrace.Finish(sum, samples)
-				result.FlushTrace = &final
-				// Keep the samples with the fio logs, so the run can be
-				// re-summarized and graphed later.
-				if err := writeFlushLog(logPrefix, final, samples); err != nil {
-					logger.Warn("storing flush samples", "device", drive.Device.Name, "err", err)
-				}
-				stopTrace = func() {}
-			}
-		}
-	}
+	flush.MarkStart()
+	ioTrace.MarkStart()
 
 	// Sample the members of an array (no-op for a drive) while fio runs.
 	stopMembers := startMemberSampler(drive, logPrefix, logAvgMsec, rampMs)
-
-	// Time every read and write (the drive and an array's members) from
-	// kernel trace events. A failure to trace is a note, never an error.
-	stopIOTrace := func() *iotrace.Summary { return nil }
-	if ec.ioTrace {
-		stopIOTrace, result.IOTraceNote = startIOTraceWith(drive, logPrefix, logAvgMsec, rampMs,
-			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ec.ioTraceBufferKB()})
-	}
 
 	// Execute fio with context for cancellation support
 	cmd := exec.CommandContext(ec.ctx, "fio",
@@ -1133,8 +1159,12 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 
 	output, err := cmd.CombinedOutput()
 	stopMembers()
-	result.IOTrace = stopIOTrace()
-	stopTrace()
+	// Each Stop can wait up to 3 s for its reader: in parallel.
+	var stopWG sync.WaitGroup
+	stopWG.Add(2)
+	go func() { defer stopWG.Done(); result.IOTrace = ioTrace.Stop() }()
+	go func() { defer stopWG.Done(); result.FlushTrace = flush.Stop() }()
+	stopWG.Wait()
 	if err != nil {
 		// Check if it was cancelled
 		if ec.ctx.Err() != nil {

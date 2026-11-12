@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 
 	"bbbench/internal/flushtrace"
 )
@@ -167,19 +170,33 @@ func (ec *ExecutionCoordinator) checkEnvironment() error {
 	if err := checkFioEngines(fioEngineList(), ec.workloads); err != nil {
 		return err
 	}
+	ec.warnTracing(flushtrace.TracefsAvailable, os.Stdout)
+	return nil
+}
+
+// tracingWarned makes each tracefs warning print once per process: a run
+// group calls checkEnvironment for every run.
+var tracingWarned struct{ flush, io sync.Once }
+
+// warnTracing says once per process that Flush or I/O latency cannot be
+// traced (tracefs missing): the phases still run.
+func (ec *ExecutionCoordinator) warnTracing(available func() error, w io.Writer) {
 	if ec.flushTrace && ec.hasFsyncPhase() {
-		if err := flushtrace.TracefsAvailable(); err != nil {
-			fmt.Printf("  warning: Flush latency cannot be traced: %v\n"+
-				"           mount it with `mount -t tracefs nodev /sys/kernel/tracing`; the fsync phases still run and report fio's fsync latency only\n", err)
+		if err := available(); err != nil {
+			tracingWarned.flush.Do(func() {
+				fmt.Fprintf(w, "  warning: Flush latency cannot be traced: %v\n"+
+					"           mount it with `mount -t tracefs nodev /sys/kernel/tracing`; the fsync phases still run and report fio's fsync latency only\n", err)
+			})
 		}
 	}
 	if ec.ioTrace {
-		if err := flushtrace.TracefsAvailable(); err != nil {
-			fmt.Printf("  warning: I/O latency cannot be traced: %v\n"+
-				"           the phases still run and report fio's latency only\n", err)
+		if err := available(); err != nil {
+			tracingWarned.io.Do(func() {
+				fmt.Fprintf(w, "  warning: I/O latency cannot be traced: %v\n"+
+					"           the phases still run and report fio's latency only\n", err)
+			})
 		}
 	}
-	return nil
 }
 
 // hasFsyncPhase reports whether any workload has a phase that fsyncs.
