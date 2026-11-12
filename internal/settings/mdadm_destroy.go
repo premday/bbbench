@@ -245,7 +245,7 @@ func (m *mdadm) existingArray(md string, ms []mdMember, merr error, uuid, detail
 	}
 	owned := append([]string{md}, m.partitions(md)...)
 	e := Existing{Backend: m.Name(), ID: uuid, Name: md, Summary: sum,
-		Disks: m.disksOf(devs),
+		Disks: disksOf(m.env.Sys, devs, nil),
 		Stack: append([]string{head}, superblockLines(devs)...),
 		Extra: map[string]string{ExtraKind: KindMDValue, ExtraOwnedNodes: strings.Join(owned, ","),
 			mdExtraAssembled: "yes", mdExtraMemberDevs: strings.Join(devs, ",")}}
@@ -285,7 +285,7 @@ func (m *mdadm) existingGroup(g mdSuperGroup) Existing {
 		id = "devs:" + strings.Join(g.devs, ",")
 	}
 	return Existing{Backend: m.Name(), ID: id, Name: "md superblocks on " + strings.Join(g.devs, ", "), Summary: sum,
-		Disks:   m.disksOf(g.devs),
+		Disks:   disksOf(m.env.Sys, g.devs, nil),
 		Stack:   superblockLines(g.devs),
 		Blocked: g.blocked,
 		Extra: map[string]string{ExtraKind: KindMDValue, mdExtraAssembled: "no",
@@ -332,11 +332,8 @@ func (m *mdadm) partitions(node string) []string {
 	return out
 }
 
-// wholeDisk is the /sys/block node node is (a disk) or is a partition of,
-// "" when it is neither.
-func (m *mdadm) wholeDisk(node string) string { return wholeDiskIn(m.env.Sys, node) }
-
-// wholeDiskIn is wholeDisk over the sysfs root sys.
+// wholeDiskIn is the /sys/block node (under the sysfs root sys) node is (a
+// disk) or is a partition of, "" when it is neither.
 func wholeDiskIn(sys, node string) string {
 	if !safeNode(node) {
 		return ""
@@ -357,11 +354,8 @@ func wholeDiskIn(sys, node string) string {
 	return ""
 }
 
-// diskTarget identifies disk from sysfs. A disk that cannot be read keeps
-// only its name, so the gate refuses it for having no serial.
-func (m *mdadm) diskTarget(disk string) Target { return diskTargetIn(m.env.Sys, disk) }
-
-// diskTargetIn is diskTarget over the sysfs root sys.
+// diskTargetIn identifies disk from the sysfs root sys. A disk that cannot
+// be read keeps only its name, so the gate refuses it for having no serial.
 func diskTargetIn(sys, disk string) Target {
 	d, err := blockdev.Lookup(blockdev.OSFS{}, filepath.Join(sys, "block"), disk)
 	if err != nil {
@@ -372,19 +366,18 @@ func diskTargetIn(sys, disk string) Target {
 
 // disksOf are the whole disks of devs, once each, in order. A device that
 // is not /dev/<node> or not a known disk or partition gives a disk with no
-// serial (the gate then refuses the entry).
-func (m *mdadm) disksOf(devs []string) []Target {
+// serial (the gate then refuses the entry). A disk for which skip (when not
+// nil) is true also gives only its name.
+func disksOf(sys string, devs []string, skip func(disk string) bool) []Target {
 	var out []Target
 	seen := map[string]bool{}
 	for _, dev := range devs {
 		node := filepath.Base(dev)
-		disk := ""
-		if mdDevRe.MatchString(dev) {
-			disk = m.wholeDisk(node)
-		}
 		t := Target{Name: node}
-		if disk != "" {
-			t = m.diskTarget(disk)
+		if mdDevRe.MatchString(dev) {
+			if disk := wholeDiskIn(sys, node); disk != "" && (skip == nil || !skip(disk)) {
+				t = diskTargetIn(sys, disk)
+			}
 		}
 		if !seen[t.Name] {
 			seen[t.Name] = true
@@ -555,7 +548,7 @@ func (m *mdadm) destroyCheck(e Existing) string {
 			return fmt.Sprintf("member device %s listed twice", dev)
 		}
 		seen[dev] = true
-		disk := m.wholeDisk(filepath.Base(dev))
+		disk := wholeDiskIn(m.env.Sys, filepath.Base(dev))
 		if _, ok := disks[disk]; disk == "" || !ok {
 			return fmt.Sprintf("member device %s is not on one of its disks", dev)
 		}
@@ -565,7 +558,7 @@ func (m *mdadm) destroyCheck(e Existing) string {
 		if !used[t.Name] {
 			return fmt.Sprintf("disk %s carries none of its member devices", t.Name)
 		}
-		now := m.diskTarget(t.Name)
+		now := diskTargetIn(m.env.Sys, t.Name)
 		if t.Serial == "" || now.Serial != t.Serial || now.Model != t.Model {
 			return fmt.Sprintf("disk %s is not the one listed (serial %q model %q, now %q %q)", t.Name, t.Serial, t.Model, now.Serial, now.Model)
 		}

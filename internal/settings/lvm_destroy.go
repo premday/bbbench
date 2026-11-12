@@ -233,7 +233,7 @@ func (b *lvm) Existing(ctx context.Context) ([]Existing, error) {
 		// Its ID never equals a VG name: it is tied to no VG uuid.
 		e := Existing{Backend: b.Name(), ID: "foreign:" + name, Name: name,
 			Summary: fmt.Sprintf("vg %s: not listed by vgs, %s", name, plural(len(paths), "PV", "PVs")),
-			Disks:   b.disksOfPVs(paths), Stack: append([]string{"vg " + name}, pvLines(paths)...),
+			Disks:   disksOf(b.env.Sys, paths, b.composite), Stack: append([]string{"vg " + name}, pvLines(paths)...),
 			Extra:   map[string]string{ExtraOwnedVG: name, lvmExtraPVs: strings.Join(paths, ",")},
 			Blocked: "its physical volumes are listed but the volume group is not listed by vgs (foreign system ID or unreadable metadata); destroy it by hand"}
 		out = append(out, e)
@@ -316,7 +316,7 @@ func (b *lvm) existingVG(v map[string]string, lvs, pvs []map[string]string, dms 
 	}
 	stack = append(append(stack, "vg "+name), pvLines(paths)...)
 	e := Existing{Backend: b.Name(), ID: name, Name: name, Summary: sum,
-		Disks: b.disksOfPVs(known), Stack: stack,
+		Disks: disksOf(b.env.Sys, known, b.composite), Stack: stack,
 		Extra: map[string]string{ExtraOwnedVG: name, ExtraOwnedNodes: strings.Join(dms, ","),
 			lvmExtraVGUUID: v["vg_uuid"], lvmExtraPVs: strings.Join(known, ","), lvmExtraLVs: strings.Join(visible, ",")}}
 
@@ -366,7 +366,7 @@ func (b *lvm) existingOrphan(r map[string]string) Existing {
 		sum += ", " + sz
 	}
 	e := Existing{Backend: b.Name(), ID: "pv:" + r["pv_uuid"], Name: node, Summary: sum,
-		Disks: b.disksOfPVs([]string{path}), Stack: []string{"pv " + path},
+		Disks: disksOf(b.env.Sys, []string{path}, b.composite), Stack: []string{"pv " + path},
 		Extra: map[string]string{ExtraOrphanPV: "yes", ExtraOwnedNodes: node,
 			lvmExtraPVUUID: r["pv_uuid"], lvmExtraPVPath: path}}
 	switch {
@@ -376,29 +376,6 @@ func (b *lvm) existingOrphan(r map[string]string) Existing {
 		e.Blocked = "cannot tell its uuid; remove it by hand"
 	}
 	return e
-}
-
-// disksOfPVs are the whole disks of the PV paths, once each, in order. A PV
-// on an md or dm device, or a path that is not /dev/<node> of a disk or
-// partition, gives a disk with only a name (the gate then refuses the entry
-// for having no serial).
-func (b *lvm) disksOfPVs(paths []string) []Target {
-	var out []Target
-	seen := map[string]bool{}
-	for _, p := range paths {
-		node := filepath.Base(p)
-		t := Target{Name: node}
-		if mdDevRe.MatchString(p) {
-			if disk := wholeDiskIn(b.env.Sys, node); disk != "" && !b.composite(disk) {
-				t = diskTargetIn(b.env.Sys, disk)
-			}
-		}
-		if !seen[t.Name] {
-			seen[t.Name] = true
-			out = append(out, t)
-		}
-	}
-	return out
 }
 
 // composite is whether the /sys/block node is an md or dm device.
