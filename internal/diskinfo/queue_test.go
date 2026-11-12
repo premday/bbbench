@@ -73,7 +73,8 @@ func TestQueue_NVMeMultiqueue(t *testing.T) {
 		q.NVMeQueueCount != "5" || q.NVMeSQSize != "1023" || q.MD != nil {
 		t.Errorf("queue = %+v", q)
 	}
-	if d := q.DMMod; d == nil || !d.Loaded || d.UseBlkMQ != "Y" || d.MQNrHWQueues != "0" || d.MQQueueDepth != "2048" {
+	if d := q.DMMod; d == nil || !d.Loaded || d.UseBlkMQ != "Y" || d.MQNrHWQueues != "0" || d.MQQueueDepth != "2048" ||
+		len(d.Params) != 4 || d.Params["reserved_bio_based_ios"] != "16" {
 		t.Errorf("dm_mod = %+v", q.DMMod)
 	}
 	for _, want := range []string{
@@ -371,5 +372,58 @@ func TestQueue_SummaryOnly(t *testing.T) {
 	}
 	if got := Collect("sdq", Options{Sys: sys, Run: fakeRun(nil), DriveWCE: func(string) (bool, error) { return false, errNo }}); got.Queue != nil {
 		t.Errorf("no queue dir: %+v", got.Queue)
+	}
+}
+
+// A dm-raid node: dm/ and the md/ state of its raid target, its slaves'
+// queues, and the full dm_mod parameter list.
+func TestQueue_DMRaidNode(t *testing.T) {
+	sys := t.TempDir()
+	put(t, sys, dmModParams)
+	put(t, sys, map[string]string{
+		"block/dm-3/queue/scheduler":                              "none",
+		"block/dm-3/queue/max_sectors_kb":                         "512",
+		"block/dm-3/dm/name":                                      "vg0-r1",
+		"block/dm-3/dm/uuid":                                      "LVM-xyz",
+		"block/dm-3/md/level":                                     "raid1",
+		"block/dm-3/md/raid_disks":                                "2",
+		"block/dm-3/md/sync_action":                               "resync",
+		"block/sde/queue/scheduler":                               "[mq-deadline] none",
+		"block/sde/mq/0/cpu_list":                                 "0",
+		"block/sdf/queue/scheduler":                               "[mq-deadline] none",
+		"block/sdf/mq/0/cpu_list":                                 "0",
+		"module/dm_raid/parameters/devices_handle_discard_safely": "N",
+	})
+	for _, d := range []string{"dm-1", "dm-2"} {
+		put(t, sys, map[string]string{"block/" + d + "/queue/scheduler": "none", "block/" + d + "/dm/name": "vg0-r1_rimage"})
+		link(t, sys, filepath.Join(sys, "block", d), "block/dm-3/slaves/"+d)
+	}
+	link(t, sys, filepath.Join(sys, "block", "sde"), "block/dm-1/slaves/sde")
+	link(t, sys, filepath.Join(sys, "block", "sdf"), "block/dm-2/slaves/sdf")
+	info, dump := CollectDump("dm-3", Options{Sys: sys, Debug: t.TempDir(), Run: fakeRun(nil)})
+	q := info.Queue
+	if info.Interface != "device-mapper" || q == nil || q.MQ || q.MaxSectorsKB != "512" {
+		t.Fatalf("info = %+v queue = %+v", info, q)
+	}
+	if q.MD == nil || q.MD.Level != "raid1" || q.MD.SyncAction != "resync" {
+		t.Errorf("md = %+v", q.MD)
+	}
+	if q.DMMod == nil || !q.DMMod.Loaded || q.DMMod.Params["use_blk_mq"] != "Y" {
+		t.Errorf("dm_mod = %+v", q.DMMod)
+	}
+	for _, want := range []string{
+		"block/dm-3/dm/name = vg0-r1", "block/dm-3/md/level = raid1", "block/dm-3/md/sync_action = resync",
+		"slaves: dm-1, dm-2",
+		"== Queue and scheduling: dm-1 (member of dm-3) ==", "block/dm-1/dm/name = vg0-r1_rimage",
+		"== Queue and scheduling: dm-2 (member of dm-3) ==",
+		"== Queue and scheduling: sde (member of dm-1) ==", "== Queue and scheduling: sdf (member of dm-2) ==",
+		"block/sde/queue/scheduler = [mq-deadline] none",
+		"module/dm_mod/parameters/use_blk_mq = Y", "module/dm_mod/parameters/dm_mq_nr_hw_queues = 0",
+		"module/dm_mod/parameters/dm_mq_queue_depth = 2048", "module/dm_mod/parameters/reserved_bio_based_ios = 16",
+		"module/dm_raid/parameters/devices_handle_discard_safely = N",
+	} {
+		if !strings.Contains(dump, want) {
+			t.Errorf("dump lacks %q:\n%s", want, dump)
+		}
 	}
 }

@@ -62,6 +62,8 @@ type DMMod struct {
 	UseBlkMQ     string `json:"use_blk_mq,omitempty"`
 	MQNrHWQueues string `json:"dm_mq_nr_hw_queues,omitempty"`
 	MQQueueDepth string `json:"dm_mq_queue_depth,omitempty"`
+	// Params is every readable file of /sys/module/dm_mod/parameters/.
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // dmModKeys are the dm_mod parameters named in the summary and always listed
@@ -94,10 +96,10 @@ const (
 	defMaxDevice = 4 << 20
 )
 
-// virtualKind is "md" or "dm" for a software node (it has md/ or dm/), "" for
-// a disk.
+// virtualKind is "dm" or "md" for a software node (it has dm/ or md/; a
+// dm-raid node may have both and is "dm"), "" for a disk.
 func (c *collector) virtualKind() string {
-	for _, k := range []string{"md", "dm"} {
+	for _, k := range []string{"dm", "md"} {
 		if st, err := os.Stat(c.sys("block", c.name, k)); err == nil && st.IsDir() {
 			return k
 		}
@@ -172,7 +174,7 @@ func (c *collector) queueSummary(virt string) *Queue {
 			q.NVMeSQSize = readq(c.sys("class", "nvme", m[1], "sqsize"))
 		}
 	}
-	if virt == "md" {
+	if virt != "" && exists(filepath.Join(dir, "md")) {
 		md := func(f ...string) string { return readq(filepath.Join(append([]string{dir, "md"}, f...)...)) }
 		q.MD = &MDQueue{Level: md("level"), RaidDisks: md("raid_disks"), ChunkSize: md("chunk_size"),
 			StripeCacheSize: md("stripe_cache_size"), SyncAction: md("sync_action"), Bitmap: md("bitmap", "location")}
@@ -181,6 +183,16 @@ func (c *collector) queueSummary(virt string) *Queue {
 	if loaded := exists(modDir); loaded || virt == "dm" {
 		p := func(f string) string { return readq(filepath.Join(modDir, "parameters", f)) }
 		q.DMMod = &DMMod{Loaded: loaded, UseBlkMQ: p("use_blk_mq"), MQNrHWQueues: p("dm_mq_nr_hw_queues"), MQQueueDepth: p("dm_mq_queue_depth")}
+		if ents, err := os.ReadDir(filepath.Join(modDir, "parameters")); err == nil {
+			for _, e := range ents {
+				if b, err := os.ReadFile(filepath.Join(modDir, "parameters", e.Name())); err == nil && e.Type().IsRegular() {
+					if q.DMMod.Params == nil {
+						q.DMMod.Params = map[string]string{}
+					}
+					q.DMMod.Params[e.Name()] = strings.TrimSpace(string(b))
+				}
+			}
+		}
 	}
 	return q
 }
@@ -312,21 +324,29 @@ func (c *collector) rel(path string) string {
 	return r
 }
 
-// queueDump renders the queue sections: the device, and for an md or dm node
-// each of its slaves.
+// queueDump renders the queue sections: the device, then for an md or dm
+// node every device below it (slaves, their slaves, down to the disks), each
+// once, nearest first.
 func (c *collector) queueDump(virt string) string {
 	d := &qdump{maxFile: c.opts.MaxFile, maxDevice: c.opts.MaxDevice}
-	c.deviceSection(d, c.name, virt, "")
-	if virt != "" {
-		seen := map[string]bool{}
-		ents, _ := os.ReadDir(c.sys("block", c.name, "slaves"))
+	type node struct{ name, virt, of string }
+	seen := map[string]bool{c.name: true}
+	queue := []node{{c.name, virt, ""}}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		c.deviceSection(d, n.name, n.virt, n.of)
+		if n.virt == "" {
+			continue
+		}
+		ents, _ := os.ReadDir(c.sys("block", n.name, "slaves"))
 		for _, e := range ents {
 			disk := c.diskOf(e.Name())
 			if disk == "" || seen[disk] {
 				continue
 			}
 			seen[disk] = true
-			c.deviceSection(d, disk, c.virtualKindOf(disk), c.name)
+			queue = append(queue, node{disk, c.virtualKindOf(disk), n.name})
 		}
 	}
 	return d.b.String()
@@ -362,8 +382,8 @@ func (c *collector) deviceSection(d *qdump, name, virt, of string) {
 	}
 	fmt.Fprintf(&d.b, "\n== Queue and scheduling: %s ==\n", title)
 	dir := c.sys("block", name)
-	if of == "" {
-		// Partitions of the node's slaves are named here, once.
+	{
+		// Partitions among the node's slaves are named here.
 		if ents, err := os.ReadDir(filepath.Join(dir, "slaves")); err == nil {
 			for _, e := range ents {
 				if disk := c.diskOf(e.Name()); disk != "" && disk != e.Name() {
@@ -390,7 +410,13 @@ func (c *collector) deviceSection(d *qdump, name, virt, of string) {
 
 	switch virt {
 	case "md", "dm":
-		d.walk(filepath.Join(dir, virt), c.rel(filepath.Join(dir, virt)))
+		// dm/ of a dm node, md/ of an md node, both of a dm-raid node that
+		// shows its md state.
+		for _, sub := range []string{"dm", "md"} {
+			if p := filepath.Join(dir, sub); sub == virt || exists(p) {
+				d.walk(p, c.rel(p))
+			}
+		}
 		for _, sub := range []string{"slaves", "holders"} {
 			if v, ok := names(filepath.Join(dir, sub)); ok {
 				d.line("%s: %s", sub, v)

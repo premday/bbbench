@@ -4,7 +4,9 @@
 
 The user, verbatim: "we want to dump all queue and scheduling info from sysfs.
 for each block device. and for software raid too. multiqueue mode/status too".
-Later additions: "dump all dm_mod parameters from sysfs", and for
+Later additions: "dump all dm_mod parameters from sysfs", "globally, we want
+queue configurations for each block device (including) dmraid device. and all
+dm_mod parameters too", and for
 `dm_mod`'s `use_blk_mq`, `dm_mq_nr_hw_queues` and `dm_mq_queue_depth`: "these
 3 should be visible in the status window and in the dumps".
 
@@ -42,7 +44,13 @@ Later additions: "dump all dm_mod parameters from sysfs", and for
   false`). `use_blk_mq` exists only on older kernels: a missing file is empty
   in JSON and shown as `n/a (not on this kernel)` on the status page, never as
   a value. The status page shows them as a `dm_mod` row on every card that has
-  them (drives, array node, members do not repeat it).
+  them (drives, array node, members do not repeat it). Every readable
+  `dm_mod` parameter is also in `dm_mod.params` and listed on the page in a
+  collapsed `all dm_mod parameters` list.
+- A dm-raid node (a dm node whose target is md-backed) is a dm node; when it
+  shows an `md/` directory it is dumped too and fills `Queue.MD`. Below an md
+  or dm node every device is dumped, slaves of slaves included (an LVM raid
+  LV's `rimage`/`rmeta` dm nodes and the disks under them), each once.
 
 ## Contents of the dump, per device
 
