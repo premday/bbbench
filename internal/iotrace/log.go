@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -51,7 +52,7 @@ func WriteLog(w io.Writer, r Result) error {
 			}
 		}
 		if d.Note != "" {
-			fmt.Fprintf(bw, " note=%s", strings.Join(strings.Fields(d.Note), "_"))
+			fmt.Fprintf(bw, " note=%s", url.QueryEscape(d.Note))
 		}
 		fmt.Fprintln(bw)
 	}
@@ -133,7 +134,7 @@ func ReadLog(rd io.Reader) (Result, error) {
 				case "events":
 					d.Events = strings.Split(strings.ReplaceAll(v, "->", " -> "), ",")
 				case "note":
-					d.Note = strings.ReplaceAll(v, "_", " ")
+					d.Note, _ = url.QueryUnescape(v)
 				}
 			}
 			res.Summary.Devices = append(res.Summary.Devices, d)
@@ -201,7 +202,7 @@ func ReadLog(rd io.Reader) (Result, error) {
 // max_ns, p50_ns, p99_ns, dev.
 func parseWindow(line string) (w Window, ok bool) {
 	f := strings.Split(line, ",")
-	if len(f) < 10 {
+	if len(f) != 10 {
 		return w, false
 	}
 	for i := range f {

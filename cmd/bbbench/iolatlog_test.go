@@ -15,12 +15,16 @@ import (
 
 func testIOLatResult(offsetMs int) iotrace.Result {
 	st := iotrace.Stats{Count: 10, MeanNs: 100_000, MinNs: 1000, MaxNs: 900_000, P50Ns: 90_000, P99Ns: 800_000}
+	slow := iotrace.Stats{Count: 2, MeanNs: 3.5e9, MinNs: 1e9, MaxNs: 6e9, P50Ns: 3e9, P99Ns: 6e9}
 	r := iotrace.Result{
-		Summary: iotrace.Summary{AvgMsec: 1000, OffsetMs: offsetMs, Devices: []iotrace.DeviceSummary{
-			{Name: "nvme0n1", Source: "nvme", Exact: true, Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
+		Summary: iotrace.Summary{AvgMsec: 1000, OffsetMs: offsetMs, Overrun: 4, Devices: []iotrace.DeviceSummary{
+			{Name: "nvme0n1", Source: "nvme", Exact: true, Unpaired: 1, Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
 				iotrace.KindDevice: {iotrace.DirRead: st}}},
+			{Name: "sdb", Source: "block", Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
+				iotrace.KindDevice: {iotrace.DirWrite: slow}}},
 		}},
 		Windows: []iotrace.Window{
+			{EndMs: 3000, Dev: "sdb", Kind: iotrace.KindDevice, Dir: iotrace.DirWrite, Stats: slow},
 			{EndMs: 1000, Dev: "nvme0n1", Kind: iotrace.KindDevice, Dir: iotrace.DirRead, Stats: st},
 			{EndMs: 2000, Dev: "nvme0n1", Kind: iotrace.KindDevice, Dir: iotrace.DirRead, Stats: st},
 			{EndMs: 3000, Dev: "nvme0n1", Kind: iotrace.KindDevice, Dir: iotrace.DirRead, Stats: st},
@@ -41,6 +45,13 @@ func TestIOLatLog_DropsRamp(t *testing.T) {
 	sum, series, ok := loadIOLatLog(prefix)
 	if !ok || sum == nil || sum.Text == "" {
 		t.Fatalf("ok=%v sum=%+v", ok, sum)
+	}
+	if sum.Lost != 5 {
+		t.Errorf("Lost = %d, want 5", sum.Lost)
+	}
+	hdd := series["sdb"]
+	if len(hdd) != 1 || hdd[0].T != 2 || hdd[0].Mean != 3.5e6 || hdd[0].P50 != 3e6 || hdd[0].P99 != 6e6 || hdd[0].Dir != "w" {
+		t.Errorf("sdb points = %+v", hdd)
 	}
 	pts := series["nvme0n1"]
 	if len(pts) != 1 || pts[0].T != 2 || pts[0].Mean != 100 || pts[0].P99 != 800 || pts[0].Kind != "device" || pts[0].Dir != "r" || pts[0].N != 10 {
@@ -93,7 +104,7 @@ func TestLoadBenchmarkSummary_LoadsIOLat(t *testing.T) {
 		t.Fatal("not loaded")
 	}
 	p1, p2 := got.Phases[0], got.Phases[1]
-	if p1.IOTrace["nvme0n1"] == nil || len(p1.IOTraceSeries["nvme0n1"]["nvme0n1"]) != 3 {
+	if p1.IOTrace["nvme0n1"] == nil || len(p1.IOTraceSeries["nvme0n1"]["nvme0n1"]) != 3 || len(p1.IOTraceSeries["nvme0n1"]["sdb"]) != 1 {
 		t.Errorf("phase 1: %+v %+v", p1.IOTrace, p1.IOTraceSeries)
 	}
 	if p2.IOTrace != nil || p2.IOTraceNotes["nvme0n1"] != "no tracefs" {
