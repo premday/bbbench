@@ -31,6 +31,8 @@ type Info struct {
 	// LinkBelowMax is true when the link runs below its maximum (a bad slot or
 	// cable, or the link saving power while idle).
 	LinkBelowMax bool `json:"link_below_max,omitempty"`
+	// Firmware is the drive's firmware revision ("" when unknown).
+	Firmware string `json:"firmware,omitempty"`
 	// Slot is where the disk sits and Controller what it hangs off; nil when unknown.
 	Slot       *Slot       `json:"slot,omitempty"`
 	Controller *Controller `json:"controller,omitempty"`
@@ -152,6 +154,7 @@ func collect(name string, opts Options, extras bool) (Info, *collector) {
 	} else {
 		c.scsi(&info, real)
 	}
+	info.Firmware = c.firmware()
 	c.topology(&info, real, nvmeCtrl)
 	info.Smart = c.smart(name, nvmeNameRe.MatchString(name))
 	if extras {
@@ -289,10 +292,15 @@ func DriveFirmware(name string, opts Options) string {
 	opts.fill()
 	c := &collector{opts: opts, name: name}
 	c.sys = func(parts ...string) string { return filepath.Join(append([]string{opts.Sys}, parts...)...) }
-	if m := nvmeNameRe.FindStringSubmatch(name); m != nil {
+	return c.firmware()
+}
+
+// firmware reads the drive's firmware revision from sysfs.
+func (c *collector) firmware() string {
+	if m := nvmeNameRe.FindStringSubmatch(c.name); m != nil {
 		return c.read(c.sys("class", "nvme", m[1], "firmware_rev"))
 	}
-	return c.read(c.sys("block", name, "device", "rev"))
+	return c.read(c.sys("block", c.name, "device", "rev"))
 }
 
 // nvme fills an NVMe namespace's info from its controller nvmeN.

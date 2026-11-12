@@ -610,16 +610,23 @@ __NAVBAR_HTML__
                 row('Power', power) + row('Write cache', wc) + row('SMART', smart) + '</div>';
         }
 
-        // The member disks of an array target: name, model, serial and role,
-        // with the interface and SMART health once the member's configuration
-        // has been read. '' for a drive.
+        // The member disks of an array target, one row each: model, serial,
+        // firmware, role, then (once the member's configuration has been read)
+        // interface, physical slot with who reported it, link speed and SMART
+        // health. '' for a drive.
         function membersHTML(drive) {
             const ms = drive.members || [];
             if (ms.length === 0) return '';
             const rows = ms.map(m => {
                 const c = m.config || {};
-                const bits = [esc(m.model || ''), m.serial ? 'S/N ' + esc(m.serial) : '', esc(m.role || '')];
+                const bits = [esc(m.model || ''), m.serial ? 'S/N ' + esc(m.serial) : '', c.firmware ? 'fw ' + esc(c.firmware) : '', esc(m.role || '')];
                 if (c.interface) bits.push(esc(c.interface));
+                const sl = c.slot;
+                if (sl && sl.name) bits.push('slot ' + esc(sl.name) + (sl.source ? ' <span class="dim">(' + esc(sl.source) + ')</span>' : ''));
+                if (c.link_speed) {
+                    bits.push('link ' + esc(c.link_speed) + (c.link_max ? ' <span class="dim">(max ' + esc(c.link_max) + ')</span>' : '') +
+                        (c.link_below_max ? ' <span class="warn">below max</span>' : ''));
+                }
                 const st = c.smart && c.smart.status;
                 if (st) bits.push('SMART <span class="' + (st === 'PASSED' ? 'ok' : 'bad') + '">' + esc(st) + '</span>');
                 return '<div class="row"><span class="k">' + esc(m.name) + '</span><span class="v">' +

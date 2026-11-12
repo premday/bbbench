@@ -734,13 +734,17 @@ assert(b.includes('Setting test: <b>write_cache</b>, run 1 of 2, running <span c
 
 // members: name, model, serial, role, interface and SMART from config
 const arr = '{name:"md127",kind:"array",members:[' +
-  '{name:"sdb",model:"<b>x</b>",serial:"S1",role:"data",config:{interface:"SATA",smart:{status:"PASSED"}}},' +
+  '{name:"sdb",model:"<b>x</b>",serial:"S1",role:"data",config:{interface:"SATA",firmware:"FW<1>",slot:{name:"Bay 3",source:"SAS bay"},link_speed:"6.0 Gbps",link_max:"12.0 Gbps",link_below_max:true,smart:{status:"PASSED"}}},' +
   '{name:"sdc",model:"M",serial:"S<2>",role:"spare"}]}';
 let m = run('membersHTML(' + arr + ')');
 assert(m.includes('sdb') && m.includes('sdc') && m.includes('S1') && m.includes('data') && m.includes('spare'), m);
 assert(m.includes('&lt;b&gt;x&lt;/b&gt;') && !m.includes('<b>x'), 'model not escaped: ' + m);
 assert(m.includes('S&lt;2&gt;') && !m.includes('S<2>'), 'serial not escaped: ' + m);
 assert(m.includes('SATA') && m.includes('PASSED'), 'config: ' + m);
+assert(m.includes('fw FW&lt;1&gt;') && !m.includes('FW<1>'), 'firmware: ' + m);
+assert(m.includes('slot Bay 3 <span class="dim">(SAS bay)</span>'), 'slot: ' + m);
+assert(m.includes('link 6.0 Gbps') && m.includes('max 12.0 Gbps') && m.includes('below max'), 'link: ' + m);
+assert(!m.includes('slot undefined') && m.split('slot ').length === 2, 'sdc has no slot: ' + m);
 assert.strictEqual(run('membersHTML({name:"sda"})'), '');
 assert.strictEqual(run('membersHTML({name:"sda",members:[]})'), '');
 
