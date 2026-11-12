@@ -1031,10 +1031,11 @@ __NAVBAR_HTML__
     // The graph of a phase: GRAPH_MODES lists the choices (more can be
     // added); the choice is kept per metric and phase. 'normal' draws
     // every member and the array as plain lines, 'stacked' stacks the members
-    // of IOPS and bandwidth (the default; a drive has no members, so no toggle).
+    // of IOPS and bandwidth (not the default, and never offered for latency,
+    // which is never stacked; a drive has no members, so no toggle).
     const GRAPH_MODES = [['normal', 'Normal'], ['stacked', 'Stacked']];
     const graphModeOf = {};
-    function graphMode(metric, pname) { return graphModeOf[metric.key + ':' + pname] || 'stacked'; }
+    function graphMode(metric, pname) { return graphModeOf[metric.key + ':' + pname] || 'normal'; }
 
     function destroyAllCharts() {
         Object.keys(charts).forEach(id => { charts[id].destroy(); delete charts[id]; });

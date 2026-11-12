@@ -405,11 +405,11 @@ const assert = require('assert');
 const GRAPH_MODES = [['normal', 'Normal'], ['stacked', 'Stacked']];
 const graphModeOf = {};
 const M = {key: 'bw'};
-assert.strictEqual(graphMode(M, 'randread'), 'stacked');
-graphModeOf['bw:randread'] = 'normal';
 assert.strictEqual(graphMode(M, 'randread'), 'normal');
-assert.strictEqual(graphMode(M, 'seqwrite'), 'stacked');
-assert.strictEqual(graphMode({key: 'iops'}, 'randread'), 'stacked');
+graphModeOf['bw:randread'] = 'stacked';
+assert.strictEqual(graphMode(M, 'randread'), 'stacked');
+assert.strictEqual(graphMode(M, 'seqwrite'), 'normal');
+assert.strictEqual(graphMode({key: 'iops'}, 'randread'), 'normal');
 console.log('OK');
 `)
 }
