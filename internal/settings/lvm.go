@@ -177,14 +177,7 @@ func (b *lvm) Parse(value string) (Layout, error) {
 func (b *lvm) run(ctx context.Context, args ...string) ([]byte, error) {
 	out, err := b.env.Run(ctx, "lvm", args...)
 	if err != nil {
-		msg := fmt.Sprintf("lvm %s: %v", strings.Join(args, " "), err)
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			if s := strings.TrimSpace(string(ee.Stderr)); s != "" {
-				msg += ": " + s
-			}
-		}
-		return out, errors.New(msg)
+		return out, execError("lvm", args, err)
 	}
 	return out, nil
 }
@@ -208,13 +201,7 @@ func (b *lvm) exists(ctx context.Context, notFound []string, args ...string) ([]
 				return nil, false, nil
 			}
 		}
-		msg := fmt.Sprintf("lvm %s: %v", strings.Join(args, " "), err)
-		if ee != nil {
-			if s := strings.TrimSpace(string(ee.Stderr)); s != "" {
-				msg += ": " + s
-			}
-		}
-		return nil, false, errors.New(msg)
+		return nil, false, execError("lvm", args, err)
 	}
 	return out, true, nil
 }

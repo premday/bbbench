@@ -202,14 +202,7 @@ func (m *mdadm) Prepare(_ context.Context, v Variant, _ Layout, name string) (*A
 func (m *mdadm) run(ctx context.Context, args ...string) ([]byte, error) {
 	out, err := m.env.Run(ctx, "mdadm", args...)
 	if err != nil {
-		msg := fmt.Sprintf("mdadm %s: %v", strings.Join(args, " "), err)
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			if s := strings.TrimSpace(string(ee.Stderr)); s != "" {
-				msg += ": " + s
-			}
-		}
-		return out, errors.New(msg)
+		return out, execError("mdadm", args, err)
 	}
 	return out, nil
 }
@@ -671,13 +664,7 @@ func (m *mdadm) examine(ctx context.Context, path string) (string, error) {
 		if errors.As(err, &ee) && strings.Contains(strings.ToLower(string(ee.Stderr)), "no md superblock") {
 			return "", nil
 		}
-		msg := fmt.Sprintf("mdadm --examine --export %s: %v", path, err)
-		if ee != nil {
-			if s := strings.TrimSpace(string(ee.Stderr)); s != "" {
-				msg += ": " + s
-			}
-		}
-		return "", errors.New(msg)
+		return "", execError("mdadm", []string{"--examine", "--export", path}, err)
 	}
 	return exportUUID(out), nil
 }

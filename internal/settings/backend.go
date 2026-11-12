@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"slices"
+	"strings"
 )
 
 // LevelNone is the baseline layout: every disk on its own, nothing built.
@@ -132,4 +134,17 @@ func ArrayName(variantName string) (string, error) {
 		return "", fmt.Errorf("array name %q is longer than %d characters", n, maxArrayName)
 	}
 	return n, nil
+}
+
+// execError is the error of a failed external program: "<tool> <args>: <err>",
+// followed by ": <stderr>" (trimmed) when the program ran and wrote any.
+func execError(tool string, args []string, err error) error {
+	msg := fmt.Sprintf("%s %s: %v", tool, strings.Join(args, " "), err)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if s := strings.TrimSpace(string(ee.Stderr)); s != "" {
+			msg += ": " + s
+		}
+	}
+	return errors.New(msg)
 }
