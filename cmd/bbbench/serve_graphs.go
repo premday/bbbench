@@ -979,11 +979,11 @@ __NAVBAR_HTML__
     // its stack whatever their sign, so an idle write would sit on the reads.
     // Zeros are kept: a missing point would let the bands above it drop.
     function stackedMemberDatasets(d, g, colors) {
-        const out = [];
+        const out = [], names = memberNames(d);
         ['r', 'w'].forEach(dir => {
-            if (!memberNames(d).some(n => hasDir(g.members[n], dir))) return;
+            if (!names.some(n => hasDir(g.members[n], dir))) return;
             let first = true;
-            memberNames(d).forEach(n => {
+            names.forEach(n => {
                 const c = colors[n], pts = g.members[n];
                 out.push({
                     label: memberLabel(d, n, dir), member: n, dir,
@@ -1001,8 +1001,8 @@ __NAVBAR_HTML__
     // memberLatencyDatasets: one line per member and direction. A window
     // without I/O has no latency (0): no point.
     function memberLatencyDatasets(d, g, colors) {
-        const out = [];
-        ['r', 'w'].forEach(dir => memberNames(d).forEach(n => {
+        const out = [], names = memberNames(d);
+        ['r', 'w'].forEach(dir => names.forEach(n => {
             const pts = g.members[n];
             if (!hasDir(pts, dir)) return;
             const c = colors[n];
