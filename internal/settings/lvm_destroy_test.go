@@ -951,3 +951,53 @@ func TestLVMDestroyActivationChangedSaysSo(t *testing.T) {
 		t.Errorf("error %v", err)
 	}
 }
+
+// A cancel that kills the read-only check of a PV after vgremove is a
+// cancellation: that PV and the ones after it are left for the command,
+// behind the pvs check.
+func TestLVMDestroyCancelledDuringPVCheck(t *testing.T) {
+	s := dataVG(t)
+	vg := findExisting(t, listLVM(t, s), "data")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	key := "lvm pvs --foreign --shared --reportformat json -o pv_name,pv_uuid,vg_name,vg_uuid,vg_systemid /dev/sdb"
+	s.before[key] = func() {
+		cancel()
+		s.fail[key] = errors.New("signal: killed")
+	}
+	err := s.lvm().Destroy(ctx, vg)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	msg := err.Error()
+	for _, w := range []string{"canceled", "volume group data removed", "left: physical volumes /dev/sdb, /dev/sdc1",
+		"rest by hand, after checking with pvs that each is a physical volume of no volume group: pvremove --yes /dev/sdb /dev/sdc1"} {
+		if !strings.Contains(msg, w) {
+			t.Errorf("error %q lacks %q", msg, w)
+		}
+	}
+	if strings.Contains(msg, "could not be checked") {
+		t.Errorf("a cancel reported as a check failure: %q", msg)
+	}
+}
+
+// A cancel that kills the check of the VG's name before vgremove keeps the
+// command (behind the name and uuid check).
+func TestLVMDestroyCancelledDuringVGNameCheck(t *testing.T) {
+	s := dataVG(t)
+	vg := findExisting(t, listLVM(t, s), "data")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The vgs listing right before vgremove (after the PV listing).
+	s.after["lvm pvs --foreign --shared --reportformat json --units b"] = func() {
+		s.before["lvm vgs"] = func() {
+			cancel()
+			s.fail["lvm vgs"] = errors.New("signal: killed")
+		}
+	}
+	err := s.lvm().Destroy(ctx, vg)
+	if err == nil || !strings.Contains(err.Error(), "canceled") ||
+		!strings.Contains(err.Error(), "rest by hand, after checking with vgs -o vg_name,vg_uuid that data is") {
+		t.Errorf("error %v", err)
+	}
+}

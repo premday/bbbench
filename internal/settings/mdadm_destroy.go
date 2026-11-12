@@ -653,6 +653,11 @@ func (m *mdadm) Destroy(ctx context.Context, e Existing) error {
 			return m.partial(e, assembled, done, devs[i:], err)
 		}
 		got, err := m.examine(ctx, dev)
+		if err != nil && ctx.Err() != nil {
+			// The cancel killed the read-only examine: dev is not judged
+			// either way, so it stays in the command, behind the check.
+			return m.partial(e, assembled, done, devs[i:], fmt.Errorf("cancelled before %s was examined: %w", dev, ctx.Err()))
+		}
 		if err != nil {
 			// Unproven: left out of the command for the rest.
 			return m.partial(e, assembled, done, devs[i+1:],

@@ -584,6 +584,9 @@ func (b *lvm) destroyVG(ctx context.Context, e Existing, vg, uuid string, pvs, l
 
 	// The PVs vgremove will release must be exactly the listed ones.
 	pvRows, err := b.pvRows(ctx)
+	if err != nil && ctx.Err() != nil {
+		return fail(fmt.Errorf("cancelled before the physical volumes of %s were checked: %w", vg, ctx.Err()))
+	}
 	if err != nil {
 		return fail(fmt.Errorf("cannot list the physical volumes of %s: %v", vg, err))
 	}
@@ -603,7 +606,11 @@ func (b *lvm) destroyVG(ctx context.Context, e Existing, vg, uuid string, pvs, l
 
 	// vgremove takes a name: the VG of that name must be this uuid now (a
 	// rename and a new VG of the same name since the listing).
-	if err := b.vgIs(ctx, vg, uuid); err != nil {
+	if err := b.vgIs(ctx, vg, uuid); err != nil && ctx.Err() != nil {
+		// Killed by the cancel: not a sign the VG changed; the command
+		// checks the name and uuid first.
+		return fail(fmt.Errorf("cancelled before the name of %s was checked: %w", vg, ctx.Err()))
+	} else if err != nil {
 		st.noHand = true
 		return fail(fmt.Errorf("%v; vgremove not run", err))
 	}
@@ -631,6 +638,12 @@ func (b *lvm) destroyVG(ctx context.Context, e Existing, vg, uuid string, pvs, l
 			return fail(err)
 		}
 		isPV, other, pu, err := b.pvInfo(ctx, p)
+		if err != nil && ctx.Err() != nil {
+			// The cancel killed the read-only check: the PVs from p on are
+			// not judged either way, so they stay in the command, behind
+			// the check.
+			return fail(fmt.Errorf("cancelled before %s was checked: %w", p, ctx.Err()))
+		}
 		if err != nil {
 			// lvm cannot be read: no PV is named that was not checked.
 			st.pvsHand = nil

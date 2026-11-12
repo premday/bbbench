@@ -924,3 +924,35 @@ func TestMdPartialWithNothingProvenLeft(t *testing.T) {
 		t.Errorf("error %v", err)
 	}
 }
+
+// A cancel that kills the read-only examine of a member is a cancellation:
+// that member and the ones after it are left for the command, behind the
+// examine-first check.
+func TestMdDestroyCancelledDuringExamine(t *testing.T) {
+	s, e := raid5Sim(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := s.mdadm()
+	run := m.env.Run
+	m.env.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.Join(args, " ") == "--examine --export /dev/sdc" && ctx.Err() == nil {
+			cancel() // Env.Run kills the command whose ctx ends
+			return nil, exitErr("signal: killed")
+		}
+		return run(ctx, name, args...)
+	}
+	err := m.Destroy(ctx, e)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	msg := err.Error()
+	for _, w := range []string{"canceled", "superblocks zeroed on /dev/sdb", "left: superblocks of /dev/sdc, /dev/sdd",
+		"rest by hand, after checking with mdadm --examine that each device carries uuid " + mdU1 + ": mdadm --zero-superblock /dev/sdc /dev/sdd"} {
+		if !strings.Contains(msg, w) {
+			t.Errorf("error %q lacks %q", msg, w)
+		}
+	}
+	if strings.Contains(msg, "could not be examined") {
+		t.Errorf("a cancel reported as an examine failure: %q", msg)
+	}
+}
