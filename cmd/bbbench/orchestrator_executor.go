@@ -565,6 +565,7 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 					// Same path as reloading a saved run: from the stored log.
 					applyFlushLog(&phaseResult, deviceName, result.LogPrefix)
 					applyMembersLog(&phaseResult, deviceName, result.LogPrefix)
+					applyIOLatLog(&phaseResult, deviceName, result.LogPrefix)
 				}
 				if len(result.JsonOutput) > 0 {
 					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)
