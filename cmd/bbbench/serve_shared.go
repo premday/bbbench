@@ -67,35 +67,56 @@ const chartSharedJS = `function rampOf(d) {
         return a >= 1000 ? (a/1000).toFixed(1)+'k' : a.toFixed(0);
     }
 
-    // Unit ladders of the chart axes and tooltips. The data stays in the base
-    // unit (IOPS, MB/s, us); only the display is divided. Bandwidth values
-    // are fio's KiB/s divided by 1024, labelled MB/s; the ladder above it is
-    // decimal (x1000) like that label.
+    // SI scale of the chart axes and tooltips. The data stays in the units of
+    // the JSON (MB/s, IOPS, us); a chart plots it in the metric's base unit
+    // (toBase) and prints the number with an SI prefix letter, the base unit
+    // after it: 2.41G bytes/s, 1.2M IOPS, 2.5m s. Bandwidth values are fio's
+    // KiB/s divided by 1024 (MiB/s, labelled MB/s), so bytes/s = value *
+    // 1048576 and the axis is true decimal SI bytes/s: 2300 MiB/s = 2.41G.
     //
-    // unitScale returns {div, unit}: the largest unit of the ladder of unit
-    // whose divisor is at most maxAbs, so the axis maximum reads 1 or more.
-    // maxAbs 0 or not a number gives the base unit; a unit without a ladder
-    // is kept as it is.
-    function unitScale(unit, maxAbs) {
-        const ladder = {
-            'MB/s':    [[1, 'MB/s'], [1e3, 'GB/s'], [1e6, 'TB/s']],
-            'IOPS':    [[1, 'IOPS'], [1e3, 'kIOPS'], [1e6, 'MIOPS']],
-            '\u03bcs': [[1, '\u03bcs'], [1e3, 'ms'], [1e6, 's']],
-        }[unit];
-        let sc = {div: 1, unit: unit};
-        if (!ladder || !(maxAbs > 0)) return sc;
-        ladder.forEach(([div, u]) => { if (div <= maxAbs) sc = {div: div, unit: u}; });
+    // siScale returns {mul, prefix, div, unit}: mul converts a value of the
+    // metric to its base unit, unit is that base unit, and prefix/div put the
+    // maximum maxData (in the metric's units) in [1, 1000). bytes/s and IOPS
+    // never take a prefix below none, seconds take n, \u03bc, m or none. maxData
+    // 0 or not a number gives no prefix; a unit without a base is kept as it
+    // is (no conversion).
+    function siScale(metric, maxData) {
+        const base = {
+            'MB/s':    {mul: 1048576, unit: 'bytes/s', lo: 3, hi: 8},
+            'IOPS':    {mul: 1,       unit: 'IOPS',    lo: 3, hi: 8},
+            '\u03bcs': {mul: 1e-6,    unit: 's',       lo: 0, hi: 3},
+        }[metric.unit] || {mul: 1, unit: metric.unit, lo: 3, hi: 8};
+        const P = [['n', 1e-9], ['\u03bc', 1e-6], ['m', 1e-3], ['', 1], ['k', 1e3], ['M', 1e6], ['G', 1e9], ['T', 1e12], ['P', 1e15]];
+        const sc = {mul: base.mul, prefix: '', div: 1, unit: base.unit};
+        const max = maxData * base.mul;
+        if (!(max > 0)) return sc;
+        let k = base.lo;
+        for (let i = base.lo; i <= base.hi; i++) if (P[i][1] <= max * (1 + 1e-9)) k = i;
+        sc.prefix = P[k][0];
+        sc.div = P[k][1];
         return sc;
     }
-    // fmtScaled formats |v| in the unit of sc (writes are drawn below zero,
-    // their ticks show the magnitude): no decimals from 100, one from 10, two
-    // from 1, two significant digits below 1; trailing zeros trimmed.
+    // fmtScaled formats |v|, a value in the base unit of sc (writes are drawn
+    // below zero, their ticks show the magnitude), as the number and the
+    // prefix letter, no space: no decimals from 100, one from 10, two from 1,
+    // two significant digits below 1, trailing zeros trimmed ('2G', '1.5M',
+    // '800\u03bc'); 0 is '0'.
     function fmtScaled(v, sc) {
         const x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
         if (!isFinite(x) || x === 0) return '0';
         let s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toPrecision(2);
         if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
-        return s;
+        return s + (sc && sc.prefix ? sc.prefix : '');
+    }
+    // toBase converts the datasets' values ({x, y} points or bar numbers) to
+    // the base unit of sc, in place; null stays null. Chart.js then places
+    // its ticks at round base-unit values (500M, 1G), not at round MB/s.
+    function toBase(datasets, sc) {
+        datasets.forEach(ds => {
+            ds.data = ds.data.map(p => typeof p === 'number' ? p * sc.mul
+                : (p && p.y !== null && p.y !== undefined ? Object.assign({}, p, {y: p.y * sc.mul}) : p));
+        });
+        return datasets;
     }
 
     function esc(s) {

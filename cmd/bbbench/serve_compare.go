@@ -182,7 +182,7 @@ __NAVBAR_HTML__
 
     const METRICS = [
         // label names the metric without a unit: the axis title adds the
-        // unit chosen from the chart's largest value (chartScale).
+        // base unit, the numbers the SI prefix of the chart (chartScale).
         { key: 'iops', label: 'IOPS',          unit: 'IOPS', tsKey: 'ts_iops', source: 'fio',
           sumR: d => d.read_iops    || 0, sumW: d => d.write_iops    || 0 },
         { key: 'bw',   label: 'Bandwidth',     unit: 'MB/s', tsKey: 'ts_bw', source: 'fio',
@@ -379,15 +379,17 @@ __NAVBAR_HTML__
 
     __CHART_SHARED_JS__
 
-    // chartScale is the unit of one compare chart, from the largest value it
-    // plots (points {x, y} of the time series or the bars' numbers).
+    // chartScale is the SI scale of one compare chart (siScale), its prefix
+    // from the largest value it plots (points {x, y} of the time series or
+    // the bars' numbers, in the metric's units); the chart then plots in the
+    // base unit (toBase).
     function chartScale(metric, datasets) {
         let max = 0;
         datasets.forEach(ds => ds.data.forEach(p => {
             const v = Math.abs(typeof p === 'number' ? p : (p && p.y) || 0);
             if (v > max) max = v;
         }));
-        return unitScale(metric.unit, max);
+        return siScale(metric, max);
     }
 
     function renderCompare() {
@@ -507,6 +509,7 @@ __NAVBAR_HTML__
             }
 
             const sc = chartScale(metric, datasets), tick = v => fmtScaled(v, sc);
+            toBase(datasets, sc);
             cmpChart = new Chart(canvas, {
                 type: 'line', plugins: [rampPlugin],
                 data: { datasets },
@@ -563,6 +566,7 @@ __NAVBAR_HTML__
             });
 
             const sc = chartScale(metric, datasets), tick = v => fmtScaled(v, sc);
+            toBase(datasets, sc);
             cmpChart = new Chart(canvas, {
                 type: 'bar',
                 data: { labels: dirLabels, datasets },

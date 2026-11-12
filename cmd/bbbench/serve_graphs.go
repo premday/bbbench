@@ -579,8 +579,8 @@ __NAVBAR_HTML__
     const charts = {};
 
     const METRICS = [
-        // label names the metric without a unit: each card's y axis shows the
-        // unit chosen from its phase's scale (unitScale).
+        // label names the metric without a unit: each card's y axis shows its
+        // base unit, the numbers the SI prefix of its phase (siScale).
         { key: 'iops', label: 'IOPS',          unit: 'IOPS',  tsKey: 'ts_iops', source: 'fio',
           sumR: d => d.read_iops||0,    sumW: d => d.write_iops||0    },
         { key: 'bw',   label: 'Bandwidth',     unit: 'MB/s',  tsKey: 'ts_bw', source: 'fio',
@@ -777,17 +777,20 @@ __NAVBAR_HTML__
     let X_MAX = 0;
     __CHART_SHARED_JS__
 
-    // yAxisTitle is the y axis title of a card: the unit its ticks are in.
+    // yAxisTitle is the y axis title of a card: the base unit of its ticks,
+    // whose numbers carry the SI prefix (2.4G = 2.4 * 10^9 bytes/s).
     function yAxisTitle(sc) {
         return { display: true, text: sc.unit, color: '#94a3b8', font: {size: 9} };
     }
 
-    // phaseScale is the unit of a card: chosen from the data maximum of its
-    // phase, not from the axis maximum, which has 15% headroom (a 900 MB/s
-    // peak must not turn into an axis in GB/s that stops at 1).
+    // phaseScale is the SI scale of a card (siScale): its prefix is chosen
+    // from the data maximum of its phase, not from the axis maximum, which
+    // has 15% headroom (a 900 MiB/s peak must stay 944M, not become an axis
+    // in G that stops at 1.09). A card plots in the base unit: its values and
+    // its yLow/yHigh are multiplied by sc.mul.
     const AXIS_HEADROOM = 1.15;
     function phaseScale(metric, yLow, yHigh) {
-        return unitScale(metric.unit, Math.max(yHigh || 0, -(yLow || 0)) / AXIS_HEADROOM);
+        return siScale(metric, Math.max(yHigh || 0, -(yLow || 0)) / AXIS_HEADROOM);
     }
 
     function makeFlushChart(canvas, d, metric, yHigh) {
@@ -795,7 +798,7 @@ __NAVBAR_HTML__
         const sc = phaseScale(metric, 0, yHigh), tick = v => fmtScaled(v, sc);
         const color = 'rgba(124,58,237,0.9)';
         if (ts && ts.length > 0) {
-            const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w}));
+            const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w * sc.mul}));
             return new Chart(canvas, {
                 type: 'line', plugins: [rampPlugin],
                 data: { datasets: [{ label: 'Flush (ftrace)', data: pts,
@@ -816,7 +819,7 @@ __NAVBAR_HTML__
                         x: { type: 'linear', min: 0, max: X_MAX || undefined,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                              ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
-                        y: { min: 0, max: yHigh, title: yAxisTitle(sc),
+                        y: { min: 0, max: yHigh * sc.mul, title: yAxisTitle(sc),
                              ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
                              grid: { color: '#f1f5f9' } }
                     }
@@ -825,13 +828,13 @@ __NAVBAR_HTML__
         }
         return new Chart(canvas, {
             type: 'bar',
-            data: { labels: ['Flush (ftrace)'], datasets: [{ data: [metric.sumW(d)],
+            data: { labels: ['Flush (ftrace)'], datasets: [{ data: [metric.sumW(d) * sc.mul],
                 backgroundColor: 'rgba(124,58,237,0.75)', borderWidth: 1 }] },
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false },
                     tooltip: { callbacks: { label: ctx => fmtScaled(ctx.raw, sc) + ' ' + sc.unit } } },
-                scales: { y: { min: 0, max: yHigh, title: yAxisTitle(sc),
+                scales: { y: { min: 0, max: yHigh * sc.mul, title: yAxisTitle(sc),
                     ticks: { callback: tick, font: {size: 9} } } }
             }
         });
@@ -1025,15 +1028,16 @@ __NAVBAR_HTML__
         const g = memberGrid(d, metric), xs = g.xs, colors = memberColors(memberNames(d));
         const members = stacked ? stackedMemberDatasets(d, g, colors) : memberLatencyDatasets(d, g, colors);
         const array = arrayDatasets(g, stacked);
-        const datasets = members.concat(array);
+        const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
+        const datasets = toBase(members.concat(array), sc);
         const totals = stacked ? g.totals : {};
         const dirs = ['r', 'w'].filter(dir => members.some(m => m.dir === dir));
-        const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
+        // v in the base unit; the stack totals are in the metric's units.
         const fmt = v => fmtScaled(v, sc) + ' ' + sc.unit;
         const totalLines = i => {
             const s = totals[xs[i]];
             if (!s) return [];
-            return dirs.map(dir => 'Stack total ' + (dir === 'r' ? 'read' : 'write') + ': ' + fmt(s[dir]));
+            return dirs.map(dir => 'Stack total ' + (dir === 'r' ? 'read' : 'write') + ': ' + fmt(s[dir] * sc.mul));
         };
         // The first array item shown at index i, which carries the stack totals.
         const firstArray = (chart, i) => {
@@ -1070,7 +1074,7 @@ __NAVBAR_HTML__
                     x: { type: 'linear', min: 0, max: X_MAX || undefined,
                          title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                          ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
-                    y: { stacked: stacked, min: yLow, max: yHigh, title: yAxisTitle(sc),
+                    y: { stacked: stacked, min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
                          ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
                          grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } }
                 }
@@ -1306,8 +1310,8 @@ __NAVBAR_HTML__
         if (ts && ts.length > 0) {
             tsWarn(warnEl, ts);
             const ramp = rampOf(d), shift = fioShift(d);
-            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));
-            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));
+            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));
+            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));
             const datasets = [];
             if (readPts.length > 0) datasets.push({
                 label: 'Read',  data: readPts,
@@ -1339,7 +1343,7 @@ __NAVBAR_HTML__
                         x: { type: 'linear', min: 0, max: X_MAX || undefined,
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                              ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
-                        y: { min: yLow, max: yHigh, title: yAxisTitle(sc),
+                        y: { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
                              ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
                              grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } }
                     }
@@ -1348,8 +1352,8 @@ __NAVBAR_HTML__
         } else {
             const r = metric.sumR(d), w = metric.sumW(d);
             const lbls = [], vals = [], cols = [];
-            if (r > 0) { lbls.push('Read');  vals.push(r);  cols.push('rgba(37,99,235,0.75)'); }
-            if (w > 0) { lbls.push('Write'); vals.push(-w); cols.push('rgba(220,38,38,0.75)'); }
+            if (r > 0) { lbls.push('Read');  vals.push(r * sc.mul);  cols.push('rgba(37,99,235,0.75)'); }
+            if (w > 0) { lbls.push('Write'); vals.push(-w * sc.mul); cols.push('rgba(220,38,38,0.75)'); }
             if (!lbls.length) { lbls.push('\u2014'); vals.push(0); cols.push('#e2e8f0'); }
             return new Chart(canvas, {
                 type: 'bar',
@@ -1360,7 +1364,7 @@ __NAVBAR_HTML__
                         tooltip: { callbacks: { label: ctx =>
                             fmtScaled(ctx.raw, sc) + ' ' + sc.unit } }
                     },
-                    scales: { y: { min: yLow, max: yHigh, title: yAxisTitle(sc),
+                    scales: { y: { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
                         ticks: { callback: tick, font: {size: 9} } } }
                 }
             });

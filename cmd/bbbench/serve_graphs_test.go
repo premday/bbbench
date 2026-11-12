@@ -368,8 +368,8 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 	body := graphsPageBody(t)
 	// The plain Read/Write series of a drive, as before.
 	for _, want := range []string{
-		"const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));",
-		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));",
+		"const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
+		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
 		"label: 'Read',  data: readPts,",
 		"label: 'Write', data: writePts,",
 		"if (memberMetric(d, metric)) return makeMembersChart(",
@@ -583,8 +583,8 @@ console.log('OK');
 `)
 	body := graphsPageBody(t)
 	for _, want := range []string{
-		"const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));",
-		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));",
+		"const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
+		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
 		"type: 'line', plugins: [rampPlugin],", // the Flush chart keeps its plugin list
 		"array busy: results include administrative work",
 	} {
