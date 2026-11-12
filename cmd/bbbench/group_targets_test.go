@@ -297,14 +297,19 @@ func TestCollectDiskConfig_ArrayMembers(t *testing.T) {
 	}
 }
 
-// UNVERIFIED on hardware: md and dm are bio-based, so the request events of
-// the Block collector may never fire for them. The phase then has a Flush
-// summary with Count 0, which the console prints as "none seen" and the
-// graphs page explains with "ftrace saw 0 Flush commands" (flushNone).
+// md and dm are bio-based, so the request events of the Block collector
+// never fire for them: a kernel without the bio tracepoints (or an old run)
+// has a Flush summary with Count 0, which the console prints as "none seen"
+// and the graphs page explains with "ftrace saw 0 Flush commands"
+// (flushNone). With them the node's flush bios are timed (source bio).
 func TestArrayFlush_NoRequestEventsShowsZeroFlushNote(t *testing.T) {
 	sum := &flushtrace.Summary{Source: "block", Count: 0}
 	if got := formatFlushSummary(sum); got != "Flush (block): none seen" {
 		t.Errorf("console = %q", got)
+	}
+	bio := &flushtrace.Summary{Source: "bio", Count: 2, MeanNs: 300_000}
+	if got := formatFlushSummary(bio); got != "Flush (bio): avg 300.0 us (2 flushes)" {
+		t.Errorf("bio console = %q", got)
 	}
 	r := &BenchmarkResult{
 		Drives: []DriveInfo{{

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -35,7 +36,8 @@ type Session struct {
 
 // Start begins tracing Flushes of the block device `name` (e.g. "nvme0n1",
 // "sdb"). NVMe namespaces use the NVMe tracepoints when the kernel has them;
-// anything else uses the generic block-layer tracepoints.
+// a bio-based node (md, most dm: BioBased) the bio tracepoints, since it has
+// no request events; anything else the generic block-layer tracepoints.
 func Start(name string, opts Options) (*Session, error) {
 	root, err := FindTracefs(opts)
 	if err != nil {
@@ -52,6 +54,17 @@ func Start(name string, opts Options) (*Session, error) {
 		enable = []string{"events/nvme/nvme_setup_cmd", "events/nvme/nvme_complete_rq"}
 		// Only I/O-queue Flush commands; completions cannot be filtered by opcode.
 		filters["events/nvme/nvme_setup_cmd"] = "opcode == 0 && qid > 0"
+	case BioBased(opts.SysBlock, name) && HasEvents(root, "block/block_bio_queue", "block/block_bio_complete"):
+		maj, min, err := DevNumbers(opts.SysBlock, name)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %v", ErrUnsupported, name, err)
+		}
+		col = NewBio(maj, min)
+		enable = []string{"events/block/block_bio_queue", "events/block/block_bio_complete"}
+		// Every device submits bios: only the node's own empty flush bios.
+		for _, e := range enable {
+			filters[e] = "dev == " + strconv.Itoa(maj<<20|min) + ` && rwbs ~ "F*" && nr_sector == 0`
+		}
 	case HasEvents(root, "block/block_rq_issue", "block/block_rq_complete"):
 		maj, min, err := DevNumbers(opts.SysBlock, name)
 		if err != nil {

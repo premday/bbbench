@@ -36,11 +36,14 @@ func fioGenerator(cfg *config.Root, eng *templating.Engine, host string) func(bl
 // (sysBlock, "" for /sys/block). gen writes the fio file.
 //
 // Flush tracing and the write-through gate need no case for a composite:
-// flushtrace.Start takes its generic Block path on the composite's own dev
-// numbers and flushGate reads its own queue/write_cache. UNVERIFIED on
-// hardware: md and dm devices are bio-based, so the block request events
-// may never fire for them; such a phase then shows "ftrace saw 0 Flush
-// commands" (pinned by TestArrayFlush_NoRequestEventsShowsZeroFlushNote).
+// flushtrace.Start sees from sysfs that an md or dm node is bio-based and
+// times its flush bios (block_bio_queue -> block_bio_complete) on the
+// composite's own dev numbers, and flushGate reads its own
+// queue/write_cache. UNVERIFIED on hardware: whether block_bio_complete
+// fires for the node's own flush bios; a kernel without the bio
+// tracepoints takes the request path, which sees no Flush on a bio-based
+// node: the phase then shows "ftrace saw 0 Flush commands" (pinned by
+// TestArrayFlush_NoRequestEventsShowsZeroFlushNote).
 func arrayDrive(bt settings.BenchTarget, drives map[string]DriveInfo, sysBlock string, gen func(blockdev.Device) (string, error)) (DriveInfo, error) {
 	t := bt.Target
 	var hdd, ssd string

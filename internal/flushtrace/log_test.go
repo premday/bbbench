@@ -79,6 +79,20 @@ func TestLogBlockSourceKeepsInexactSummary(t *testing.T) {
 	}
 }
 
+// A bio-based node's Flush log keeps its source and tracepoints.
+func TestLogBioSourceRoundTrip(t *testing.T) {
+	all := []Sample{{TimeNs: 1e6, LatencyNs: 400_000}}
+	var buf bytes.Buffer
+	_ = WriteLog(&buf, Finish(Summary{Source: "bio"}, all), all)
+	got, _, err := ReadLog(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != "bio" || got.Exact || len(got.Events) != 1 || got.Events[0] != "block_bio_queue -> block_bio_complete" {
+		t.Errorf("%+v", got)
+	}
+}
+
 func TestReadLogRejectsGarbage(t *testing.T) {
 	for _, in := range []string{
 		"", "hello\n",

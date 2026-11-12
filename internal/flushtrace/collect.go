@@ -155,17 +155,37 @@ var (
 	blockDoneRe = regexp.MustCompile(`^(\d+),(\d+) (\S+) \(.*?\) \d+ \+ (\d+)`)
 )
 
+// "9,127 FWS 0 + 0 [fio]" (block_bio_queue) and "9,127 FWS 0 + 0 [0]"
+// (block_bio_complete): rwbs, sector + nr_sector.
+var bioRe = regexp.MustCompile(`^(\d+),(\d+) (\S+) \d+ \+ (\d+)`)
+
 // Block times Flush requests of one block device identified by its
 // major:minor, using block_rq_issue / block_rq_complete. A request is a pure
 // Flush when its rwbs string starts with 'F' and it covers no sectors.
+// NewBio makes the same collector for a bio-based node over the bio events.
 type Block struct {
-	major, minor int
-	pending      []int64 // issue times, oldest first
-	s            samples
+	major, minor    int
+	source          string // "block" or "bio"
+	issueEv, doneEv string
+	issueRe, doneRe *regexp.Regexp
+	pending         []int64 // issue times, oldest first
+	s               samples
 }
 
 // NewBlock returns a collector for the device with the given major:minor.
-func NewBlock(major, minor int) *Block { return &Block{major: major, minor: minor} }
+func NewBlock(major, minor int) *Block {
+	return &Block{major: major, minor: minor, source: "block",
+		issueEv: "block_rq_issue", doneEv: "block_rq_complete", issueRe: blockIssueRe, doneRe: blockDoneRe}
+}
+
+// NewBio returns a collector for a bio-based node (md, most dm), which has
+// no request events: its Flushes are the empty flush bios submitted to it,
+// block_bio_queue -> block_bio_complete, paired first-in first-out. The time
+// covers the node's handling, its members' flushes included.
+func NewBio(major, minor int) *Block {
+	return &Block{major: major, minor: minor, source: "bio",
+		issueEv: "block_bio_queue", doneEv: "block_bio_complete", issueRe: bioRe, doneRe: bioRe}
+}
 
 func (c *Block) isFlush(re *regexp.Regexp, payload string) bool {
 	m := re.FindStringSubmatch(payload)
@@ -179,12 +199,12 @@ func (c *Block) isFlush(re *regexp.Regexp, payload string) bool {
 
 func (c *Block) Feed(ev Event) {
 	switch ev.Name {
-	case "block_rq_issue":
-		if c.isFlush(blockIssueRe, ev.Payload) {
+	case c.issueEv:
+		if c.isFlush(c.issueRe, ev.Payload) {
 			c.pending = append(c.pending, ev.TimeNs)
 		}
-	case "block_rq_complete":
-		if c.isFlush(blockDoneRe, ev.Payload) && len(c.pending) > 0 {
+	case c.doneEv:
+		if c.isFlush(c.doneRe, ev.Payload) && len(c.pending) > 0 {
 			t0 := c.pending[0]
 			c.pending = c.pending[1:]
 			c.s.add(ev.TimeNs, ev.TimeNs-t0)
@@ -192,18 +212,21 @@ func (c *Block) Feed(ev Event) {
 	}
 }
 
-func (c *Block) Summary() Summary  { return c.s.summary("block", false, len(c.pending)) }
+func (c *Block) Summary() Summary  { return c.s.summary(c.source, false, len(c.pending)) }
 func (c *Block) Samples() []Sample { return c.s.all }
 
 // EventsOf names the tracepoint pair a Flush source times: "nvme" nvme_setup_cmd
 // -> nvme_complete_rq (flush opcode), "block" block_rq_issue -> block_rq_complete
-// (rwbs F, 0 sectors); nil for an unknown source.
+// (rwbs F, 0 sectors), "bio" block_bio_queue -> block_bio_complete (the same,
+// on a bio-based node); nil for an unknown source.
 func EventsOf(source string) []string {
 	switch source {
 	case "nvme":
 		return []string{"nvme_setup_cmd -> nvme_complete_rq"}
 	case "block":
 		return []string{"block_rq_issue -> block_rq_complete"}
+	case "bio":
+		return []string{"block_bio_queue -> block_bio_complete"}
 	}
 	return nil
 }
