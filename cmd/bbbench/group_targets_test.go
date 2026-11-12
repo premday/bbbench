@@ -344,7 +344,7 @@ func TestCoreDoesNotNameTheBackend(t *testing.T) {
 		}
 		files = append(files, m...)
 	}
-	for _, f := range []string{"backend", "layout", "perdrive", "settings"} {
+	for _, f := range []string{"backend", "destroy", "layout", "perdrive", "settings"} {
 		files = append(files, "../../internal/settings/"+f+".go")
 	}
 	// The places that name the backends on purpose.
@@ -354,7 +354,7 @@ func TestCoreDoesNotNameTheBackend(t *testing.T) {
 		"../../internal/inuse/lvm.go":         "lists the LVM physical volumes so they are never offered",
 		"../../internal/inuse/inuse.go":       "detects LVM and md signatures and stacks on disks, for every backend",
 	}
-	banned := regexp.MustCompile(`(?i)mdadm|lvm|pvcreate|vgcreate|lvcreate`)
+	banned := regexp.MustCompile(`(?i)mdadm|lvm|pvcreate|vgcreate|lvcreate|lvremove|vgremove|pvremove|zero-superblock`)
 	checked := 0
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") || allowed[f] != "" {
@@ -378,8 +378,8 @@ func TestCoreDoesNotNameTheBackend(t *testing.T) {
 		checked++
 	}
 	// 50 core files of cmd/bbbench and internal/{rungroup,inuse,diskinfo}
-	// plus 4 of internal/settings were checked when this was written.
-	if checked < 54 {
+	// plus 5 of internal/settings were checked when this was written.
+	if checked < 55 {
 		t.Errorf("only %d files checked", checked)
 	}
 }

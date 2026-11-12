@@ -69,8 +69,8 @@ const maxStackDepth = 16
 //
 // The gate is a snapshot: it checks before Destroy is called, and something
 // can open or stack on the configuration in between. A provider must fail
-// closed itself: use the tool's own refusals (mdadm --stop refusing an open
-// array, lvremove refusing an open LV, never a force flag), act only on the
+// closed itself: use the tool's own refusals (the provider's stop or remove
+// tool refusing an open array or volume, never a force flag), act only on the
 // members of the entry it was given and stop at the first step that fails.
 // Each atomic tool step runs to completion: once a mutation has started, it
 // and the read-back that verifies it are not abandoned when ctx is
@@ -374,7 +374,7 @@ func (s *layout) destroyGate(ctx context.Context, e Existing) (*gated, []string,
 	if rep.PVsIncomplete && (g.vg != "" || g.fresh.Extra[ExtraOrphanPV] == "yes") {
 		// A PV known only from udev has no volume group: a PV just moved
 		// into another VG could pass as this one's or as an orphan.
-		blockers = append(blockers, "the LVM physical volumes could not all be listed (see the scan warnings); which volume group each physical volume belongs to cannot be proven")
+		blockers = append(blockers, "the physical volumes could not all be listed (see the scan warnings); which volume group each physical volume belongs to cannot be proven")
 	}
 	stacked, walked, err := s.walkOwned(g.nodes)
 	if err != nil {
@@ -550,7 +550,7 @@ func ownedNodes(e Existing) map[string]bool {
 
 func ownedVG(e Existing) string { return strings.TrimSpace(e.Extra[ExtraOwnedVG]) }
 
-// normUUID makes mdadm's "a1b2c3d4:..." and udev's "A1B2C3D4-..." compare.
+// normUUID makes a tool's "a1b2c3d4:..." and udev's "A1B2C3D4-..." compare.
 func normUUID(u string) string {
 	return strings.ToLower(strings.NewReplacer(":", "", "-", "").Replace(strings.TrimSpace(u)))
 }
@@ -564,7 +564,9 @@ func onDisks(e Existing, disk string) bool {
 // entries only), a physical volume of e's volume group on one of e's disks,
 // and, for an orphan PV entry, the orphan PV on its own node belong to e. A
 // mount, swap, bbbench path, other signature or unjudgeable report never
-// does, wherever it sits.
+// does, wherever it sits. The md and PV kinds are the in-use scan's cause
+// kinds (signatures any provider's disks can carry), not a provider: a
+// provider whose ownership they do not describe needs its own rule here.
 func isOwned(e Existing, nodes map[string]bool, vg string, c inuse.Cause) bool {
 	switch c.Kind {
 	case inuse.KindHolder:
