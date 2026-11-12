@@ -15,6 +15,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"bbbench/internal/util"
 )
 
 // PV is an LVM physical volume. VG is empty for an orphan PV.
@@ -409,25 +411,17 @@ func (s *scanner) readDisks() map[string][]devEntry {
 	entries, _ := os.ReadDir(filepath.Join(s.o.Sys, "block"))
 	for _, e := range entries {
 		dir := filepath.Join(s.o.Sys, "block", e.Name())
-		list := []devEntry{{dir, readTrim(filepath.Join(dir, "dev"))}}
+		list := []devEntry{{dir, util.ReadTrim(filepath.Join(dir, "dev"))}}
 		subs, _ := os.ReadDir(dir)
 		for _, sub := range subs {
 			sd := filepath.Join(dir, sub.Name())
 			if _, err := os.Stat(filepath.Join(sd, "partition")); err == nil {
-				list = append(list, devEntry{sd, readTrim(filepath.Join(sd, "dev"))})
+				list = append(list, devEntry{sd, util.ReadTrim(filepath.Join(sd, "dev"))})
 			}
 		}
 		out[e.Name()] = list
 	}
 	return out
-}
-
-func readTrim(p string) string {
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
 }
 
 func (s *scanner) scanHolders() {

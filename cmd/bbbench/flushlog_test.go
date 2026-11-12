@@ -180,3 +180,24 @@ func TestPhaseRampMs(t *testing.T) {
 		t.Errorf("no ramp = %d", got)
 	}
 }
+
+// windowStartSec stamps a log window at its start and drops the windows
+// that ended inside the ramp-up (shared by the Flush and I/O latency logs).
+func TestWindowStartSec(t *testing.T) {
+	for _, c := range []struct {
+		end         int64
+		avg, offset int
+		want        float64
+		keep        bool
+	}{
+		{3000, 1000, 0, 2, true},
+		{1000, 1000, 1000, 0, false}, // ended at the ramp end: ramp
+		{1500, 500, 1000, 1, true},
+		{2000, 0, 0, float64(2000-defaultLogAvgMsec) / 1000, true}, // default window
+	} {
+		got, keep := windowStartSec(c.end, c.avg, c.offset)
+		if got != c.want || keep != c.keep {
+			t.Errorf("windowStartSec(%d, %d, %d) = %v, %v; want %v, %v", c.end, c.avg, c.offset, got, keep, c.want, c.keep)
+		}
+	}
+}

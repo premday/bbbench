@@ -132,7 +132,7 @@ Templates are stored in `dist/templates/` with subdirectory `includes/` for reus
 
 **internal/diskstat**: Samples the kernel's per-disk counters (`/sys/block/<dev>/stat`: read/write IOs, sectors, ticks) of the members of an array. `Sampler` (`NewSampler(names, sysBlock)`, `Run(ctx, every)`) keeps one `Window` of deltas per interval, `Window.Rates` turns it into IOPS, MiB/s and mean latency (ticks/IOs, 1 ms resolution). `WriteLog`/`ReadLog` store a phase as `<fio log prefix>_members.1.log` (`LogName`). Reads only. For an md array `Sampler.WithArray(name, members)` also reads once per window `ReadMD` (`MDState`: `/sys/block/<array>/md/{sync_action,sync_completed,sync_speed,degraded,array_state,raid_disks}` and `md/dev-<member>/state`; an unreadable value is empty, never an error), stored in the same file as `md, ...` and `mdmember, ...` lines (`log.go`). `cmd/bbbench/memberslog.go` (`loadMDLog`, `mdEventsFrom`) turns them into `MDPoint`s (`ts_md`) and `MDEvent`s (`md_events`: every change between two windows, only a non-idle `sync_action` and `degraded` > 0 already present at the first window are `(at phase start)`; an unreadable value is not a change, `degraded` unreadable is -1 = unknown and is skipped like raid_disks); the "md track" block of `serve_graphs.go` draws them. md only (LVM has the member series only); not on the compare page.
 
-**internal/util**: Contains `SanitizeFilename()` for making hardware identifiers filesystem-safe.
+**internal/util**: Contains `SanitizeFilename()` for making hardware identifiers filesystem-safe, `ReadTrim(path)` (a sysfs value, "" when unreadable) and `SysBlockOr(sysBlock)` (the `/sys/block` default of the `sysBlock` parameters).
 
 ### Embedded Assets
 

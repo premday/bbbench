@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bbbench/internal/util"
 )
 
 // Counters are the cumulative counters of one disk (stat fields 0, 2, 3, 4, 6, 7).
@@ -223,14 +225,6 @@ type MDWindow struct {
 	S             MDState
 }
 
-func readTrim(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
-
 // ReadMD reads the md state of array; sysBlock "" is /sys/block. ok is false
 // when <sysBlock>/<array>/md does not exist. A field that cannot be read or
 // parsed stays empty or zero, except Degraded, which is -1.
@@ -243,23 +237,23 @@ func ReadMD(sysBlock, array string, members []string) (MDState, bool) {
 		return MDState{}, false
 	}
 	st := MDState{
-		Action:     readTrim(filepath.Join(dir, "sync_action")),
-		ArrayState: readTrim(filepath.Join(dir, "array_state")),
+		Action:     util.ReadTrim(filepath.Join(dir, "sync_action")),
+		ArrayState: util.ReadTrim(filepath.Join(dir, "array_state")),
 	}
-	if f := strings.Split(readTrim(filepath.Join(dir, "sync_completed")), "/"); len(f) == 2 {
+	if f := strings.Split(util.ReadTrim(filepath.Join(dir, "sync_completed")), "/"); len(f) == 2 {
 		d, e1 := strconv.ParseUint(strings.TrimSpace(f[0]), 10, 64)
 		t, e2 := strconv.ParseUint(strings.TrimSpace(f[1]), 10, 64)
 		if e1 == nil && e2 == nil {
 			st.Completed, st.Total = d, t
 		}
 	}
-	st.SpeedKiBps, _ = strconv.ParseUint(readTrim(filepath.Join(dir, "sync_speed")), 10, 64)
-	if d, err := strconv.Atoi(readTrim(filepath.Join(dir, "degraded"))); err == nil && d >= 0 {
+	st.SpeedKiBps, _ = strconv.ParseUint(util.ReadTrim(filepath.Join(dir, "sync_speed")), 10, 64)
+	if d, err := strconv.Atoi(util.ReadTrim(filepath.Join(dir, "degraded"))); err == nil && d >= 0 {
 		st.Degraded = d
 	} else {
 		st.Degraded = -1 // unreadable: unknown, not "not degraded"
 	}
-	st.RaidDisks, _ = strconv.Atoi(readTrim(filepath.Join(dir, "raid_disks")))
+	st.RaidDisks, _ = strconv.Atoi(util.ReadTrim(filepath.Join(dir, "raid_disks")))
 	if len(members) > 0 {
 		st.Members = make(map[string]string, len(members))
 		for _, m := range members {
@@ -267,7 +261,7 @@ func ReadMD(sysBlock, array string, members []string) (MDState, bool) {
 				st.Members[m] = "removed" // no longer part of the array
 				continue
 			}
-			st.Members[m] = readTrim(filepath.Join(dir, "dev-"+m, "state"))
+			st.Members[m] = util.ReadTrim(filepath.Join(dir, "dev-"+m, "state"))
 		}
 	}
 	return st, true

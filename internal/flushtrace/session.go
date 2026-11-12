@@ -3,10 +3,11 @@ package flushtrace
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"bbbench/internal/util"
 )
 
 // ErrUnsupported means this host cannot trace Flushes for the device
@@ -100,14 +101,7 @@ func Start(name string, opts Options) (*Session, error) {
 // changing a drive's cache setting is the job of a setting test (internal/settings),
 // never of Flush tracing. sysBlock defaults to /sys/block.
 func WriteCache(sysBlock, name string) string {
-	if sysBlock == "" {
-		sysBlock = "/sys/block"
-	}
-	b, err := os.ReadFile(filepath.Join(sysBlock, name, "queue", "write_cache"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
+	return util.ReadTrim(filepath.Join(util.SysBlockOr(sysBlock), name, "queue", "write_cache"))
 }
 
 // Stop ends tracing and returns the measured Flush latency. The Summary is

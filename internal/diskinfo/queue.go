@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"bbbench/internal/util"
 )
 
 // Queue is the kernel's request queue and scheduling state of a block device,
@@ -107,15 +109,6 @@ func (c *collector) virtualKind() string {
 	return ""
 }
 
-// readq reads a sysfs value without logging it (the dump has its own section).
-func readq(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
-
 func exists(path string) bool { _, err := os.Stat(path); return err == nil }
 
 // parseScheduler splits "mq-deadline kyber [bfq] none" into the active one and
@@ -160,7 +153,7 @@ func (c *collector) queueSummary(virt string) *Queue {
 		return nil
 	}
 	q := &Queue{}
-	r := func(f string) string { return readq(filepath.Join(qd, f)) }
+	r := func(f string) string { return util.ReadTrim(filepath.Join(qd, f)) }
 	q.Scheduler, q.Schedulers = parseScheduler(r("scheduler"))
 	ids, mq := hwQueues(filepath.Join(dir, "mq"))
 	q.MQ, q.NrHWQueues = mq, len(ids)
@@ -168,20 +161,20 @@ func (c *collector) queueSummary(virt string) *Queue {
 	q.MaxSectorsKB, q.WBTLatUsec, q.RqAffinity = r("max_sectors_kb"), r("wbt_lat_usec"), r("rq_affinity")
 	q.NoMerges, q.IOPoll = r("nomerges"), r("io_poll")
 	if virt == "" {
-		q.DeviceQueueDepth = readq(filepath.Join(dir, "device", "queue_depth"))
+		q.DeviceQueueDepth = util.ReadTrim(filepath.Join(dir, "device", "queue_depth"))
 		if m := nvmeNameRe.FindStringSubmatch(c.name); m != nil {
-			q.NVMeQueueCount = readq(c.sys("class", "nvme", m[1], "queue_count"))
-			q.NVMeSQSize = readq(c.sys("class", "nvme", m[1], "sqsize"))
+			q.NVMeQueueCount = util.ReadTrim(c.sys("class", "nvme", m[1], "queue_count"))
+			q.NVMeSQSize = util.ReadTrim(c.sys("class", "nvme", m[1], "sqsize"))
 		}
 	}
 	if virt != "" && exists(filepath.Join(dir, "md")) {
-		md := func(f ...string) string { return readq(filepath.Join(append([]string{dir, "md"}, f...)...)) }
+		md := func(f ...string) string { return util.ReadTrim(filepath.Join(append([]string{dir, "md"}, f...)...)) }
 		q.MD = &MDQueue{Level: md("level"), RaidDisks: md("raid_disks"), ChunkSize: md("chunk_size"),
 			StripeCacheSize: md("stripe_cache_size"), SyncAction: md("sync_action"), Bitmap: md("bitmap", "location")}
 	}
 	modDir := c.sys("module", "dm_mod")
 	if loaded := exists(modDir); loaded || virt == "dm" {
-		p := func(f string) string { return readq(filepath.Join(modDir, "parameters", f)) }
+		p := func(f string) string { return util.ReadTrim(filepath.Join(modDir, "parameters", f)) }
 		q.DMMod = &DMMod{Loaded: loaded, UseBlkMQ: p("use_blk_mq"), MQNrHWQueues: p("dm_mq_nr_hw_queues"), MQQueueDepth: p("dm_mq_queue_depth")}
 		if ents, err := os.ReadDir(filepath.Join(modDir, "parameters")); err == nil {
 			for _, e := range ents {
@@ -403,7 +396,7 @@ func (c *collector) deviceSection(d *qdump, name, virt, of string) {
 	} else {
 		d.line("blk-mq: yes, %d hardware queues", len(ids))
 		for _, n := range ids {
-			d.line("hctx%d: cpus %s", n, readq(filepath.Join(dir, "mq", strconv.Itoa(n), "cpu_list")))
+			d.line("hctx%d: cpus %s", n, util.ReadTrim(filepath.Join(dir, "mq", strconv.Itoa(n), "cpu_list")))
 		}
 		d.walk(filepath.Join(dir, "mq"), c.rel(filepath.Join(dir, "mq")))
 	}

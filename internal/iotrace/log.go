@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -66,19 +67,9 @@ func WriteLog(w io.Writer, r Result) error {
 		fmt.Fprintln(bw)
 	}
 	for _, d := range s.Devices {
-		kinds := make([]string, 0, len(d.Stats))
-		for k := range d.Stats {
-			kinds = append(kinds, string(k))
-		}
-		slices.Sort(kinds)
-		for _, k := range kinds {
-			dirs := make([]string, 0, 2)
-			for dir := range d.Stats[Kind(k)] {
-				dirs = append(dirs, string(dir))
-			}
-			slices.Sort(dirs)
-			for _, dir := range dirs {
-				fmt.Fprintf(bw, "# summary %s %s %s %s\n", d.Name, k, dir, statsFields(d.Stats[Kind(k)][Dir(dir)]))
+		for _, k := range slices.Sorted(maps.Keys(d.Stats)) {
+			for _, dir := range slices.Sorted(maps.Keys(d.Stats[k])) {
+				fmt.Fprintf(bw, "# summary %s %s %s %s\n", d.Name, k, dir, statsFields(d.Stats[k][dir]))
 			}
 		}
 	}

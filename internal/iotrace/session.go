@@ -58,6 +58,7 @@ import (
 	"strings"
 
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/util"
 )
 
 // ErrUnsupported means no device of the session can be traced (no tracefs,
@@ -338,9 +339,7 @@ func (s *Session) Close() error { return s.inst.Close() }
 // when sysfs does not say. The multipath layout is taken from kernel sources
 // and not verified on a real multipath system.
 func nvmeControllers(sysBlock, name string) []string {
-	if sysBlock == "" {
-		sysBlock = "/sys/block"
-	}
+	sysBlock = util.SysBlockOr(sysBlock)
 	if link, err := os.Readlink(filepath.Join(sysBlock, name, "device")); err == nil {
 		if base := filepath.Base(link); isController(base) {
 			return []string{base}

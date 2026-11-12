@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
@@ -77,15 +78,39 @@ func (r *flushTraceRun) Close() {
 // writeFlushLog stores the Flush latency of a traced phase next to fio's own
 // logs, in fio's shape: one line per polling window plus the phase summary.
 func writeFlushLog(logPrefix string, sum flushtrace.Summary, samples []flushtrace.Sample) error {
-	f, err := os.Create(flushtrace.LogName(logPrefix))
+	return writeLogFile(flushtrace.LogName(logPrefix), func(w io.Writer) error {
+		if err := flushtrace.WriteLog(w, sum, samples); err != nil {
+			return fmt.Errorf("write flush log: %w", err)
+		}
+		return nil
+	})
+}
+
+// writeLogFile creates the log file name and writes it with write.
+func writeLogFile(name string, write func(io.Writer) error) error {
+	f, err := os.Create(name)
 	if err != nil {
 		return err
 	}
-	if err := flushtrace.WriteLog(f, sum, samples); err != nil {
+	if err := write(f); err != nil {
 		f.Close()
-		return fmt.Errorf("write flush log: %w", err)
+		return err
 	}
 	return f.Close()
+}
+
+// windowStartSec places a log window that ended at endMs on the series
+// clock: its start in seconds (avgMsec <= 0 is the default window). keep is
+// false for a window that ended inside the ramp-up (offsetMs), which, like
+// fio's own series, has no point.
+func windowStartSec(endMs int64, avgMsec, offsetMs int) (t float64, keep bool) {
+	if avgMsec <= 0 {
+		avgMsec = defaultLogAvgMsec
+	}
+	if endMs <= int64(offsetMs) {
+		return 0, false
+	}
+	return float64(endMs-int64(avgMsec)) / 1000, true
 }
 
 // loadFlushLog reads the stored Flush log of the phase run identified by its
@@ -111,15 +136,10 @@ func loadFlushLog(logPrefix string) (sum *flushtrace.Summary, series []TimePoint
 	// windows that ended before it are left out (the log keeps them). The log
 	// stamps window ends like fio; the series is stamped at the window START,
 	// like the fio points once the graph page moves them back one window.
-	windowMs := s.AvgMsec
-	if windowMs <= 0 {
-		windowMs = defaultLogAvgMsec
-	}
 	for _, w := range windows {
-		if w.EndMs <= int64(s.OffsetMs) {
-			continue // entirely in the ramp-up
+		if t, keep := windowStartSec(w.EndMs, s.AvgMsec, s.OffsetMs); keep {
+			series = append(series, TimePoint{T: t, W: float64(w.MeanNs) / 1000})
 		}
-		series = append(series, TimePoint{T: float64(w.EndMs-int64(windowMs)) / 1000, W: float64(w.MeanNs) / 1000})
 	}
 	return &s, series, true
 }

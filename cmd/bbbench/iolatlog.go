@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strconv"
@@ -129,15 +130,12 @@ type IOLatPoint struct {
 
 // writeIOLatLog stores the I/O latency of a traced phase next to fio's logs.
 func writeIOLatLog(logPrefix string, r iotrace.Result) error {
-	f, err := os.Create(iotrace.LogName(logPrefix))
-	if err != nil {
-		return err
-	}
-	if err := iotrace.WriteLog(f, r); err != nil {
-		f.Close()
-		return fmt.Errorf("write iolat log: %w", err)
-	}
-	return f.Close()
+	return writeLogFile(iotrace.LogName(logPrefix), func(w io.Writer) error {
+		if err := iotrace.WriteLog(w, r); err != nil {
+			return fmt.Errorf("write iolat log: %w", err)
+		}
+		return nil
+	})
 }
 
 // loadIOLatLog reads the stored I/O latency log of a phase run: the summary
@@ -157,17 +155,14 @@ func loadIOLatLog(logPrefix string) (*iotrace.Summary, map[string][]IOLatPoint, 
 		return nil, nil, false
 	}
 	sum := res.Summary
-	avg := sum.AvgMsec
-	if avg <= 0 {
-		avg = defaultLogAvgMsec
-	}
 	series := map[string][]IOLatPoint{}
 	for _, w := range res.Windows {
-		if w.EndMs <= int64(sum.OffsetMs) {
+		t, keep := windowStartSec(w.EndMs, sum.AvgMsec, sum.OffsetMs)
+		if !keep {
 			continue
 		}
 		series[w.Dev] = append(series[w.Dev], IOLatPoint{
-			T: float64(w.EndMs-int64(avg)) / 1000, Kind: string(w.Kind), Dir: string(w.Dir), N: w.Count,
+			T: t, Kind: string(w.Kind), Dir: string(w.Dir), N: w.Count,
 			Mean: w.MeanNs / 1000, P99: float64(w.P99Ns) / 1000,
 		})
 	}

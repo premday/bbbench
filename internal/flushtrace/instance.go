@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"bbbench/internal/util"
 )
 
 // startMarker is written to trace_marker when tracing starts; its timestamp
@@ -66,9 +68,7 @@ func HasEvents(root string, events ...string) bool {
 // DevNumbers reads the major and minor of a block device from
 // <sysBlock>/<name>/dev; sysBlock "" means /sys/block.
 func DevNumbers(sysBlock, name string) (maj, min int, err error) {
-	if sysBlock == "" {
-		sysBlock = "/sys/block"
-	}
+	sysBlock = util.SysBlockOr(sysBlock)
 	b, err := os.ReadFile(filepath.Join(sysBlock, name, "dev"))
 	if err != nil {
 		return 0, 0, err
@@ -91,9 +91,7 @@ func DevNumbers(sysBlock, name string) (maj, min int, err error) {
 // A device sysfs says nothing about (no queue/) is not bio-based. This is the
 // notion of the queue dump (internal/diskinfo). sysBlock "" means /sys/block.
 func BioBased(sysBlock, name string) bool {
-	if sysBlock == "" {
-		sysBlock = "/sys/block"
-	}
+	sysBlock = util.SysBlockOr(sysBlock)
 	if st, err := os.Stat(filepath.Join(sysBlock, name, "queue")); err != nil || !st.IsDir() {
 		return false
 	}

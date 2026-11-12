@@ -348,7 +348,7 @@ func (ec *ExecutionCoordinator) cleanup() {
 		closers = append(closers, c)
 	}
 	ec.tracesMu.Unlock()
-	closeAll(closers...)
+	runParallel(closers...)
 }
 
 // registerTrace adds the closer of a phase's trace sessions to the cleanup
@@ -369,13 +369,13 @@ func (ec *ExecutionCoordinator) registerTrace(close func()) (unregister func()) 
 	}
 }
 
-// closeAll runs the closers in parallel (each may wait for its trace reader)
-// and returns when all are done.
-func closeAll(closers ...func()) {
+// runParallel runs the functions in parallel (a trace Stop or Close may
+// wait for its reader) and returns when all are done.
+func runParallel(fns ...func()) {
 	var wg sync.WaitGroup
-	wg.Add(len(closers))
-	for _, c := range closers {
-		go func() { defer wg.Done(); c() }()
+	wg.Add(len(fns))
+	for _, f := range fns {
+		go func() { defer wg.Done(); f() }()
 	}
 	wg.Wait()
 }
@@ -1137,7 +1137,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	}
 	// A force quit (cleanup) must not leave the instances behind.
 	untrack := ec.registerTrace(func() {
-		closeAll(flush.Close, ioTrace.Close)
+		runParallel(flush.Close, ioTrace.Close)
 	})
 	defer untrack()
 
@@ -1179,11 +1179,10 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	output, err := cmd.CombinedOutput()
 	stopMembers()
 	// Each Stop can wait up to 3 s for its reader: in parallel.
-	var stopWG sync.WaitGroup
-	stopWG.Add(2)
-	go func() { defer stopWG.Done(); result.IOTrace = ioTrace.Stop() }()
-	go func() { defer stopWG.Done(); result.FlushTrace = flush.Stop() }()
-	stopWG.Wait()
+	runParallel(
+		func() { result.IOTrace = ioTrace.Stop() },
+		func() { result.FlushTrace = flush.Stop() },
+	)
 	if err != nil {
 		// Check if it was cancelled
 		if ec.ctx.Err() != nil {

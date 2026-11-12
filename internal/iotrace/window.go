@@ -1,7 +1,8 @@
 package iotrace
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
 	"bbbench/internal/flushtrace"
 )
@@ -93,18 +94,9 @@ func (a *aggregator) finish() ([]Window, map[string]map[Kind]map[Dir]Stats) {
 	}
 	a.open = map[seriesKey]*openWindow{}
 	ws := a.done
-	sort.Slice(ws, func(i, j int) bool {
-		x, y := ws[i], ws[j]
-		if x.EndMs != y.EndMs {
-			return x.EndMs < y.EndMs
-		}
-		if x.Dev != y.Dev {
-			return x.Dev < y.Dev
-		}
-		if x.Kind != y.Kind {
-			return x.Kind < y.Kind
-		}
-		return x.Dir < y.Dir
+	slices.SortFunc(ws, func(x, y Window) int {
+		return cmp.Or(cmp.Compare(x.EndMs, y.EndMs), cmp.Compare(x.Dev, y.Dev),
+			cmp.Compare(x.Kind, y.Kind), cmp.Compare(x.Dir, y.Dir))
 	})
 	sum := map[string]map[Kind]map[Dir]Stats{}
 	for k, h := range a.phase {

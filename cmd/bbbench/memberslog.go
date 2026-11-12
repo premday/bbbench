@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"sync"
@@ -58,15 +59,9 @@ func startMemberSamplerAt(drive DriveInfo, logPrefix string, avgMsec, rampMs int
 }
 
 func writeMembersLog(logPrefix string, meta diskstat.Meta, ws []diskstat.Window, md []diskstat.MDWindow) error {
-	f, err := os.Create(diskstat.LogName(logPrefix))
-	if err != nil {
-		return err
-	}
-	if err := diskstat.WriteLog(f, meta, ws, md); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	return writeLogFile(diskstat.LogName(logPrefix), func(w io.Writer) error {
+		return diskstat.WriteLog(w, meta, ws, md)
+	})
 }
 
 // inRamp reports whether a sampling window belongs to fio's ramp-up. EndMs
