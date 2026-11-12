@@ -235,7 +235,7 @@ __NAVBAR_HTML__
                 '<td class="stats">' + members.length + ' of ' + (g.runs || 0) + ' run(s)</td>' +
                 '<td class="stats">' + counts + '</td>' +
                 '<td class="actions">' +
-                    '<a href="/group?id=' + id + '">Group</a>' +
+                    '<a href="/group?id=' + id + '">Details</a>' +
                     '<a href="/graphs?group=' + id + '">Graphs</a>' +
                     '<a href="/compare?group=' + id + '">Compare</a>' +
                 '</td>' +

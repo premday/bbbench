@@ -334,6 +334,7 @@ case 'results': {
   let rows = run('buildRows(__r, __g)');
   assert(rows.includes('<tr class="group-row">'), rows);
   assert(rows.includes('href="/group?id=g2"') && rows.includes('href="/graphs?group=g2"') && rows.includes('href="/compare?group=g2"'), rows);
+  assert(rows.includes('<a href="/group?id=g2">Details</a>') && !rows.includes('>Group</a>'), 'group row action is Details: ' + rows);
   assert(rows.includes('write_cache: on, &lt;b&gt;off&lt;/b&gt;'), 'group setting/values: ' + rows);
   assert((rows.match(/class="member" data-group="g2" style="display:none"/g) || []).length === 2, 'members not collapsed: ' + rows);
   assert(rows.includes('group <a href="/group?id=g2">g2</a> · &lt;b&gt;off&lt;/b&gt;, on'), 'member group link/value: ' + rows);
