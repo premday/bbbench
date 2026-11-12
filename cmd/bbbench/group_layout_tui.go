@@ -126,7 +126,7 @@ type layoutModel struct {
 // setting does not apply to it, or when it has no serial (a teardown finds
 // the members by serial).
 func newLayoutModel(s settings.LayoutSetting, drives []DriveInfo, targets map[string]settings.Target, busy *inuse.Report, busyErr error) layoutModel {
-	m := layoutModel{setting: s, drives: drives, targets: targets, editIdx: -1, tick: defaultTick}
+	m := layoutModel{setting: s, drives: sortedDrives(drives), targets: targets, editIdx: -1, tick: defaultTick}
 	m.applyInUse(busy, busyErr)
 	return m
 }

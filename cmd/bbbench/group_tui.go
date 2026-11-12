@@ -246,7 +246,7 @@ type setupModel struct {
 
 func newSetupModel(s settings.Setting, selected []DriveInfo, targets map[string]settings.Target, firmware map[string]string) setupModel {
 	m := setupModel{setting: s, firmware: firmware, excluded: map[string]string{}, values: s.Values(), strategy: rungroup.Sequential}
-	for _, d := range selected {
+	for _, d := range sortedDrives(selected) {
 		name := d.Device.Name
 		if ok, why := s.Applicable(targets[name]); ok {
 			m.drives = append(m.drives, d)
