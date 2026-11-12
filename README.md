@@ -437,7 +437,10 @@ layer latency insert to complete. For an array target (md or LVM layout) the
 members are traced too, in the same session: they appear as their own device
 latency series. md and dm nodes themselves are bio-based and issue no requests,
 so the target usually shows `no request events seen` while its members are
-traced.
+traced. A native NVMe multipath drive may show no block layer series: its block
+requests are issued on the hidden path disks (`nvme0c1n1`), not on the head
+bbbench traces, even though the source line lists the `block_rq_insert`
+tracepoint.
 
 **How it is stored.** The latencies go into histograms inside bbbench (relative
 error under 2 %), nothing is kept per I/O. Like Flush tracing, they are saved
@@ -446,10 +449,14 @@ line per `--log-avg-msec` window (end time, kind, direction, count, mean, min,
 max, p50, p99, device), stamped at the window end, plus header lines with the
 metadata (window, ramp offset, ring buffer overruns, per-device tracepoints and
 pairing) and the phase summary (count, mean, min, max, p50, p99 per kind and
-direction, computed after the ramp-up). It is a few hundred lines per phase. The
-summary and the series (`io_trace`, `io_trace_series`, `io_trace_notes` in the
-run summary; `ts_iolat`, `ts_iolat_members`, `io_trace` in the graph data) are
-read back from this file when a run is loaded.
+direction, computed after the ramp-up). It has up to four lines per window
+(device and block layer, reads and writes) for every traced device, so an
+8-member array traced for an hour with 1 s windows gives about 130,000 lines
+(3600 windows x 4 x 9 devices). The summary and the series (`io_trace`,
+`io_trace_series`, `io_trace_notes` in the run summary; `ts_iolat`,
+`ts_iolat_members`, `io_trace` in the graph data) are read back from this file
+when a run is loaded; the run summary JSON (`<id>_summary.json`) stores
+`io_trace_series` again, so it grows with the log.
 
 **Lost events.** Every figure carries a `lost events` count: ring buffer
 overruns (the reader fell behind) plus events that found no partner (requests
