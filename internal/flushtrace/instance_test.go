@@ -67,32 +67,39 @@ func TestInstance_CountsLostEvents(t *testing.T) {
 
 func TestInstance_CleansUpOnEnableFailure(t *testing.T) {
 	root := t.TempDir()
-	// The event is neither in the instance nor creatable: the enable write fails.
-	if err := os.MkdirAll(filepath.Join(root, "instances"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// instances/<name>/events/x/enable is not writable because "x" is a file.
 	inst := filepath.Join(root, "instances", "bad")
-	if err := os.MkdirAll(filepath.Join(inst, "events"), 0o755); err != nil {
-		t.Fatal(err)
+	must := func(err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	_ = os.WriteFile(filepath.Join(inst, "events", "x"), nil, 0o644)
-	_ = os.WriteFile(filepath.Join(inst, "trace_pipe"), nil, 0o644)
+	// The first event enables fine; the second cannot: its enable path is a directory.
+	must(os.MkdirAll(filepath.Join(inst, "events", "x"), 0o755))
+	must(os.MkdirAll(filepath.Join(inst, "events", "y", "enable"), 0o755))
+	must(os.WriteFile(filepath.Join(inst, "trace_pipe"), nil, 0o644))
 	feed, _ := collectFeed()
-	if _, err := OpenInstance(root, "bad", 0, []string{"events/x"}, nil, feed); err == nil {
+	_, err := OpenInstance(root, "bad", 0, []string{"events/x", "events/y"}, nil, feed)
+	if err == nil {
 		t.Fatal("want an error")
 	}
-	// The pipe was closed and the instance removal attempted (the fake keeps
-	// files, so only check that no goroutine or error escaped): reopening works.
-	if err := os.RemoveAll(inst); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(err.Error(), "enable events/y") {
+		t.Errorf("error does not name the failure: %v", err)
+	}
+	if got := read(t, filepath.Join(inst, "events/x/enable")); got != "0" {
+		t.Errorf("first event left enabled: %q", got)
+	}
+	// The fake instance directory is not empty, so the removal fails; the
+	// error must say so instead of dropping it.
+	if !strings.Contains(err.Error(), "remove trace instance") {
+		t.Errorf("cleanup error not reported: %v", err)
 	}
 }
 
 func TestInstance_BlockOnlyTracefs(t *testing.T) {
-	pipe := "fio-1 [001] ..... 100.000000: block_rq_issue: 8,16 R 4096 () 0 + 8 [fio]\n" +
-		"fio-1 [001] ..... 100.000100: block_rq_issue: 8,0 R 4096 () 0 + 8 [fio]\n" +
-		"<idle>-0 [001] d.h1. 100.009000: block_rq_complete: 8,16 R () 0 + 8 [0]\n"
+	pipe := "fio-1 [001] ..... 100.000000: block_rq_issue: 8,0 F 0 () 0 + 0 none,0,0 [fio]\n" +
+		"<idle>-0 [001] d.h1. 100.000900: block_rq_complete: 8,0 F () 0 + 0 [0]\n" +
+		"fio-1 [001] ..... 101.000000: block_rq_issue: 8,16 F 0 () 0 + 0 none,0,0 [fio]\n" +
+		"<idle>-0 [001] d.h1. 101.000300: block_rq_complete: 8,16 F () 0 + 0 [0]\n"
 	root, _ := fakeTracefs(t, []string{"block/block_rq_issue", "block/block_rq_complete"}, pipe)
 	if !HasEvents(root, "block/block_rq_issue", "block/block_rq_complete") {
 		t.Fatal("HasEvents false")
@@ -106,8 +113,7 @@ func TestInstance_BlockOnlyTracefs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(os.MkdirAll(filepath.Join(sys, "sdb", "queue"), 0o755))
-	must(os.WriteFile(filepath.Join(sys, "sdb", "queue", "rotational"), []byte("1\n"), 0o644))
+	must(os.MkdirAll(filepath.Join(sys, "sdb"), 0o755))
 	must(os.WriteFile(filepath.Join(sys, "sdb", "dev"), []byte("8:16\n"), 0o644))
 	maj, min, err := DevNumbers(sys, "sdb")
 	if err != nil || maj != 8 || min != 16 {
@@ -116,26 +122,27 @@ func TestInstance_BlockOnlyTracefs(t *testing.T) {
 	if _, _, err := DevNumbers(sys, "nope"); err == nil {
 		t.Error("DevNumbers of a missing device must fail")
 	}
-	var mu sync.Mutex
-	var mine []Event
-	feed := func(e Event) {
-		if strings.HasPrefix(e.Payload, "8,16 ") {
-			mu.Lock()
-			mine = append(mine, e)
-			mu.Unlock()
-		}
-	}
-	i, err := OpenInstance(root, "test", 0,
-		[]string{"events/block/block_rq_issue", "events/block/block_rq_complete"}, nil, feed)
+	// No nvme directory exists anywhere: Start takes the block path.
+	s, err := Start("sdb", Options{TracefsRoot: root, SysBlock: sys, InstanceName: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = i.Stop()
-	i.Locked(func() {
-		if len(mine) != 2 {
-			t.Errorf("events of 8,16 = %+v", mine)
-		}
-	})
+	sum, _ := s.Stop()
+	if sum.Source != "block" || sum.Count != 1 || sum.MeanNs != 300_000 {
+		t.Errorf("only 8,16 must count: %+v", sum)
+	}
+}
+
+func TestInstance_CleanupErrorIsReportedOnStop(t *testing.T) {
+	root, _ := fakeTracefs(t, []string{"block/block_rq_issue"}, "")
+	feed, _ := collectFeed()
+	i, err := OpenInstance(root, "test", 0, []string{"events/block/block_rq_issue"}, nil, feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := i.Stop(); err == nil || !strings.Contains(err.Error(), "remove trace instance") {
+		t.Errorf("Stop error = %v", err)
+	}
 }
 
 func TestInstanceName(t *testing.T) {

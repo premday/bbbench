@@ -111,7 +111,12 @@ func OpenInstance(root, name string, bufferKB int, enable []string, filters map[
 		return nil, fmt.Errorf("create trace instance: %w", err)
 	}
 	i := &Instance{dir: dir, feed: feed, done: make(chan struct{}), stopSeen: make(chan struct{})}
-	fail := func(err error) (*Instance, error) { _ = i.cleanup(); return nil, err }
+	fail := func(err error) (*Instance, error) {
+		if cerr := i.cleanup(); cerr != nil {
+			err = fmt.Errorf("%w (cleanup: %v)", err, cerr)
+		}
+		return nil, err
+	}
 
 	if bufferKB > 0 {
 		_ = i.write("buffer_size_kb", strconv.Itoa(bufferKB))
@@ -244,6 +249,8 @@ func (i *Instance) Overrun() int64 {
 }
 
 // Locked runs f with the reader's mutex held, so f may read what feed fills.
+// The mutex is not reentrant: StartNs, Overrun and Locked must not be called
+// from inside feed or from inside f.
 func (i *Instance) Locked(f func()) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
