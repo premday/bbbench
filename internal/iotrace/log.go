@@ -29,9 +29,15 @@ func statsFields(s Stats) string {
 //
 //	# bbbench-iolat-log v1 avg_msec=1000 offset_ms=10000 overrun=0 lost=0
 //	# device nvme0n1 source=nvme exact=true block_layer=true unpaired=0 pair=ctrl,qid,cmdid events=a->b,c->d
+//	# device md0 source=bio exact=false block_layer=false unpaired=0 bio_based=true pair=dev,sector,nr_sectors events=block_bio_queue->block_bio_complete
 //	# summary nvme0n1 device r count=312 mean_ns=85000.5 min_ns=60000 max_ns=410000 p50_ns=84000 p99_ns=120000
 //	# end_ms, kind, dir, count, mean_ns, min_ns, max_ns, p50_ns, p99_ns, dev
 //	1000, device, r, 312, 85000, 60000, 410000, 84000, 120000, nvme0n1
+//	1000, bio, w, 40, 950000, 400000, 3100000, 900000, 2900000, md0
+//
+// The kind is device, blocklayer or bio (the bios of a bio-based node).
+// bio_based=true marks a device without a blk-mq queue (an md or dm node);
+// it is absent when false, so logs written before it read the same.
 func WriteLog(w io.Writer, r Result) error {
 	bw := bufio.NewWriter(w)
 	s := &r.Summary
@@ -44,6 +50,9 @@ func WriteLog(w io.Writer, r Result) error {
 		fmt.Fprintf(bw, "# device %s", d.Name)
 		if d.Source != "" {
 			fmt.Fprintf(bw, " source=%s exact=%t block_layer=%t unpaired=%d", d.Source, d.Exact, d.BlockLayer, d.Unpaired)
+			if d.BioBased {
+				fmt.Fprint(bw, " bio_based=true")
+			}
 			if d.Pair != "" {
 				fmt.Fprintf(bw, " pair=%s", d.Pair)
 			}
@@ -127,6 +136,8 @@ func ReadLog(rd io.Reader) (Result, error) {
 					d.Exact = v == "true"
 				case "block_layer":
 					d.BlockLayer = v == "true"
+				case "bio_based":
+					d.BioBased = v == "true"
 				case "unpaired":
 					d.Unpaired, _ = strconv.ParseInt(v, 10, 64)
 				case "pair":

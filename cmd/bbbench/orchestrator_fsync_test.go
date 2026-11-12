@@ -261,6 +261,15 @@ func TestFormatIOTraceSummary(t *testing.T) {
 	if got, want := formatIOTraceSummary(md), "ftrace (block, nvme): target bio-based, 2 members traced, members' device read avg 115.0 us, write avg 30.1 us (2 events lost)"; got != want {
 		t.Errorf("md:\ngot  %q\nwant %q", got, want)
 	}
+	// With the bio tracepoints the node has its own bio-level latency,
+	// given first, then the members'.
+	bio := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "md0", Source: "bio", BioBased: true, Events: []string{"block_bio_queue -> block_bio_complete"},
+		Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{iotrace.KindBio: {
+			iotrace.DirRead: {Count: 4, MeanNs: 200_000, P99Ns: 400_000}, iotrace.DirWrite: {Count: 4, MeanNs: 9.5e6, P99Ns: 1.2e7}}}},
+		{Name: "sdb", Source: "block", Stats: rw}}}
+	if got, want := formatIOTraceSummary(bio), "ftrace bio (md0, block_bio_queue -> block_bio_complete): read avg 200.0 us p99 400.0 us, write avg 9500.0 us p99 12000.0 us; 1 member traced (block), members' device read avg 85.0 us, write avg 30.1 us"; got != want {
+		t.Errorf("md bio:\ngot  %q\nwant %q", got, want)
+	}
 	quiet := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "md0", Source: "block"}, {Name: "sdb", Source: "block"}}}
 	if got, want := formatIOTraceSummary(quiet), "ftrace (block): target bio-based, 1 member traced, no request events seen"; got != want {
 		t.Errorf("md, no member events: %q", got)

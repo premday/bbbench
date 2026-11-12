@@ -251,9 +251,10 @@ func formatFlushSummary(s *flushtrace.Summary) string {
 
 // formatIOTraceSummary renders the kernel-measured device latency of the
 // target (the first traced device) for the run summary, naming the sources
-// (nvme, block). A target without request events of its own whose members
-// were traced (an md or dm node is bio-based) says so and gives the members'
-// device mean over all their requests; per-member figures are on the pages.
+// (nvme, block). A bio-based target (an md or dm node) has no request events
+// of its own: with the bio tracepoints its bio-level latency comes first,
+// then its members'; without them it says so and gives the members' device
+// mean over all their requests. Per-member figures are on the pages.
 func formatIOTraceSummary(s *iotrace.Summary) string {
 	if len(s.Devices) == 0 {
 		return "ftrace: no request events seen"
@@ -270,51 +271,73 @@ func formatIOTraceSummary(s *iotrace.Summary) string {
 	if s.Lost > 0 {
 		lost = fmt.Sprintf(" (%d events lost)", s.Lost)
 	}
-	dirs := []struct {
-		dir  iotrace.Dir
-		name string
-	}{{iotrace.DirRead, "read"}, {iotrace.DirWrite, "write"}}
-
 	target := s.Devices[0]
-	var parts []string
-	for _, d := range dirs {
-		if st, ok := target.Stats[iotrace.KindDevice][d.dir]; ok && st.Count > 0 {
-			parts = append(parts, fmt.Sprintf("%s avg %.1f us p99 %.1f us", d.name, st.MeanNs/1000, float64(st.P99Ns)/1000))
-		}
-	}
-	if len(parts) > 0 {
+	if parts := ioTraceDirParts(target.Stats[iotrace.KindDevice], true); len(parts) > 0 {
 		return "ftrace device (" + target.Source + "): " + strings.Join(parts, ", ") + lost
 	}
-
-	members := 0
+	members, msources := 0, []string{}
 	for _, m := range s.Devices[1:] {
 		if m.Source != "" {
 			members++
+			if !slices.Contains(msources, m.Source) {
+				msources = append(msources, m.Source)
+			}
 		}
 	}
-	if members == 0 {
-		return head + ": no request events seen" + lost
-	}
+	slices.Sort(msources)
 	plural := "s"
 	if members == 1 {
 		plural = ""
 	}
-	out := fmt.Sprintf("%s: target bio-based, %d member%s traced", head, members, plural)
-	for _, d := range dirs {
-		var n int64
-		var sum float64
-		for _, m := range s.Devices[1:] {
-			if st, ok := m.Stats[iotrace.KindDevice][d.dir]; ok {
-				n += st.Count
-				sum += st.MeanNs * float64(st.Count)
+	// The members' device mean over all their requests, per direction.
+	merged := map[iotrace.Dir]iotrace.Stats{}
+	for _, m := range s.Devices[1:] {
+		for dir, st := range m.Stats[iotrace.KindDevice] {
+			a := merged[dir]
+			a.MeanNs = (a.MeanNs*float64(a.Count) + st.MeanNs*float64(st.Count)) / float64(max(a.Count+st.Count, 1))
+			a.Count += st.Count
+			merged[dir] = a
+		}
+	}
+	memberParts := ioTraceDirParts(merged, false)
+	if parts := ioTraceDirParts(target.Stats[iotrace.KindBio], true); len(parts) > 0 {
+		out := "ftrace bio (" + target.Name + ", " + strings.Join(target.Events, ", ") + "): " + strings.Join(parts, ", ")
+		if members > 0 {
+			out += fmt.Sprintf("; %d member%s traced (%s)", members, plural, strings.Join(msources, ", "))
+			if len(memberParts) > 0 {
+				out += ", members' device " + strings.Join(memberParts, ", ")
 			}
 		}
-		if n > 0 {
-			parts = append(parts, fmt.Sprintf("%s avg %.1f us", d.name, sum/float64(n)/1000))
-		}
+		return out + lost
 	}
-	if len(parts) == 0 {
+	if members == 0 {
+		return head + ": no request events seen" + lost
+	}
+	out := fmt.Sprintf("%s: target bio-based, %d member%s traced", head, members, plural)
+	if len(memberParts) == 0 {
 		return out + ", no request events seen" + lost
 	}
-	return out + ", members' device " + strings.Join(parts, ", ") + lost
+	return out + ", members' device " + strings.Join(memberParts, ", ") + lost
+}
+
+// ioTraceDirParts renders the read and write means of a kind ("read avg 85.0
+// us p99 120.0 us"), the p99 only with p99; a direction without requests is
+// left out.
+func ioTraceDirParts(stats map[iotrace.Dir]iotrace.Stats, p99 bool) []string {
+	var parts []string
+	for _, d := range []struct {
+		dir  iotrace.Dir
+		name string
+	}{{iotrace.DirRead, "read"}, {iotrace.DirWrite, "write"}} {
+		st, ok := stats[d.dir]
+		if !ok || st.Count == 0 {
+			continue
+		}
+		p := fmt.Sprintf("%s avg %.1f us", d.name, st.MeanNs/1000)
+		if p99 {
+			p += fmt.Sprintf(" p99 %.1f us", float64(st.P99Ns)/1000)
+		}
+		parts = append(parts, p)
+	}
+	return parts
 }

@@ -25,7 +25,8 @@ type ioTraceRun struct {
 // startIOTraceWith times every read and write of a phase from kernel trace
 // events: one session for the drive, or for an array target together with
 // its members (an md or dm node is bio-based and has no request events of
-// its own: its members carry the series). opts sets the host paths and the
+// its own: iotrace times its bios instead, kind "bio", and its members carry
+// the device and block-layer series). opts sets the host paths and the
 // ring buffer; AvgMsec and OffsetMs come from avgMsec and rampMs. Tracing
 // never fails a phase: when it cannot start, the run is nil and note says
 // why ("no ftrace latency: <reason>", for the phase's io_trace_notes).
@@ -115,7 +116,8 @@ func flushTraceBufferKB(sessions, cpus int) int {
 }
 
 // IOLatPoint is the I/O latency of one traced device over one window, in µs;
-// T is the window start in seconds on the trace clock.
+// T is the window start in seconds on the trace clock. Kind is "device",
+// "blocklayer" or "bio" (the bios of a bio-based md/dm node).
 type IOLatPoint struct {
 	T    float64 `json:"t"`
 	Kind string  `json:"kind"`

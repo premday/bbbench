@@ -207,6 +207,83 @@ func TestStartIOTraceWritesLog(t *testing.T) {
 	}
 }
 
+// A bio-based md node gets its bio-level series next to its members'
+// device series: stored in the log, reloaded as kind "bio" points of the
+// target, carried to the graphs API as ts_iolat with text_bio.
+func TestStartIOTraceBioNode(t *testing.T) {
+	quietLogger(t)
+	root := t.TempDir()
+	inst := filepath.Join(root, "instances", "test")
+	for _, e := range []string{"block/block_rq_issue", "block/block_rq_complete", "block/block_rq_insert",
+		"block/block_bio_queue", "block/block_bio_complete"} {
+		for _, base := range []string{root, inst} {
+			if err := os.MkdirAll(filepath.Join(base, "events", e), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	pipe := strings.Join([]string{
+		"bbbench-1 [000] ..... 1.000000000: tracing_mark_write: bbbench-start",
+		"fio-1 [001] ..... 2.000000000: block_bio_queue: 9,0 W 2048 + 8 [fio]",
+		"fio-1 [001] ..... 2.000005000: block_rq_insert: 8,16 W 4096 () 2048 + 8 none,0,0 [md0_raid1]",
+		"fio-1 [001] ..... 2.000010000: block_rq_issue: 8,16 W 4096 () 2048 + 8 none,0,0 [md0_raid1]",
+		"<idle>-0 [001] d.h1. 2.005000000: block_rq_complete: 8,16 W () 2048 + 8 none,0,0 [0]",
+		"<idle>-0 [001] d.h1. 2.006000000: block_bio_complete: 9,0 W 2048 + 8 [0]",
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(inst, "trace_pipe"), []byte(pipe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := t.TempDir()
+	for name, dev := range map[string]string{"md0": "9:0", "sdb": "8:16"} {
+		if err := os.MkdirAll(filepath.Join(sys, name, "queue"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sys, name, "dev"), []byte(dev+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(sys, "sdb", "mq", "0"), 0o755); err != nil { // sdb is blk-mq, md0 bio-based
+		t.Fatal(err)
+	}
+	drive := DriveInfo{Device: blockdev.Device{Name: "md0"}, Members: []rungroup.Member{{Name: "sdb", Role: "data"}}}
+	prefix := filepath.Join(t.TempDir(), "md0_phase0_1_log")
+	run, note := startIOTraceWith(drive, prefix, 1000, 0, iotrace.Options{TracefsRoot: root, SysBlock: sys, InstanceName: "test"})
+	if note != "" {
+		t.Fatalf("note = %q", note)
+	}
+	if sum := run.Stop(); sum == nil || sum.Devices[0].Source != iotrace.SourceBio || sum.Devices[0].Stats[iotrace.KindBio][iotrace.DirWrite].MeanNs != 6e6 {
+		t.Fatalf("summary = %+v", sum)
+	}
+	phase := &PhaseResult{PhaseNumber: 1, PhaseName: "randwrite", Jobs: []JobResult{{Device: "md0", WriteStats: &IOStats{IOPS: 1}}}}
+	applyIOLatLog(phase, "md0", prefix)
+	pts := phase.IOTraceSeries["md0"]["md0"]
+	if len(pts) != 1 || pts[0].Kind != "bio" || pts[0].Dir != "w" || pts[0].Mean != 6000 {
+		t.Errorf("md0 points = %+v", pts)
+	}
+	if m := phase.IOTraceSeries["md0"]["sdb"]; len(m) != 2 || m[1].Kind != "device" {
+		t.Errorf("sdb points = %+v", m)
+	}
+	r := &BenchmarkResult{
+		Drives: []DriveInfo{{Device: blockdev.Device{Name: "md0", Path: "/dev/md0", Model: "raid1"},
+			Members: []rungroup.Member{{Name: "sdb", Role: "data"}}}},
+		Phases: []PhaseResult{*phase},
+	}
+	data := generateDiskPhaseData(r)
+	if len(data) != 1 || len(data[0].TSiolat) != 1 || data[0].TSiolat[0].Kind != "bio" || len(data[0].TSiolatMembers["sdb"]) == 0 {
+		t.Fatalf("graph data = %+v", data)
+	}
+	b, err := json.Marshal(data[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"kind":"bio"`, `"bio_based":true`, `"text_bio":"ftrace: md0: block_bio_queue -\u003e block_bio_complete`,
+		`"block_layer_note":"bio-based (no request queue): no block-layer series; bio-level latency`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("graph JSON lacks %s:\n%s", want, b)
+		}
+	}
+}
+
 // The live phase carries the note of an untraced drive and the summary and
 // series of a traced one (from its stored log, like a reload).
 func TestUpdateLivePhaseCarriesIOTrace(t *testing.T) {
