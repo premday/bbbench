@@ -90,6 +90,7 @@ const mdPlugin = {id: 'mdTrack'};
 const MEMBER_PALETTE = [[22, 163, 74], [217, 119, 6], [124, 58, 237]];
 let X_MAX = 0;
 const AXIS_HEADROOM = 1.15;
+const HIDDEN = {};
 const tick = v => last.options.scales.y.ticks.callback(v);
 const yTitle = () => last.options.scales.y.title && last.options.scales.y.title.display && last.options.scales.y.title.text;
 `
@@ -98,7 +99,8 @@ var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "siScale", "fmtScale
 	"memberNames", "memberColors", "memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "rgba",
 	"stackedMemberDatasets", "memberLatencyDatasets", "arrayDatasets", "makeMembersChart",
 	"mdMetric", "hasMD", "mdBusy", "mdActions", "mdBands", "mdIndex", "mdTipLines", "mdMarkers", "mdOptions",
-	"chartPlugins", "yAxisTitle", "makeFlushChart", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart"}
+	"chartPlugins", "yAxisTitle", "makeFlushChart", "barData", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart",
+	"isShown", "chartDatasets"}
 
 // TestGraphsPageChartPhaseScale: a card plots its values in the base unit,
 // its ticks and tooltips carry the SI prefix chosen from the phase's data

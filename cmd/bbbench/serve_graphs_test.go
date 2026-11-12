@@ -370,8 +370,8 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 	body := graphsPageBody(t)
 	// The plain Read/Write series of a drive, as before.
 	for _, want := range []string{
-		"const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
-		"const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
+		"const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));",
+		"const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));",
 		"label: 'Read (fio)',  data: readPts,",
 		"label: 'Write (fio)', data: writePts,",
 		"if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(",
@@ -446,8 +446,6 @@ function check(name, d) {
         if (Math.abs(t.r - r) > 1e-9 || Math.abs(t.w - w) > 1e-9) fail('total at ' + x + ' = ' + JSON.stringify(t) + ', drawn ' + r + '/' + w);
         topR = Math.max(topR, r); topW = Math.max(topW, w);
     });
-    const e = memberExtent(d, metric);
-    if (e.r !== topR || e.w !== topW) fail('extent ' + JSON.stringify(e) + ', drawn top ' + topR + '/' + topW);
     return g;
 }
 const jit = k => [0.001, 0.003, 0.002, 0.004][k % 4];
@@ -476,7 +474,7 @@ func TestGraphsPageMemberGrid(t *testing.T) {
 	body := graphsPageBody(t)
 	var js strings.Builder
 	for _, f := range []string{"rampOf", "windowOf", "fioShift", "memberNames", "memberStep", "memberKey",
-		"memberGrid", "memberExtent", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets",
+		"memberGrid", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets",
 		"iolatPoints", "ftraceDatasets", "memberColors"} {
 		js.WriteString(jsFunction(t, body, f))
 		js.WriteString("\n")
@@ -613,8 +611,8 @@ console.log('OK');
 `)
 	body := graphsPageBody(t)
 	for _, want := range []string{
-		"const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
-		"const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
+		"const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));",
+		"const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));",
 		"type: 'line', plugins: [rampPlugin],", // the Flush chart keeps its plugin list
 		"array busy: results include administrative work",
 	} {
@@ -854,6 +852,8 @@ const document = {getElementById: el, querySelector: () => wrap,
     createElement: () => ({}), createTextNode: () => ({})};
 let modalChart = null;
 const membersText = () => '', settingTag = () => '', RPV = {}, mdHeader = () => null;
+const seriesRow = () => ({});
+let modalCtx = null;
 const makeChart = (c, d, m, lo, hi, warnEl) => ({destroy() {}});
 const lossy = {disk: 'sda', io_trace: {lost: 4}};
 openModal(lossy, {key: 'lat', label: 'Latency', source: 'fio'}, 0, 1, 'normal');
@@ -866,12 +866,14 @@ console.log('OK');
 
 // ftraceFuncs are the page functions of the ftrace latency overlay.
 var ftraceFuncs = []string{"windowOf", "memberStep", "memberKey", "memberColors", "rgba",
-	"iolatPoints", "iolatMean", "ftraceDatasets", "ftraceExtent", "iolatNone", "siScale", "fmtScaled", "toBase"}
+	"iolatPoints", "iolatMean", "ftraceDatasets", "iolatNone", "siScale", "fmtScaled", "toBase",
+	"rampOf", "fioShift", "memberMetric", "isShown", "chartDatasets", "phaseExtent"}
 
 const ftraceTestPrelude = `
 const assert = require('assert');
 const MEMBER_PALETTE = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
 const LAT = {key: 'lat', unit: 'μs', tsKey: 'ts_lat'}, IOLAT = {key: 'iolat', unit: 'μs', tsKey: 'ts_iolat'};
+const HIDDEN = {}, AXIS_HEADROOM = 1.15;
 const pt = (t, kind, dir, n, mean, p99) => ({t, kind, dir, n, mean, p50: mean, p99});
 function entry(src, scale) {
     const ev = src === 'nvme' ? 'nvme_setup_cmd -> nvme_complete_rq' : 'block_rq_issue -> block_rq_complete';
@@ -954,12 +956,13 @@ func TestGraphsPageIOLatExtent(t *testing.T) {
 	runPageJS(t, ftraceFuncs, ftraceTestPrelude+`
 const d = entry('nvme', 1);
 d.ts_iolat.push(pt(2, 'device', 'r', 1, 90, 9000));
-const lat = ftraceExtent(d, LAT), io = ftraceExtent(d, IOLAT);
-assert.strictEqual(lat.r, 110);
-assert.strictEqual(lat.w, 300);
-assert.strictEqual(io.r, 9000);
-assert.strictEqual(io.w, 350);
-assert.deepStrictEqual(ftraceExtent({}, LAT), {r: 0, w: 0});
+const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, a + ' != ' + b);
+const lat = phaseExtent([d], LAT, 'normal'), io = phaseExtent([d], IOLAT, 'normal');
+close(lat.yHigh, 110 * 1.15);
+close(lat.yLow, -300 * 1.15);
+close(io.yHigh, 9000 * 1.15);
+close(io.yLow, -350 * 1.15);
+assert.deepStrictEqual(phaseExtent([{}], Object.assign({sumR: () => 0, sumW: () => 0}, LAT), 'normal'), {yLow: 0, yHigh: 1});
 console.log('OK');
 `)
 }
@@ -1003,6 +1006,228 @@ assert.strictEqual(label(1, 0), 'Read device p99 (ftrace): 4.00 s');
 // No series: bars of the summary means.
 makeChart({}, {mean: {r: 100, w: 200}}, IOLAT, -230, 115);
 assert.deepStrictEqual(last.data.labels, ['Read device (ftrace)', 'Write device (ftrace)']);
+console.log('OK');
+`)
+}
+
+// seriesFuncs are the page functions that build a card's datasets and the
+// series visibility around them.
+var seriesFuncs = []string{"rampOf", "windowOf", "fioShift", "memberMetric", "memberNames", "memberColors", "rgba",
+	"memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "stackedMemberDatasets", "memberLatencyDatasets",
+	"arrayDatasets", "iolatPoints", "iolatMean", "ftraceDatasets", "ftraceOnGrid",
+	"isShown", "setShown", "chartDatasets", "cardSeries", "phaseExtent"}
+
+const seriesTestPrelude = `
+const assert = require('assert');
+const MEMBER_PALETTE = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
+const AXIS_HEADROOM = 1.15;
+const HIDDEN = {};
+const metric = (key, tsKey, sumR, sumW) => ({key, tsKey, sumR: sumR || (d => 0), sumW: sumW || (d => 0)});
+const LAT = metric('lat', 'ts_lat'), IOPS = metric('iops', 'ts_iops'), BW = metric('bw', 'ts_bw');
+const IOLAT = metric('iolat', 'ts_iolat', d => iolatMean(d, 'r'), d => iolatMean(d, 'w'));
+const FLUSH = metric('flush', 'ts_flush', d => 0, d => d.flush ? d.flush.mean_ns / 1000 : 0);
+const pt = (t, kind, dir, n, mean, p99) => ({t, kind, dir, n, mean, p50: mean, p99});
+const keys = cd => cd.datasets.map(x => x.skey);
+// A drive: fio latency of 500/600 us, ftrace means of at most 120/310 us.
+const drive = () => ({log_avg_msec: 1000, ramp_sec: 0,
+    ts_lat: [{t: 0, r: 500, w: 600}, {t: 1, r: 400, w: 300}],
+    io_trace: {text: 'ftrace: x', devices: [{name: 'sda', stats: {device: {r: {mean_ns: 1e5}, w: {mean_ns: 2e5}}}}]},
+    ts_iolat: [pt(0, 'device', 'r', 4, 100, 150), pt(0, 'blocklayer', 'r', 4, 120, 170),
+        pt(0, 'device', 'w', 4, 200, 250), pt(1, 'blocklayer', 'w', 4, 310, 400)],
+    ts_iolat_members: {sdb: [pt(0, 'device', 'r', 2, 50, 60), pt(0, 'device', 'w', 2, 60, 70)]}});
+// An array: three members whose stack (read 600, write 300) is above the
+// array's own fio numbers.
+const array = () => ({log_avg_msec: 1000, ramp_sec: 0,
+    ts_iops: [{t: 0, r: 500, w: 200}, {t: 1, r: 400, w: 100}],
+    ts_members: {
+        sdb: {role: 'data', iops: [{t: 0, r: 300, w: 100}, {t: 1, r: 200, w: 50}]},
+        sdc: {role: 'data', iops: [{t: 0, r: 200, w: 120}, {t: 1, r: 100, w: 50}]},
+        sdd: {role: 'spare', iops: [{t: 0, r: 100, w: 80}, {t: 1, r: 100, w: 0}]}}});
+`
+
+// TestGraphsPageSeriesKeys: every dataset of a card carries its series key,
+// and cardSeries lists each key once.
+func TestGraphsPageSeriesKeys(t *testing.T) {
+	runPageJS(t, seriesFuncs, seriesTestPrelude+`
+const d = drive();
+assert.deepStrictEqual(keys(chartDatasets(d, LAT, 'normal')), ['fio.r', 'fio.w',
+    'ftrace.device.mean.r', 'ftrace.blocklayer.mean.r', 'ftrace.device.mean.w', 'ftrace.blocklayer.mean.w']);
+assert.deepStrictEqual(keys(chartDatasets(d, IOLAT, 'normal')), [
+    'ftrace.device.mean.r', 'ftrace.device.p99.r', 'ftrace.blocklayer.mean.r', 'ftrace.blocklayer.p99.r',
+    'ftrace.device.mean.w', 'ftrace.device.p99.w', 'ftrace.blocklayer.mean.w', 'ftrace.blocklayer.p99.w',
+    'ftrace.member:sdb', 'ftrace.member:sdb']);
+assert.deepStrictEqual(cardSeries(d, IOLAT, 'normal').map(s => s.skey).slice(-1), ['ftrace.member:sdb']);
+assert.strictEqual(cardSeries(d, IOLAT, 'normal').slice(-1)[0].label, 'sdb device mean (ftrace)');
+const a = array();
+const st = chartDatasets(a, IOPS, 'stacked');
+assert.strictEqual(st.stacked, true);
+assert.deepStrictEqual([...new Set(keys(st))], ['member:sdb', 'member:sdc', 'member:sdd', 'fio.r', 'fio.w']);
+const cs = cardSeries(a, IOPS, 'stacked');
+assert.deepStrictEqual(cs.map(s => s.skey), ['member:sdb', 'member:sdc', 'member:sdd', 'fio.r', 'fio.w']);
+assert.deepStrictEqual(cs.map(s => s.label), ['sdb (data) (kernel stat)', 'sdc (data) (kernel stat)',
+    'sdd (spare) (kernel stat)', 'Array read (fio)', 'Array write (fio)']);
+assert.ok(cs.every(s => typeof s.color === 'string' && s.color.startsWith('rgba(')));
+// Normal mode of the array: its fio lines only.
+assert.deepStrictEqual(keys(chartDatasets(a, IOPS, 'normal')), ['fio.r', 'fio.w']);
+// Bars (no series) and Flush.
+const bars = chartDatasets({}, metric('bw', 'ts_bw', d => 5, d => 6), 'normal');
+assert.strictEqual(bars.bars, true);
+assert.deepStrictEqual(keys(bars), ['fio.r', 'fio.w']);
+assert.deepStrictEqual(keys(chartDatasets({ts_flush: [{t: 0, w: 5}]}, FLUSH)), ['flush']);
+assert.deepStrictEqual(keys(chartDatasets({flush: {mean_ns: 5000}}, FLUSH)), ['flush']);
+assert.deepStrictEqual(keys(chartDatasets({io_trace: d.io_trace}, IOLAT)), ['ftrace.device.mean.r', 'ftrace.device.mean.w']);
+console.log('OK');
+`)
+}
+
+// TestGraphsPageSeriesToggleScale: the phase's y range and SI prefix come
+// from the shown series only.
+func TestGraphsPageSeriesToggleScale(t *testing.T) {
+	runPageJS(t, seriesFuncs, seriesTestPrelude+`
+const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, a + ' != ' + b);
+const p = [drive()];
+let e = phaseExtent(p, LAT, 'normal');
+close(e.yHigh, 500 * 1.15); close(e.yLow, -600 * 1.15);
+setShown('lat', 'fio.r', false);
+setShown('lat', 'fio.w', false);
+e = phaseExtent(p, LAT, 'normal');
+close(e.yHigh, 120 * 1.15); close(e.yLow, -310 * 1.15);
+assert.ok(!keys(chartDatasets(p[0], LAT, 'normal')).some(k => k.startsWith('fio.')));
+// cardSeries still offers the hidden ones.
+assert.deepStrictEqual(cardSeries(p[0], LAT, 'normal').map(s => s.skey).slice(0, 2), ['fio.r', 'fio.w']);
+// Only the block layer reads left: the extent follows them.
+['ftrace.device.mean.r', 'ftrace.device.mean.w', 'ftrace.blocklayer.mean.w'].forEach(k => setShown('lat', k, false));
+e = phaseExtent(p, LAT, 'normal');
+close(e.yHigh, 120 * 1.15); assert.strictEqual(e.yLow, 0);
+// Nothing shown.
+setShown('lat', 'ftrace.blocklayer.mean.r', false);
+assert.deepStrictEqual(phaseExtent(p, LAT, 'normal'), {yLow: 0, yHigh: 1});
+// Bars follow the toggles too.
+const B = metric('bw', 'ts_bw', d => 5, d => 6);
+close(phaseExtent([{}], B, 'normal').yLow, -6 * 1.15);
+setShown('bw', 'fio.w', false);
+assert.strictEqual(phaseExtent([{}], B, 'normal').yLow, 0);
+console.log('OK');
+`)
+}
+
+// TestGraphsPageSeriesToggleStack: a hidden member is not built, the stack
+// totals and the extent drop by its values, and the first shown member of
+// each direction fills from the origin.
+func TestGraphsPageSeriesToggleStack(t *testing.T) {
+	runPageJS(t, seriesFuncs, seriesTestPrelude+`
+const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, a + ' != ' + b);
+const a = array();
+let cd = chartDatasets(a, IOPS, 'stacked');
+assert.deepStrictEqual(cd.grid.totals[0], {r: 600, w: 300});
+let e = phaseExtent([a], IOPS, 'stacked');
+close(e.yHigh, 600 * 1.15); close(e.yLow, -300 * 1.15);
+setShown('iops', 'member:sdb', false);
+cd = chartDatasets(a, IOPS, 'stacked');
+assert.ok(!cd.datasets.some(x => x.skey === 'member:sdb'));
+assert.deepStrictEqual(cd.grid.totals[0], {r: 300, w: 200});
+assert.deepStrictEqual(cd.grid.totals[1], {r: 200, w: 50});
+['r', 'w'].forEach(dir => {
+    const m = cd.datasets.filter(x => x.member && x.dir === dir);
+    assert.deepStrictEqual(m.map(x => x.member), ['sdc', 'sdd']);
+    assert.deepStrictEqual(m.map(x => x.fill), ['origin', '-1']);
+});
+// The array's own line (500 / 200) is now the top.
+e = phaseExtent([a], IOPS, 'stacked');
+close(e.yHigh, 500 * 1.15); close(e.yLow, -200 * 1.15);
+// Hiding the array too leaves the stack of sdc and sdd.
+setShown('iops', 'fio.r', false);
+setShown('iops', 'fio.w', false);
+e = phaseExtent([a], IOPS, 'stacked');
+close(e.yHigh, 300 * 1.15); close(e.yLow, -200 * 1.15);
+// Member colours do not move when one is hidden.
+const sdc = chartDatasets(a, IOPS, 'stacked').datasets.find(x => x.member === 'sdc');
+assert.strictEqual(sdc.borderColor, cardSeries(a, IOPS, 'stacked')[1].color);
+assert.strictEqual(sdc.borderColor, chartDatasets(a, IOPS, 'stacked', true).datasets.find(x => x.member === 'sdc').borderColor);
+console.log('OK');
+`)
+}
+
+// TestGraphsPageToggleSurvivesRefill: the choice is page memory: building the
+// card again keeps it hidden, another metric is not affected.
+func TestGraphsPageToggleSurvivesRefill(t *testing.T) {
+	runPageJS(t, seriesFuncs, seriesTestPrelude+`
+const d = drive();
+setShown('lat', 'fio.r', false);
+assert.strictEqual(isShown('lat', 'fio.r'), false);
+assert.strictEqual(isShown('lat', 'fio.w'), true);
+for (let i = 0; i < 2; i++) assert.ok(!keys(chartDatasets(d, LAT, 'normal')).includes('fio.r'));
+const bw = {ts_bw: [{t: 0, r: 1, w: 1}]};
+assert.deepStrictEqual(keys(chartDatasets(bw, BW, 'normal')), ['fio.r', 'fio.w']);
+setShown('lat', 'fio.r', true);
+assert.ok(keys(chartDatasets(d, LAT, 'normal')).includes('fio.r'));
+console.log('OK');
+`)
+}
+
+// TestGraphsPageSeriesRowStopsPropagation: the row's clicks never reach the
+// card (which opens the modal); a change records the choice and redraws
+// every phase of the metric and the open modal of that metric.
+func TestGraphsPageSeriesRowStopsPropagation(t *testing.T) {
+	body := graphsPageBody(t)
+	row := jsFunction(t, body, "seriesRow")
+	for _, want := range []string{"stopPropagation()", "setShown(metric.key", "applyShown(metric)", "cardSeries(d, metric, mode)"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("seriesRow lacks %q:\n%s", want, row)
+		}
+	}
+	for fn, want := range map[string]string{"makeChartCard": "seriesRow(d, metric, mode)", "openModal": "seriesRow(d, metric, mode)",
+		"renderAll": "REFILL = {};", "applyShown": "REFILL[metric.key]"} {
+		if !strings.Contains(jsFunction(t, body, fn), want) {
+			t.Errorf("%s lacks %q", fn, want)
+		}
+	}
+	if strings.Contains(body, "legend: { display: true, position: 'top'") {
+		t.Error("a chart still shows Chart.js's own legend next to the series row")
+	}
+	if !strings.Contains(body, `id="modal-series"`) {
+		t.Error("the modal has no series row")
+	}
+	runPageJS(t, []string{"seriesRow", "applyShown", "isShown", "setShown"}, `
+const assert = require('assert');
+const HIDDEN = {};
+let REFILL = {}, modalCtx = null, opened = [];
+const made = [];
+const document = {createElement: tag => { const e = {tag, children: [], style: {}, dataset: {}, className: '', handlers: {},
+    appendChild(c) { this.children.push(c); }, addEventListener(k, f) { this.handlers[k] = f; }}; made.push(e); return e; },
+    createTextNode: t => ({textContent: t})};
+const cardSeries = () => [{skey: 'fio.r', label: 'Read (fio)', color: 'red'}, {skey: 'ftrace.device.mean.r', label: 'Read device (ftrace)', color: 'blue', dash: [6, 3]}];
+const phaseExtent = () => ({yLow: -2, yHigh: 3});
+const openModal = (...a) => opened.push(a);
+const M = {key: 'lat'};
+let fills = 0;
+REFILL.lat = [() => fills++, () => fills++];
+REFILL.iops = [() => { throw new Error('iops refilled'); }];
+const row = seriesRow({disk: 'sda'}, M, 'normal');
+assert.strictEqual(row.className, 'series-row');
+let stopped = 0;
+row.handlers.click({stopPropagation: () => stopped++});
+assert.strictEqual(stopped, 1);
+const boxes = made.filter(e => e.tag === 'input');
+assert.strictEqual(boxes.length, 2);
+assert.ok(boxes.every(b => b.type === 'checkbox' && b.checked === true));
+boxes[0].checked = false;
+boxes[0].handlers.change();
+assert.strictEqual(isShown('lat', 'fio.r'), false);
+assert.strictEqual(fills, 2);
+assert.strictEqual(opened.length, 0);
+// With the modal on this metric, it is opened again on the phase's new scale.
+modalCtx = {d: {disk: 'sda'}, metric: M, pname: 'p', mode: 'normal', phaseData: []};
+boxes[0].checked = true;
+boxes[0].handlers.change();
+assert.strictEqual(isShown('lat', 'fio.r'), true);
+assert.strictEqual(opened.length, 1);
+assert.deepStrictEqual(opened[0].slice(2, 5), [-2, 3, 'normal']);
+// A row built while a series is hidden shows it unchecked.
+setShown('lat', 'ftrace.device.mean.r', false);
+made.length = 0;
+seriesRow({disk: 'sda'}, M, 'normal');
+assert.deepStrictEqual(made.filter(e => e.tag === 'input').map(b => b.checked), [true, false]);
 console.log('OK');
 `)
 }

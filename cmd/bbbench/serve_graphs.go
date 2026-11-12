@@ -536,6 +536,17 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .md-badge.md-degraded { color: #be123c; border-color: #fda4af; background: #fff1f2; }
         .md-note { font-size: 10px; color: #b45309; margin-top: 2px; }
         .src-line { font-size: 10px; color: #6d28d9; margin-top: 2px; word-break: break-word; }
+        /* Series toggles: one checkbox and swatch per series of a card. */
+        .series-row { display: flex; flex-wrap: wrap; gap: 1px 8px; margin-top: 4px; font-size: 10px; color: #334155; cursor: default; }
+        .series-row:empty { display: none; }
+        .series-row label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; white-space: nowrap; }
+        .series-row label.off { color: #94a3b8; }
+        .series-row input { margin: 0; width: 11px; height: 11px; accent-color: #2563eb; }
+        .series-row .swatch { display: inline-block; width: 12px; height: 8px; border-radius: 2px; }
+        .series-row .swatch.dash { height: 0; border-top: 2px dashed; border-radius: 0; background: none; }
+        .series-row label.off .swatch { opacity: 0.35; }
+        .modal-series .series-row { font-size: 12px; gap: 2px 12px; margin-top: 6px; }
+        .modal-series .series-row input { width: 13px; height: 13px; }
         .modal-src { font-size: 11px; color: #6d28d9; margin-top: 3px; word-break: break-word; }
         .modal-md { margin-top: 4px; }
         .modal-md .md-badge { font-size: 11px; }
@@ -596,6 +607,7 @@ __NAVBAR_HTML__
         <div class="modal-card-title" id="modal-title"></div>
         <div class="modal-card-subtitle" id="modal-subtitle"></div>
         <div class="modal-src" id="modal-src"></div>
+        <div class="modal-series" id="modal-series"></div>
         <div class="modal-md" id="modal-md"></div>
         <div class="modal-hint">Press Esc or click outside to close</div>
         <div id="modal-ts-warn"></div>
@@ -688,7 +700,7 @@ __NAVBAR_HTML__
                 const c = rgba(rgb[dir], a);
                 out.push(Object.assign({}, base, {
                     label: (dir === 'r' ? 'Read ' : 'Write ') + kname + sname + ' (ftrace)', data,
-                    dir, borderColor: c, backgroundColor: c, borderDash: dsh,
+                    skey: 'ftrace.' + kind + '.' + stat + '.' + dir, dir, borderColor: c, backgroundColor: c, borderDash: dsh,
                 }));
             });
         }));
@@ -700,22 +712,12 @@ __NAVBAR_HTML__
                 const c = rgba(colors[n], 0.9);
                 out.push(Object.assign({}, base, {
                     label: n + (dir === 'r' ? ' read' : ' write') + ' device mean (ftrace)', data,
-                    dir, borderColor: c, backgroundColor: c, borderDash: dir === 'w' ? [4, 2] : [],
+                    skey: 'ftrace.member:' + n, dir, borderColor: c, backgroundColor: c, borderDash: dir === 'w' ? [4, 2] : [],
                     borderWidth: 1.2,
                 }));
             }));
         }
         return out;
-    }
-    // ftraceExtent is the highest read and write value (us) of the ftrace
-    // lines a card draws, so the phase's y range includes them.
-    function ftraceExtent(d, metric) {
-        let r = 0, w = 0;
-        ftraceDatasets(d, metric).forEach(ds => ds.data.forEach(p => {
-            if (p.y > r) r = p.y;
-            if (-p.y > w) w = -p.y;
-        }));
-        return {r, w};
     }
     // sourceLine says where each series of a card comes from: fio, the
     // kernel's per-disk counters of the members, the monitored ftrace
@@ -949,22 +951,18 @@ __NAVBAR_HTML__
     }
 
     function makeFlushChart(canvas, d, metric, yHigh) {
-        const ts = d[metric.tsKey];
         const sc = phaseScale(metric, 0, yHigh), tick = v => fmtScaled(v, sc);
-        const color = 'rgba(124,58,237,0.9)';
-        if (ts && ts.length > 0) {
-            const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w * sc.mul}));
+        const cd = chartDatasets(d, metric);
+        const datasets = toBase(cd.datasets, sc);
+        if (!cd.bars) {
             return new Chart(canvas, {
                 type: 'line', plugins: [rampPlugin],
-                data: { datasets: [{ label: 'Flush (ftrace)', data: pts,
-                    borderColor: color, backgroundColor: 'rgba(124,58,237,0.07)',
-                    fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5 }] },
+                data: { datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
                         rampZone: { sec: rampOf(d) },
-                        legend: { display: true, position: 'top',
-                            labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
+                        legend: { display: false },
                         tooltip: { callbacks: {
                             title: items => 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
                             label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit +
@@ -983,8 +981,7 @@ __NAVBAR_HTML__
         }
         return new Chart(canvas, {
             type: 'bar',
-            data: { labels: ['Flush (ftrace)'], datasets: [{ data: [metric.sumW(d) * sc.mul],
-                backgroundColor: 'rgba(124,58,237,0.75)', borderWidth: 1 }] },
+            data: barData(datasets),
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false },
@@ -993,6 +990,13 @@ __NAVBAR_HTML__
                     ticks: { callback: tick, font: {size: 9} } } }
             }
         });
+    }
+    // barData is the bar chart of a card without series: one bar per shown
+    // dataset (its one value), a grey dash when none is left.
+    function barData(datasets) {
+        const bars = datasets.length ? datasets : [{label: '\u2014', data: [0], backgroundColor: '#e2e8f0'}];
+        return { labels: bars.map(b => b.label),
+            datasets: [{ data: bars.map(b => b.data[0]), backgroundColor: bars.map(b => b.backgroundColor), borderWidth: 1 }] };
     }
 
     // tsWarn tells warnEl (optional) how many points of ts miss thread
@@ -1061,19 +1065,23 @@ __NAVBAR_HTML__
     }
     // memberGrid is everything a member chart draws, built once: the x grid
     // every dataset shares (the tooltip, mode 'index', pairs the points of
-    // the datasets by position), each member's and the array's point per x,
-    // and the stack totals summed from those same member points, so the
-    // totals and the Y scale cannot differ from the drawn stack top.
-    function memberGrid(d, metric) {
+    // the datasets by position), each shown member's and the array's point
+    // per x, and the stack totals summed from those same member points, so
+    // the totals and the Y scale cannot differ from the drawn stack top.
+    // shown (optional) lists the members to draw, all when omitted; the grid
+    // keeps the windows of every member, so hiding one does not move it.
+    function memberGrid(d, metric, shown) {
         const step = memberStep(d), shift = fioShift(d), keys = new Set();
         const members = {}, array = {}, totals = {};
+        const names = memberNames(d).filter(n => !shown || shown.indexOf(n) !== -1);
         memberNames(d).forEach(n => {
-            const m = members[n] = {};
+            const m = {};
             (d.ts_members[n][metric.key] || []).forEach(p => {
                 const x = memberKey(p.t, step);
                 m[x] = p;
                 keys.add(x);
             });
+            if (names.indexOf(n) !== -1) members[n] = m;
         });
         (d[metric.tsKey] || []).forEach(p => {
             const x = memberKey(p.t + shift, step);
@@ -1087,25 +1095,7 @@ __NAVBAR_HTML__
             s.r += m[x].r || 0;
             s.w += m[x].w || 0;
         }));
-        return { xs: [...keys].sort((a, b) => a - b), members, array, totals };
-    }
-    // memberExtent is the highest read and write a member chart draws: the
-    // stack totals for IOPS and bandwidth, each member's own for latency.
-    function memberExtent(d, metric) {
-        const g = memberGrid(d, metric);
-        let r = 0, w = 0;
-        if (metric.key === 'lat') {
-            Object.values(g.members).forEach(m => Object.values(m).forEach(p => {
-                r = Math.max(r, p.r || 0);
-                w = Math.max(w, p.w || 0);
-            }));
-        } else {
-            Object.values(g.totals).forEach(s => {
-                r = Math.max(r, s.r);
-                w = Math.max(w, s.w);
-            });
-        }
-        return {r, w};
+        return { xs: [...keys].sort((a, b) => a - b), names, members, array, totals };
     }
     function memberMaxT(d, metric) {
         let m = 0;
@@ -1119,19 +1109,20 @@ __NAVBAR_HTML__
     function hasDir(pts, dir) {
         return Object.values(pts).some(p => (p[dir] || 0) > 0);
     }
-    // stackedMemberDatasets: one filled band per member and direction. Read
+    // stackedMemberDatasets: one filled band per shown member (g.names) and
+    // direction, the first of each direction from the origin. Read
     // and write are two stacks: Chart.js adds a 0 to every earlier value of
     // its stack whatever their sign, so an idle write would sit on the reads.
     // Zeros are kept: a missing point would let the bands above it drop.
     function stackedMemberDatasets(d, g, colors) {
-        const out = [], names = memberNames(d);
+        const out = [], names = g.names;
         ['r', 'w'].forEach(dir => {
             if (!names.some(n => hasDir(g.members[n], dir))) return;
             let first = true;
             names.forEach(n => {
                 const c = colors[n], pts = g.members[n];
                 out.push({
-                    label: memberLabel(d, n, dir), member: n, dir,
+                    label: memberLabel(d, n, dir), member: n, skey: 'member:' + n, dir,
                     data: g.xs.map(x => ({x, y: pts[x] ? (dir === 'r' ? 1 : -1) * (pts[x][dir] || 0) : null})),
                     stack: dir === 'r' ? 'members' : 'members-write',
                     fill: first ? 'origin' : '-1',
@@ -1143,16 +1134,16 @@ __NAVBAR_HTML__
         });
         return out;
     }
-    // memberLatencyDatasets: one line per member and direction. A window
-    // without I/O has no latency (0): no point.
+    // memberLatencyDatasets: one line per shown member and direction. A
+    // window without I/O has no latency (0): no point.
     function memberLatencyDatasets(d, g, colors) {
-        const out = [], names = memberNames(d);
+        const out = [], names = g.names;
         ['r', 'w'].forEach(dir => names.forEach(n => {
             const pts = g.members[n];
             if (!hasDir(pts, dir)) return;
             const c = colors[n];
             out.push({
-                label: memberLabel(d, n, dir), member: n, dir,
+                label: memberLabel(d, n, dir), member: n, skey: 'member:' + n, dir,
                 data: g.xs.map(x => ({x, y: pts[x] && pts[x][dir] > 0 ? (dir === 'r' ? 1 : -1) * pts[x][dir] : null})),
                 fill: false, borderColor: rgba(c, 0.9), backgroundColor: rgba(c, 0.9),
                 borderDash: dir === 'w' ? [4, 2] : [],
@@ -1169,7 +1160,7 @@ __NAVBAR_HTML__
         [['r', 'Read', 'rgba(37,99,235,0.95)'], ['w', 'Write', 'rgba(220,38,38,0.95)']].forEach(([dir, name, color]) => {
             if (!hasDir(pts, dir)) return;
             const ds = {
-                label: 'Array ' + name.toLowerCase() + ' (fio)', array: true, dir, order: -1,
+                label: 'Array ' + name.toLowerCase() + ' (fio)', array: true, skey: 'fio.' + dir, dir, order: -1,
                 data: g.xs.map(x => ({x, y: pts[x] && pts[x][dir] > 0 ? (dir === 'r' ? 1 : -1) * pts[x][dir] : null})),
                 fill: false, borderColor: color, backgroundColor: color,
                 tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 2, spanGaps: true,
@@ -1188,16 +1179,15 @@ __NAVBAR_HTML__
             return Object.assign({}, ds, {data: xs.map(x => ({x, y: at[x] === undefined ? null : at[x]}))});
         });
     }
-    function makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl) {
+    function makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl, mode) {
         tsWarn(warnEl, d[metric.tsKey] || []);
-        const stacked = metric.key !== 'lat';
-        const g = memberGrid(d, metric), xs = g.xs, colors = memberColors(memberNames(d));
-        const members = stacked ? stackedMemberDatasets(d, g, colors) : memberLatencyDatasets(d, g, colors);
-        const array = arrayDatasets(g, stacked);
+        const cd = chartDatasets(d, metric, mode), stacked = cd.stacked, g = cd.grid, xs = g.xs;
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
-        const datasets = toBase(members.concat(array, ftraceOnGrid(d, metric, xs)), sc);
+        const datasets = toBase(cd.datasets, sc);
+        // The shown members come first, then the array and the ftrace lines.
+        const nMembers = datasets.filter(ds => ds.member).length;
         const totals = stacked ? g.totals : {};
-        const dirs = ['r', 'w'].filter(dir => members.some(m => m.dir === dir));
+        const dirs = ['r', 'w'].filter(dir => datasets.some(m => m.member && m.dir === dir));
         // v in the base unit; the stack totals are in the metric's units.
         const fmt = v => fmtScaled(v, sc, true) + ' ' + sc.unit;
         const totalLines = i => {
@@ -1207,7 +1197,7 @@ __NAVBAR_HTML__
         };
         // The first array item shown at index i, which carries the stack totals.
         const firstArray = (chart, i) => {
-            for (let k = members.length; k < datasets.length; k++) {
+            for (let k = nMembers; k < datasets.length; k++) {
                 if (chart.isDatasetVisible(k) && datasets[k].data[i].y !== null) return k;
             }
             return -1;
@@ -1220,8 +1210,7 @@ __NAVBAR_HTML__
                 plugins: {
                     rampZone: { sec: rampOf(d) },
                     mdTrack: mdOptions(d, metric),
-                    legend: { display: true, position: 'top',
-                        labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
+                    legend: { display: false },
                     tooltip: {
                         mode: 'index', intersect: false,
                         // Members first, then the stack total, then the array.
@@ -1471,38 +1460,23 @@ __NAVBAR_HTML__
         const ts = d[metric.tsKey];
         if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
         if (metric.key === 'iolat') return makeIOLatChart(canvas, d, metric, yLow, yHigh);
-        if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl);
+        if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
         // One unit for every card of the phase: chosen from the phase's scale.
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
-        const ftrace = ftraceDatasets(d, metric);
-        if ((ts && ts.length > 0) || ftrace.length > 0) {
+        const cd = chartDatasets(d, metric, mode);
+        const datasets = toBase(cd.datasets, sc);
+        if (!cd.bars) {
             tsWarn(warnEl, ts || []);
-            const ramp = rampOf(d), shift = fioShift(d);
-            const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));
-            const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));
-            const datasets = [];
-            if (readPts.length > 0) datasets.push({
-                label: 'Read (fio)',  data: readPts,
-                borderColor: 'rgba(37,99,235,0.9)',  backgroundColor: 'rgba(37,99,235,0.07)',
-                fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
-            });
-            if (writePts.length > 0) datasets.push({
-                label: 'Write (fio)', data: writePts,
-                borderColor: 'rgba(220,38,38,0.9)', backgroundColor: 'rgba(220,38,38,0.07)',
-                fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
-            });
-            toBase(ftrace, sc).forEach(ds => datasets.push(ds));
             return new Chart(canvas, {
                 type: 'line', data: { datasets }, plugins: chartPlugins(d, metric),
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
-                        rampZone: { sec: ramp },
+                        rampZone: { sec: rampOf(d) },
                         mdTrack: mdOptions(d, metric),
-                        legend: { display: true, position: 'top',
-                            labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
+                        legend: { display: false },
                         tooltip: { callbacks: {
-                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
+                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '–' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => ctx.dataset.label + ': ' +
                                           fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                             afterBody: items => mdTipLines(d, items)
@@ -1518,47 +1492,41 @@ __NAVBAR_HTML__
                     }
                 }
             });
-        } else {
-            const r = metric.sumR(d), w = metric.sumW(d);
-            const lbls = [], vals = [], cols = [];
-            if (r > 0) { lbls.push('Read (fio)');  vals.push(r * sc.mul);  cols.push('rgba(37,99,235,0.75)'); }
-            if (w > 0) { lbls.push('Write (fio)'); vals.push(-w * sc.mul); cols.push('rgba(220,38,38,0.75)'); }
-            if (!lbls.length) { lbls.push('\u2014'); vals.push(0); cols.push('#e2e8f0'); }
-            return new Chart(canvas, {
-                type: 'bar',
-                data: { labels: lbls, datasets: [{ data: vals, backgroundColor: cols, borderWidth: 1 }] },
-                options: {
-                    responsive: true, maintainAspectRatio: false, animation: false,
-                    plugins: { legend: { display: false },
-                        tooltip: { callbacks: { label: ctx =>
-                            fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit } }
-                    },
-                    scales: { y: { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
-                        ticks: { callback: tick, font: {size: 9} } } }
-                }
-            });
         }
+        return new Chart(canvas, {
+            type: 'bar',
+            data: barData(datasets),
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                plugins: { legend: { display: false },
+                    tooltip: { callbacks: { label: ctx =>
+                        fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit } }
+                },
+                scales: { y: { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
+                    ticks: { callback: tick, font: {size: 9} } } }
+            }
+        });
     }
 
     // makeIOLatChart draws the Device latency card: the ftrace lines alone
     // (bars of the summary means when the phase has no series).
     function makeIOLatChart(canvas, d, metric, yLow, yHigh) {
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
-        const datasets = toBase(ftraceDatasets(d, metric), sc);
+        const cd = chartDatasets(d, metric);
+        const datasets = toBase(cd.datasets, sc);
         const yAxis = { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
             ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
             grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } };
-        if (datasets.length > 0) {
+        if (!cd.bars) {
             return new Chart(canvas, {
                 type: 'line', data: { datasets }, plugins: [rampPlugin],
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: {
                         rampZone: { sec: rampOf(d) },
-                        legend: { display: true, position: 'top',
-                            labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
+                        legend: { display: false },
                         tooltip: { callbacks: {
-                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
+                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '–' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                         }}
                     },
@@ -1571,14 +1539,9 @@ __NAVBAR_HTML__
                 }
             });
         }
-        const r = metric.sumR(d), w = metric.sumW(d);
-        const lbls = [], vals = [], cols = [];
-        if (r > 0) { lbls.push('Read device (ftrace)');  vals.push(r * sc.mul);  cols.push('rgba(37,99,235,0.75)'); }
-        if (w > 0) { lbls.push('Write device (ftrace)'); vals.push(-w * sc.mul); cols.push('rgba(220,38,38,0.75)'); }
-        if (!lbls.length) { lbls.push('\u2014'); vals.push(0); cols.push('#e2e8f0'); }
         return new Chart(canvas, {
             type: 'bar',
-            data: { labels: lbls, datasets: [{ data: vals, backgroundColor: cols, borderWidth: 1 }] },
+            data: barData(datasets),
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false },
@@ -1588,10 +1551,173 @@ __NAVBAR_HTML__
         });
     }
 
+    // ── Series visibility ──
+    // Each series of a card has a key (skey): fio.r and fio.w (a drive's
+    // read and write, an array's own fio lines, the bars), member:<name>
+    // (both directions of a member, kernel stat), ftrace.<kind>.<stat>.<dir>
+    // (ftrace.device.mean.r), ftrace.member:<name> (a member's device
+    // latency) and flush. HIDDEN maps a metric key to the Set of the keys
+    // hidden on every card of that metric: page memory only (not stored), so
+    // it survives a re-render and is gone on reload.
+    const HIDDEN = {};
+    function isShown(metricKey, skey) {
+        return !(HIDDEN[metricKey] && HIDDEN[metricKey].has(skey));
+    }
+    function setShown(metricKey, skey, on) {
+        const s = HIDDEN[metricKey] || (HIDDEN[metricKey] = new Set());
+        if (on) s.delete(skey); else s.add(skey);
+    }
+    // chartDatasets is the one place the datasets of a card are built, in
+    // the metric's units (a chart converts them with toBase): {datasets,
+    // stacked, bars, grid}. Only shown series are built (all of them with
+    // all), so the member fill chain ('origin' then '-1') and the stack
+    // totals of grid (memberGrid, member charts only) run over the shown
+    // members. Whether a card draws lines or bars depends on the data, not
+    // on what is shown: hiding every line does not turn it into bars. A bar
+    // dataset holds its one value in data[0] (writes negative).
+    function chartDatasets(d, metric, mode, all) {
+        const shown = ds => all || isShown(metric.key, ds.skey);
+        const ts = d[metric.tsKey];
+        const line = {tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5};
+        const bar = (skey, label, dir, v, color) => ({skey, label, dir, data: [v], borderColor: color, backgroundColor: color});
+        if (metric.key === 'flush') {
+            if (ts && ts.length > 0) return {stacked: false, bars: false, datasets: [Object.assign({
+                label: 'Flush (ftrace)', skey: 'flush',
+                data: ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w})),
+                borderColor: 'rgba(124,58,237,0.9)', backgroundColor: 'rgba(124,58,237,0.07)', fill: 'origin',
+            }, line)].filter(shown)};
+            return {stacked: false, bars: true,
+                datasets: [bar('flush', 'Flush (ftrace)', 'w', metric.sumW(d), 'rgba(124,58,237,0.75)')].filter(shown)};
+        }
+        if (mode !== 'normal' && memberMetric(d, metric)) {
+            const stacked = metric.key !== 'lat', colors = memberColors(memberNames(d));
+            const g = memberGrid(d, metric, memberNames(d).filter(n => all || isShown(metric.key, 'member:' + n)));
+            const members = stacked ? stackedMemberDatasets(d, g, colors) : memberLatencyDatasets(d, g, colors);
+            return {stacked, bars: false, grid: g,
+                datasets: members.concat(arrayDatasets(g, stacked).filter(shown), ftraceOnGrid(d, metric, g.xs).filter(shown))};
+        }
+        const ftrace = ftraceDatasets(d, metric);
+        if (metric.key === 'iolat') {
+            if (ftrace.length > 0) return {stacked: false, bars: false, datasets: ftrace.filter(shown)};
+            const r = metric.sumR(d), w = metric.sumW(d), out = [];
+            if (r > 0) out.push(bar('ftrace.device.mean.r', 'Read device (ftrace)', 'r', r, 'rgba(37,99,235,0.75)'));
+            if (w > 0) out.push(bar('ftrace.device.mean.w', 'Write device (ftrace)', 'w', -w, 'rgba(220,38,38,0.75)'));
+            return {stacked: false, bars: true, datasets: out.filter(shown)};
+        }
+        if ((ts && ts.length > 0) || ftrace.length > 0) {
+            const shift = fioShift(d), out = [];
+            const readPts  = (ts || []).filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r}));
+            const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));
+            if (readPts.length > 0) out.push(Object.assign({
+                label: 'Read (fio)',  data: readPts, skey: 'fio.r', dir: 'r',
+                borderColor: 'rgba(37,99,235,0.9)',  backgroundColor: 'rgba(37,99,235,0.07)', fill: 'origin',
+            }, line));
+            if (writePts.length > 0) out.push(Object.assign({
+                label: 'Write (fio)', data: writePts, skey: 'fio.w', dir: 'w',
+                borderColor: 'rgba(220,38,38,0.9)', backgroundColor: 'rgba(220,38,38,0.07)', fill: 'origin',
+            }, line));
+            return {stacked: false, bars: false, datasets: out.concat(ftrace).filter(shown)};
+        }
+        const r = metric.sumR(d), w = metric.sumW(d), out = [];
+        if (r > 0) out.push(bar('fio.r', 'Read (fio)', 'r', r, 'rgba(37,99,235,0.75)'));
+        if (w > 0) out.push(bar('fio.w', 'Write (fio)', 'w', -w, 'rgba(220,38,38,0.75)'));
+        return {stacked: false, bars: true, datasets: out.filter(shown)};
+    }
+    // cardSeries lists every series a card could draw, shown or not, once
+    // per key: {skey, label, color, dash}. A member's two directions are one
+    // series, its label without the direction.
+    function cardSeries(d, metric, mode) {
+        const out = [], seen = {};
+        chartDatasets(d, metric, mode, true).datasets.forEach(ds => {
+            if (!ds.skey || seen[ds.skey]) return;
+            seen[ds.skey] = true;
+            const both = ds.skey.indexOf('member:') !== -1;
+            out.push({skey: ds.skey, label: both ? ds.label.replace(/ (read|write) /, ' ') : ds.label,
+                color: ds.borderColor || ds.backgroundColor,
+                dash: ds.borderDash && ds.borderDash.length ? ds.borderDash : null});
+        });
+        return out;
+    }
+    // phaseExtent is the y range of a phase's cards (metric units, with
+    // AXIS_HEADROOM) over the series they show: each value, or for a stacked
+    // chart the sum of each stack per window (read and write apart, as
+    // Chart.js stacks them). Nothing shown, or only zeros: 0..1.
+    function phaseExtent(phaseData, metric, mode) {
+        let yMax = 0, yMin = 0;
+        const see = v => { if (v > yMax) yMax = v; if (v < yMin) yMin = v; };
+        const val = p => typeof p === 'number' ? p : (p && p.y !== null && p.y !== undefined ? p.y : 0);
+        phaseData.forEach(d => {
+            const cd = chartDatasets(d, metric, mode);
+            if (!cd.stacked) {
+                cd.datasets.forEach(ds => ds.data.forEach(p => see(val(p))));
+                return;
+            }
+            const sums = {};
+            cd.datasets.forEach((ds, k) => {
+                const s = sums[ds.stack || '#' + k] || (sums[ds.stack || '#' + k] = []);
+                ds.data.forEach((p, i) => {
+                    const v = val(p), e = s[i] || (s[i] = {pos: 0, neg: 0});
+                    if (v > 0) e.pos += v; else e.neg += v;
+                });
+            });
+            Object.values(sums).forEach(s => s.forEach(e => { see(e.pos); see(e.neg); }));
+        });
+        return {
+            yHigh: yMax > 0 ? yMax * AXIS_HEADROOM : (yMin < 0 ? 0 : 1),
+            yLow: yMin < 0 ? yMin * AXIS_HEADROOM : 0,
+        };
+    }
+    // REFILL maps a metric key to the fill() of each of its phases (renderAll
+    // resets it): a toggle redraws the cards of that metric only.
+    let REFILL = {};
+    // seriesRow is the row of checkboxes above a card's chart (and in the
+    // modal): one per series with its colour; a change applies to every
+    // card of the metric. Its clicks do not reach the card, which opens the
+    // modal.
+    function seriesRow(d, metric, mode) {
+        const row = document.createElement('div');
+        row.className = 'series-row';
+        row.addEventListener('click', e => e.stopPropagation());
+        cardSeries(d, metric, mode).forEach(s => {
+            const lbl = document.createElement('label');
+            const on = isShown(metric.key, s.skey);
+            lbl.className = on ? '' : 'off';
+            lbl.title = s.label;
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = on;
+            cb.addEventListener('change', () => {
+                setShown(metric.key, s.skey, cb.checked);
+                applyShown(metric);
+            });
+            const sw = document.createElement('span');
+            sw.className = 'swatch' + (s.dash ? ' dash' : '');
+            if (s.dash) sw.style.borderTopColor = s.color; else sw.style.background = s.color;
+            lbl.appendChild(cb);
+            lbl.appendChild(sw);
+            lbl.appendChild(document.createTextNode(s.label));
+            row.appendChild(lbl);
+        });
+        return row;
+    }
+    // applyShown redraws every phase of the metric, and the modal when it
+    // shows that metric, on the scale of the series now shown.
+    function applyShown(metric) {
+        (REFILL[metric.key] || []).forEach(f => f());
+        if (modalCtx && modalCtx.metric.key === metric.key) {
+            const c = modalCtx, e = phaseExtent(c.phaseData || [c.d], metric, c.mode);
+            openModal(c.d, c.metric, e.yLow, e.yHigh, c.mode, c.pname, c.phaseData);
+        }
+    }
+
     // ── Modal ──
     let modalChart = null;
+    // modalCtx is what the open modal shows ({d, metric, pname, mode,
+    // phaseData}), so a series toggle can draw it again; null when closed.
+    let modalCtx = null;
 
-    function openModal(d, metric, yLow, yHigh, mode) {
+    function openModal(d, metric, yLow, yHigh, mode, pname, phaseData) {
+        modalCtx = {d, metric, pname, mode, phaseData};
         const mt = membersText(d);
         document.getElementById('modal-title').textContent = d.disk + settingTag(d, RPV) + (mt ? ' \u00b7 ' + mt : '');
         const tech = d.technology ? d.technology.toUpperCase() : '';
@@ -1619,11 +1745,15 @@ __NAVBAR_HTML__
         warnEl.textContent = '';
         modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl, mode);
         addLossNote(warnEl, d, metric);
+        const seriesEl = document.getElementById('modal-series');
+        seriesEl.innerHTML = '';
+        seriesEl.appendChild(seriesRow(d, metric, mode));
         document.getElementById('modal-src').textContent = sourceLine(d, metric);
         document.getElementById('modal-overlay').classList.add('active');
     }
 
     function closeModal() {
+        modalCtx = null;
         document.getElementById('modal-overlay').classList.remove('active');
         if (modalChart) { modalChart.destroy(); modalChart = null; }
     }
@@ -1635,7 +1765,7 @@ __NAVBAR_HTML__
         if (e.key === 'Escape') closeModal();
     });
 
-    function makeChartCard(d, metric, cid, yLow, yHigh, mode) {
+    function makeChartCard(d, metric, cid, yLow, yHigh, mode, pname, phaseData) {
         const card = document.createElement('div');
         card.className = 'chart-card';
 
@@ -1661,6 +1791,8 @@ __NAVBAR_HTML__
             card.appendChild(t3);
         }
         if (mdh && mdh.note) card.appendChild(mdh.note);
+        const why = d.skipped ? 'Skipped: ' + d.skipped : flushNone(d, metric) || iolatNone(d, metric);
+        if (!why) card.appendChild(seriesRow(d, metric, mode));
 
         const wrap = document.createElement('div');
         wrap.className = 'chart-wrap';
@@ -1670,7 +1802,6 @@ __NAVBAR_HTML__
 
         const warnEl = document.createElement('div');
         card.appendChild(warnEl);
-        const why = d.skipped ? 'Skipped: ' + d.skipped : flushNone(d, metric) || iolatNone(d, metric);
         if (why) {
             // Traced, but no Flush command reached the device: say why
             // instead of drawing an empty chart.
@@ -1682,12 +1813,13 @@ __NAVBAR_HTML__
         charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
         addLossNote(warnEl, d, metric);
 
-        card.addEventListener('click', () => openModal(d, metric, yLow, yHigh, mode));
+        card.addEventListener('click', () => openModal(d, metric, yLow, yHigh, mode, pname, phaseData));
         return card;
     }
 
     function renderAll() {
         destroyAllCharts();
+        REFILL = {};
         const main = document.getElementById('main');
         main.innerHTML = '';
 
@@ -1750,46 +1882,6 @@ __NAVBAR_HTML__
                 const phaseData = byPhase[pname];
                 const diskCount = phaseData.length;
 
-                const phaseScaleOf = mode => {
-                // Y scale scoped to this (metric, phase) tuple and graph mode.
-                let yMax = 0, yMin = 0;
-                phaseData.forEach(d => {
-                    const ts = d[metric.tsKey];
-                    if (metric.key === 'iolat') {
-                        const e = ftraceExtent(d, metric);
-                        const r = e.r || e.w ? e.r : metric.sumR(d), w = e.r || e.w ? e.w : metric.sumW(d);
-                        if (r > yMax) yMax = r;
-                        if (w > 0 && -w < yMin) yMin = -w;
-                    } else if (metric.key === 'flush') {
-                        const top = Math.max(metric.sumW(d), ...(ts || []).map(p => p.w || 0));
-                        if (top > yMax) yMax = top;
-                    } else if (ts && ts.length > 0) {
-                        ts.forEach(p => {
-                            if (p.r > yMax) yMax = p.r;
-                            if (p.w > 0 && -p.w < yMin) yMin = -p.w;
-                        });
-                    } else {
-                        const r = metric.sumR(d), w = metric.sumW(d);
-                        if (r > yMax) yMax = r;
-                        if (w > 0 && -w < yMin) yMin = -w;
-                    }
-                    if (metric.key === 'lat') {
-                        const f = ftraceExtent(d, metric);
-                        if (f.r > yMax) yMax = f.r;
-                        if (f.w > 0 && -f.w < yMin) yMin = -f.w;
-                    }
-                    if (mode !== 'normal' && memberMetric(d, metric)) {
-                        const e = memberExtent(d, metric);
-                        if (e.r > yMax) yMax = e.r;
-                        if (e.w > 0 && -e.w < yMin) yMin = -e.w;
-                    }
-                });
-                return {
-                    yHigh: yMax > 0 ? yMax * AXIS_HEADROOM : (yMin < 0 ? 0 : 1),
-                    yLow: yMin < 0 ? yMin * AXIS_HEADROOM : 0,
-                };
-                };
-
                 const phaseHdr = document.createElement('div');
                 phaseHdr.className = 'phase-hdr';
                 phaseHdr.innerHTML = '<span class="chev">▼</span>'
@@ -1809,14 +1901,14 @@ __NAVBAR_HTML__
 
                 // (Re)draws this phase's cards in its current graph mode.
                 const fill = () => {
-                    const mode = graphMode(metric, pname), sc = phaseScaleOf(mode);
+                    const mode = graphMode(metric, pname), sc = phaseExtent(phaseData, metric, mode);
                     Object.keys(charts).forEach(id => {
                         if (id.indexOf(metric.key + ':' + pname + ':') === 0) { charts[id].destroy(); delete charts[id]; }
                     });
                     grid.innerHTML = '';
                     phaseData.forEach((d, i) => {
                         const cid = metric.key + ':' + pname + ':' + i;
-                        grid.appendChild(makeChartCard(d, metric, cid, sc.yLow, sc.yHigh, mode));
+                        grid.appendChild(makeChartCard(d, metric, cid, sc.yLow, sc.yHigh, mode, pname, phaseData));
                     });
                     toggle.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
                 };
@@ -1830,6 +1922,7 @@ __NAVBAR_HTML__
                     toggle.appendChild(b);
                 });
                 if (phaseData.some(d => memberMetric(d, metric))) phaseHdr.appendChild(toggle);
+                (REFILL[metric.key] || (REFILL[metric.key] = [])).push(fill);
                 fill();
             });
         });
