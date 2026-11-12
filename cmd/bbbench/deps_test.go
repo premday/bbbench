@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"bbbench/internal/flushtrace"
 )
 
 func lookIn(present ...string) func(string) (string, error) {
@@ -117,6 +119,20 @@ func TestWarnTracingOncePerProcess(t *testing.T) {
 	out.Reset()
 	(&ExecutionCoordinator{ioTrace: true}).warnTracing(missing, &out)
 	if !strings.Contains(out.String(), "I/O latency cannot be traced") || strings.Contains(out.String(), "Flush") {
+		t.Errorf("output:\n%s", out.String())
+	}
+}
+
+// The tracefs error is said once, without another feature's name.
+func TestWarnTracingTracefsMissingText(t *testing.T) {
+	tracingWarned = struct{ flush, io sync.Once }{}
+	t.Cleanup(func() { tracingWarned = struct{ flush, io sync.Once }{} })
+	dir := t.TempDir()
+	missing := func() error { _, err := flushtrace.FindTracefs(flushtrace.Options{TracefsRoot: dir}); return err }
+	var out strings.Builder
+	(&ExecutionCoordinator{ioTrace: true}).warnTracing(missing, &out)
+	if !strings.Contains(out.String(), "warning: I/O latency cannot be traced: tracefs not found (is it mounted, and are you root?)\n") ||
+		strings.Contains(out.String(), "unsupported") {
 		t.Errorf("output:\n%s", out.String())
 	}
 }

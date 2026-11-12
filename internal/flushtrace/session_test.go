@@ -165,8 +165,14 @@ func TestSession_NVMeFallsBackToBlockWithoutNVMeTracepoints(t *testing.T) {
 }
 
 func TestStart_Unsupported(t *testing.T) {
-	if _, err := Start("sda", Options{TracefsRoot: t.TempDir()}); !errors.Is(err, ErrUnsupported) {
+	_, err := Start("sda", Options{TracefsRoot: t.TempDir()})
+	if !errors.Is(err, ErrUnsupported) || !errors.Is(err, ErrNoTracefs) ||
+		err.Error() != "flush tracing unsupported: tracefs not found (is it mounted, and are you root?)" {
 		t.Errorf("no tracefs: err = %v", err)
+	}
+	// FindTracefs itself names no feature: each package wraps it once.
+	if _, err := FindTracefs(Options{TracefsRoot: t.TempDir()}); err != ErrNoTracefs || errors.Is(err, ErrUnsupported) {
+		t.Errorf("FindTracefs: err = %v", err)
 	}
 	root, _ := fakeTracefs(t, nil, "")
 	if _, err := Start("sda", Options{TracefsRoot: root}); !errors.Is(err, ErrUnsupported) {

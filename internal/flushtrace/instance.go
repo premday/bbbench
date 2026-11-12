@@ -26,7 +26,11 @@ const stopMarker = "bbbench-stop"
 
 var instanceSeq atomic.Int64
 
-// FindTracefs returns the tracefs mount, or an error wrapping ErrUnsupported.
+// ErrNoTracefs means no tracefs mount was found. It names no feature: Flush
+// and I/O latency tracing each wrap it once with their own ErrUnsupported.
+var ErrNoTracefs = errors.New("tracefs not found (is it mounted, and are you root?)")
+
+// FindTracefs returns the tracefs mount, or ErrNoTracefs.
 func FindTracefs(opts Options) (string, error) {
 	cands := []string{opts.TracefsRoot}
 	if opts.TracefsRoot == "" {
@@ -37,11 +41,12 @@ func FindTracefs(opts Options) (string, error) {
 			return c, nil
 		}
 	}
-	return "", fmt.Errorf("%w: tracefs not found (is it mounted, and are you root?)", ErrUnsupported)
+	return "", ErrNoTracefs
 }
 
-// TracefsAvailable reports whether tracefs can be found, so a run can say
-// before it starts that Flushes will not be traced.
+// TracefsAvailable reports whether tracefs can be found (nil, else
+// ErrNoTracefs), so a run can say before it starts that Flushes or I/O
+// latency will not be traced.
 func TracefsAvailable() error {
 	_, err := FindTracefs(Options{})
 	return err

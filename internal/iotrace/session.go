@@ -133,7 +133,7 @@ const (
 func Start(devices []string, opts Options) (*Session, error) {
 	root, err := flushtrace.FindTracefs(flushtrace.Options{TracefsRoot: opts.TracefsRoot})
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
+		return nil, fmt.Errorf("%w: %w", ErrUnsupported, err)
 	}
 	hasNVMe := flushtrace.HasEvents(root, evNVMeSetup, evNVMeDone)
 	hasBlock := flushtrace.HasEvents(root, evBlockIssue, evBlockDone)

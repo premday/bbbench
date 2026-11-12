@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"bbbench/internal/flushtrace"
 )
 
 const (
@@ -691,8 +693,10 @@ func TestSession_StartMarkerMissing(t *testing.T) {
 func TestSession_Unsupported(t *testing.T) {
 	sys := fakeSys(t, map[string]string{"sdb": "8:16"}, "sdb")
 	// no tracefs
-	if _, err := Start([]string{"sdb"}, Options{TracefsRoot: t.TempDir(), SysBlock: sys}); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("no tracefs: err = %v", err)
+	_, err0 := Start([]string{"sdb"}, Options{TracefsRoot: t.TempDir(), SysBlock: sys})
+	if !errors.Is(err0, ErrUnsupported) || !errors.Is(err0, flushtrace.ErrNoTracefs) ||
+		err0.Error() != "I/O latency tracing unsupported: tracefs not found (is it mounted, and are you root?)" {
+		t.Errorf("no tracefs: err = %v", err0)
 	}
 	// no tracepoints
 	root, _ := fakeTracefs(t, nil, nil)

@@ -44,7 +44,9 @@ func startIOTraceWith(drive DriveInfo, logPrefix string, avgMsec, rampMs int, op
 		if logger != nil {
 			logger.Warn("I/O latency tracing unavailable", "device", drive.Device.Name, "err", err)
 		}
-		return nil, "no ftrace latency: " + err.Error()
+		// "no ftrace latency" already says it is unsupported: the reason only.
+		reason := strings.TrimPrefix(err.Error(), iotrace.ErrUnsupported.Error()+": ")
+		return nil, "no ftrace latency: " + reason
 	}
 	return &ioTraceRun{sess: sess, device: drive.Device.Name, logPrefix: logPrefix}, ""
 }

@@ -34,7 +34,7 @@ type Session struct {
 func Start(name string, opts Options) (*Session, error) {
 	root, err := FindTracefs(opts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrUnsupported, err)
 	}
 	var (
 		col     Collector

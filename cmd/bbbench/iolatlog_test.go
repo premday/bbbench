@@ -123,7 +123,7 @@ func TestStartIOTraceNoteOnFailure(t *testing.T) {
 	drive := DriveInfo{Device: blockdev.Device{Name: "sda"}}
 	prefix := filepath.Join(t.TempDir(), "sda_phase0_1_log")
 	run, note := startIOTraceWith(drive, prefix, 1000, 0, iotrace.Options{TracefsRoot: t.TempDir()})
-	if !strings.HasPrefix(note, "no ftrace latency: ") || run != nil {
+	if note != "no ftrace latency: tracefs not found (is it mounted, and are you root?)" || run != nil {
 		t.Errorf("note = %q, run = %v", note, run)
 	}
 	run.MarkStart()
