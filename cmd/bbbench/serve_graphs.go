@@ -1472,6 +1472,7 @@ __NAVBAR_HTML__
 
         const warnEl = document.getElementById('modal-ts-warn');
         warnEl.className = 'modal-ts-warn';
+        warnEl.textContent = '';
         modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl, mode);
         addLossNote(warnEl, d, metric);
         document.getElementById('modal-src').textContent = sourceLine(d, metric);

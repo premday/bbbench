@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"bbbench/internal/blockdev"
+	"bbbench/internal/flushtrace"
 	"bbbench/internal/iotrace"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
@@ -713,6 +714,7 @@ func TestGenerateDiskPhaseData_IOTrace(t *testing.T) {
 				{Device: "md127", ReadStats: &IOStats{IOPS: 1, Bandwidth: 1}},
 				{Device: "sdd", ReadStats: &IOStats{IOPS: 1, Bandwidth: 1}},
 			},
+				FlushTrace:   map[string]*flushtrace.Summary{"sdd": {Source: "block"}},
 				IOTrace:      map[string]*iotrace.Summary{"md127": sum},
 				IOTraceNotes: map[string]string{"sdd": "no ftrace latency: no tracefs"},
 				IOTraceSeries: map[string]map[string][]IOLatPoint{"md127": {
@@ -735,8 +737,14 @@ func TestGenerateDiskPhaseData_IOTrace(t *testing.T) {
 	if md == nil || sdd == nil {
 		t.Fatal("missing entries")
 	}
+	if md.FlushSource != "" {
+		t.Errorf("FlushSource without Flush = %q", md.FlushSource)
+	}
 	if len(md.TSiolat) != 1 || md.TSiolat[0].Mean != 10 || len(md.TSiolatMembers) != 2 || md.TSiolatMembers["sdb"][0].Mean != 20 || md.IOTrace != sum {
 		t.Errorf("md127 = %+v", md)
+	}
+	if sdd.FlushSource != flushtrace.SourceLine(&flushtrace.Summary{Source: "block"}) || sdd.FlushSource == "" {
+		t.Errorf("sdd FlushSource = %q", sdd.FlushSource)
 	}
 	if sdd.IOTraceNote != "no ftrace latency: no tracefs" || sdd.TSiolat != nil {
 		t.Errorf("sdd = %+v", sdd)
@@ -762,7 +770,7 @@ func TestGraphsPageLegendsNameSource(t *testing.T) {
 // Tracepoint names come from the data (io_trace.text, flush_source), never from the page.
 func TestGraphsPageNoNVMeAssumption(t *testing.T) {
 	body := graphsPageBody(t)
-	for _, bad := range []string{"nvme_", "block_rq", "nvme_cmd"} {
+	for _, bad := range []string{"nvme_", "block_rq"} {
 		if strings.Contains(body, bad) {
 			t.Errorf("graphs page hard-codes %q", bad)
 		}
@@ -819,6 +827,38 @@ const assert = require('assert');
 const d = {ts_members: {sdb: {role: ''}, sdc: {role: 'spare'}}};
 assert.strictEqual(memberLabel(d, 'sdb', 'r'), 'sdb read (kernel stat)');
 assert.strictEqual(memberLabel(d, 'sdc', 'w'), 'sdc (spare) write (kernel stat)');
+console.log('OK');
+`)
+}
+
+func TestGraphsPageArrayLabelsNameSource(t *testing.T) {
+	runPageJS(t, []string{"hasDir", "arrayDatasets"}, `
+const assert = require('assert');
+const g = {xs: [1], array: {1: {r: 5, w: 6}}};
+const labels = arrayDatasets(g, false).map(x => x.label);
+assert.deepStrictEqual(labels, ['Array read (fio)', 'Array write (fio)']);
+console.log('OK');
+`)
+}
+
+// A loss note shown in the modal must not survive into the next one.
+func TestGraphsPageModalClearsWarn(t *testing.T) {
+	runPageJS(t, []string{"openModal", "lossNote", "addLossNote", "sourceLine"}, `
+const assert = require('assert');
+const els = {};
+const el = id => els[id] || (els[id] = {id, textContent: '', className: '', innerHTML: '',
+    appendChild() {}, classList: {add() {}, remove() {}}});
+const wrap = {replaceChild() {}};
+const document = {getElementById: el, querySelector: () => wrap,
+    createElement: () => ({}), createTextNode: () => ({})};
+let modalChart = null;
+const membersText = () => '', settingTag = () => '', RPV = {}, mdHeader = () => null;
+const makeChart = (c, d, m, lo, hi, warnEl) => ({destroy() {}});
+const lossy = {disk: 'sda', io_trace: {lost: 4}};
+openModal(lossy, {key: 'lat', label: 'Latency', source: 'fio'}, 0, 1, 'normal');
+assert.ok(el('modal-ts-warn').textContent.includes('4 trace events lost'));
+openModal({disk: 'sda'}, {key: 'bw', label: 'BW', source: 'fio'}, 0, 1, 'normal');
+assert.strictEqual(el('modal-ts-warn').textContent, '');
 console.log('OK');
 `)
 }
