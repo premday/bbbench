@@ -374,7 +374,7 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 		"const writePts = (ts || []).filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w}));",
 		"label: 'Read (fio)',  data: readPts,",
 		"label: 'Write (fio)', data: writePts,",
-		"if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(",
+		"if (memberMetric(d, metric)) return makeMembersChart(",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("graphs page lacks %q", want)
@@ -388,13 +388,13 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 }
 
 // The per-phase graph mode: stacked (members) is the default, normal draws the
-// plain series, and the choice is kept per metric and phase.
+// members as plain lines, and the choice is kept per metric and phase.
 func TestGraphsPageGraphMode(t *testing.T) {
 	body := graphsPageBody(t)
 	for _, want := range []string{
 		"const GRAPH_MODES = [['normal', 'Normal'], ['stacked', 'Stacked']];",
-		"if (phaseData.some(d => memberMetric(d, metric))) phaseHdr.appendChild(toggle);",
-		"if (mode !== 'normal' && memberMetric(d, metric)) {",
+		"if (metric.key !== 'lat' && phaseData.some(d => memberMetric(d, metric))) phaseHdr.appendChild(toggle);",
+		"if (memberMetric(d, metric)) {",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("graphs page lacks %q", want)
@@ -1197,8 +1197,8 @@ assert.deepStrictEqual(cs.map(s => s.skey), ['member:sdb', 'member:sdc', 'member
 assert.deepStrictEqual(cs.map(s => s.label), ['sdb (data) (kernel stat)', 'sdc (data) (kernel stat)',
     'sdd (spare) (kernel stat)', 'Array read (fio)', 'Array write (fio)']);
 assert.ok(cs.every(s => typeof s.color === 'string' && s.color.startsWith('rgba(')));
-// Normal mode of the array: its fio lines only.
-assert.deepStrictEqual(keys(chartDatasets(a, IOPS, 'normal')), ['fio.r', 'fio.w']);
+// Normal mode of the array: every member and the array, unstacked.
+assert.deepStrictEqual([...new Set(keys(chartDatasets(a, IOPS, 'normal')))], ['member:sdb', 'member:sdc', 'member:sdd', 'fio.r', 'fio.w']);
 // Bars (no series) and Flush.
 const bars = chartDatasets({}, metric('bw', 'ts_bw', d => 5, d => 6), 'normal');
 assert.strictEqual(bars.bars, true);
@@ -1433,4 +1433,80 @@ assert.ok(t.startsWith('Measured by fio\nDashed ftrace lines, kernel tracepoints
 assert.strictEqual(srcBadge(iops, [nv]).title, 'Measured by fio');
 console.log('OK');
 `)
+}
+
+// Normal mode of an array phase: every member and the array are drawn, as
+// plain unfilled lines at their own values; the extent is the largest single
+// value, not a sum, and hidden series leave it.
+func TestGraphsPageNormalModeDrawsMembersAndArray(t *testing.T) {
+	node := requireNode(t)
+	body := graphsPageBody(t)
+	var js strings.Builder
+	for _, f := range []string{"rampOf", "windowOf", "fioShift", "memberNames", "memberStep", "memberKey",
+		"memberGrid", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets",
+		"iolatKind", "iolatPoints", "ftraceDatasets", "memberColors", "memberMetric", "memberLatencyDatasets", "ftraceOnGrid",
+		"isShown", "setShown", "chartDatasets", "phaseExtent"} {
+		js.WriteString(jsFunction(t, body, f))
+		js.WriteString("\n")
+	}
+	js.WriteString(`
+const assert = require('assert');
+const HIDDEN = {}, AXIS_HEADROOM = 1.15, MEMBER_PALETTE = [[1,2,3],[4,5,6]];
+const pts = (v, w) => [1, 2, 3].map(t => ({t, r: v, w: w}));
+const d = { ramp_sec: 0, log_avg_msec: 1000,
+    ts_iops: pts(500, 100),
+    ts_members: { sdb: {iops: pts(300, 40), lat: pts(2, 3)}, sdc: {iops: pts(200, 60), lat: pts(4, 5)} } };
+const IOPS = {key: 'iops', tsKey: 'ts_iops'}, LAT = {key: 'lat', tsKey: 'ts_lat'};
+const labels = cd => cd.datasets.map(x => x.label);
+let cd = chartDatasets(d, IOPS, 'normal');
+assert.strictEqual(cd.stacked, false);
+assert.ok(!cd.bars);
+assert.strictEqual(cd.datasets.filter(x => x.member === 'sdb').length, 2);
+assert.strictEqual(cd.datasets.filter(x => x.member === 'sdc').length, 2);
+assert.deepStrictEqual(cd.datasets.filter(x => x.array).map(x => x.label), ['Array read (fio)', 'Array write (fio)']);
+cd.datasets.forEach(x => { assert.ok(!x.stack, x.label + ' stacked'); assert.ok(!x.fill, x.label + ' filled'); });
+// Each member at its own value, writes mirrored; zeros kept.
+assert.deepStrictEqual(cd.datasets.find(x => x.member === "sdb" && x.dir === "r").data.filter(p => p.y !== null).map(p => p.y), [300, 300, 300]);
+assert.deepStrictEqual(cd.datasets.find(x => x.member === "sdc" && x.dir === "w").data.filter(p => p.y !== null).map(p => p.y), [-60, -60, -60]);
+// Same series keys and colours as Stacked.
+const st = chartDatasets(d, IOPS, 'stacked');
+assert.deepStrictEqual(cd.datasets.map(x => x.skey), st.datasets.map(x => x.skey));
+assert.deepStrictEqual(cd.datasets.map(x => x.borderColor), st.datasets.map(x => x.borderColor));
+assert.strictEqual(st.stacked, true);
+// Extent: the largest single value (500 array), not 500 = 300 + 200 sum.
+let e = phaseExtent([d], IOPS, 'normal');
+assert.strictEqual(e.yHigh, 500 * AXIS_HEADROOM);
+assert.strictEqual(e.yLow, -100 * AXIS_HEADROOM);
+// Hidden array lines leave the extent: members alone, max 300 (not 500).
+setShown('iops', 'fio.r', false); setShown('iops', 'fio.w', false);
+e = phaseExtent([d], IOPS, 'normal');
+assert.strictEqual(e.yHigh, 300 * AXIS_HEADROOM);
+assert.strictEqual(e.yLow, -60 * AXIS_HEADROOM);
+// A hidden member is not built; the mode switch keeps the state.
+setShown('iops', 'member:sdb', false);
+assert.ok(!chartDatasets(d, IOPS, 'normal').datasets.some(x => x.member === 'sdb'));
+assert.strictEqual(phaseExtent([d], IOPS, 'normal').yHigh, 200 * AXIS_HEADROOM);
+assert.ok(!chartDatasets(d, IOPS, 'stacked').datasets.some(x => x.member === 'sdb'));
+// Latency: Normal and Stacked are the same lines, never stacked.
+setShown('iops', 'member:sdb', true);
+const ln = chartDatasets(d, LAT, 'normal'), ls = chartDatasets(d, LAT, 'stacked');
+assert.strictEqual(ln.stacked, false);
+assert.deepStrictEqual(ln.datasets.map(x => x.skey), ls.datasets.map(x => x.skey));
+console.log('OK');
+`)
+	cmd := exec.Command(node)
+	cmd.Stdin = strings.NewReader(js.String())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// The members chart builds the tooltip's Stack total lines only when stacked.
+func TestGraphsPageNormalModeNoStackTotals(t *testing.T) {
+	body := graphsPageBody(t)
+	mc := jsFunction(t, body, "makeMembersChart")
+	if !strings.Contains(mc, "const totals = stacked ? g.totals : {};") {
+		t.Errorf("Stack total lines are not limited to stacked mode:\n%s", mc)
+	}
 }

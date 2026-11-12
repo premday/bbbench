@@ -1004,9 +1004,9 @@ __NAVBAR_HTML__
 
 
     // The graph of a phase: GRAPH_MODES lists the choices (more can be
-    // added); the choice is kept per metric and phase. 'normal' draws the
-    // plain series of each result (an array's own fio numbers), 'stacked' adds
-    // the per-member breakdown to arrays (the default; a drive has none).
+    // added); the choice is kept per metric and phase. 'normal' draws
+    // every member and the array as plain lines, 'stacked' stacks the members
+    // of IOPS and bandwidth (the default; a drive has no members, so no toggle).
     const GRAPH_MODES = [['normal', 'Normal'], ['stacked', 'Stacked']];
     const graphModeOf = {};
     function graphMode(metric, pname) { return graphModeOf[metric.key + ':' + pname] || 'stacked'; }
@@ -1233,7 +1233,8 @@ __NAVBAR_HTML__
     }
     // memberLatencyDatasets: one line per shown member and direction. A
     // window without I/O has no latency (0): no point.
-    function memberLatencyDatasets(d, g, colors) {
+    // keepZero (IOPS and bandwidth in Normal): an idle window is a real 0.
+    function memberLatencyDatasets(d, g, colors, keepZero) {
         const out = [], names = g.names;
         ['r', 'w'].forEach(dir => names.forEach(n => {
             const pts = g.members[n];
@@ -1241,7 +1242,7 @@ __NAVBAR_HTML__
             const c = colors[n];
             out.push({
                 label: memberLabel(d, n, dir), member: n, skey: 'member:' + n, dir,
-                data: g.xs.map(x => ({x, y: pts[x] && pts[x][dir] > 0 ? (dir === 'r' ? 1 : -1) * pts[x][dir] : null})),
+                data: g.xs.map(x => ({x, y: pts[x] && (keepZero || pts[x][dir] > 0) ? (dir === 'r' ? 1 : -1) * (pts[x][dir] || 0) : null})),
                 fill: false, borderColor: rgba(c, 0.9), backgroundColor: rgba(c, 0.9),
                 borderDash: dir === 'w' ? [4, 2] : [],
                 tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.2, spanGaps: true,
@@ -1557,7 +1558,7 @@ __NAVBAR_HTML__
         const ts = d[metric.tsKey];
         if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
         if (iolatKind(metric)) return makeIOLatChart(canvas, d, metric, yLow, yHigh);
-        if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
+        if (memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
         // One unit for every card of the phase: chosen from the phase's scale.
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
         const cd = chartDatasets(d, metric, mode);
@@ -1689,10 +1690,12 @@ __NAVBAR_HTML__
             return {stacked: false, bars: true,
                 datasets: [bar('flush', 'Flush (ftrace)', 'w', metric.sumW(d), 'rgba(124,58,237,0.75)')].filter(shown)};
         }
-        if (mode !== 'normal' && memberMetric(d, metric)) {
-            const stacked = metric.key !== 'lat', colors = memberColors(memberNames(d));
+        if (memberMetric(d, metric)) {
+            // Normal draws every member and the array as plain lines; only
+            // Stacked stacks (latency is never stacked, see memberLatencyDatasets).
+            const stacked = mode !== 'normal' && metric.key !== 'lat', colors = memberColors(memberNames(d));
             const g = memberGrid(d, metric, memberNames(d).filter(n => all || isShown(metric.key, 'member:' + n)));
-            const members = stacked ? stackedMemberDatasets(d, g, colors) : memberLatencyDatasets(d, g, colors);
+            const members = stacked ? stackedMemberDatasets(d, g, colors) : memberLatencyDatasets(d, g, colors, metric.key !== 'lat');
             return {stacked, bars: false, grid: g,
                 datasets: members.concat(arrayDatasets(g, stacked).filter(shown), ftraceOnGrid(d, metric, g.xs).filter(shown))};
         }
@@ -2043,7 +2046,7 @@ __NAVBAR_HTML__
                     b.addEventListener('click', e => { e.stopPropagation(); graphModeOf[metric.key + ':' + pname] = key; fill(); });
                     toggle.appendChild(b);
                 });
-                if (phaseData.some(d => memberMetric(d, metric))) phaseHdr.appendChild(toggle);
+                if (metric.key !== 'lat' && phaseData.some(d => memberMetric(d, metric))) phaseHdr.appendChild(toggle);
                 (REFILL[metric.key] || (REFILL[metric.key] = [])).push(fill);
                 fill();
             });
