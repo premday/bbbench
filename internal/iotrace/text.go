@@ -35,11 +35,7 @@ func SourceLine(s *Summary) string {
 		case len(d.Stats) == 0:
 			b.WriteString("no request events seen")
 		default:
-			pairing := "exact"
-			if !d.Exact {
-				pairing = "approximate"
-			}
-			b.WriteString(strings.Join(d.Events, ", ") + " · pairing: " + pairing + " (" + d.Pair + ")")
+			b.WriteString(strings.Join(d.Events, ", ") + " · pairing: exact (" + d.Pair + ")")
 		}
 	}
 	var unpaired int64
@@ -49,7 +45,11 @@ func SourceLine(s *Summary) string {
 	lost := s.Overrun + unpaired
 	b.WriteString(" · lost events: " + strconv.FormatInt(lost, 10))
 	if lost > 0 {
-		b.WriteString(" (ring buffer " + strconv.FormatInt(s.Overrun, 10) + ", unpaired " + strconv.FormatInt(unpaired, 10) + ")")
+		b.WriteString(" (ring buffer " + strconv.FormatInt(s.Overrun, 10) + ", unpaired " + strconv.FormatInt(unpaired, 10))
+		if s.StartMissing {
+			b.WriteString("; start marker not seen")
+		}
+		b.WriteString(")")
 	}
 	return b.String()
 }

@@ -181,7 +181,8 @@ type device struct {
 	name       string
 	source     string // SourceNVMe or SourceBlock
 	maj, min   int
-	blockLayer bool // block_rq_insert is traced: block-layer latency
+	blockLayer bool     // block_rq_insert is traced: block-layer latency
+	ctrls      []string // nvme controllers of a namespace ("nvme1"), from sysfs
 	unpaired   int64
 }
 
@@ -197,8 +198,10 @@ type blockKey struct {
 
 // blockEntry is a request pending at (dev, sector): inserted and/or issued.
 // insertNs 0 = issued directly, never queued; issueNs 0 = not issued yet.
+// nr and dir tell a merge which queued request it absorbed.
 type blockEntry struct {
 	insertNs, issueNs int64
+	nr                uint32
 	dir               Dir
 }
 
@@ -246,9 +249,8 @@ func (c *collector) addDevice(d *device) {
 	if d.source == SourceNVMe {
 		c.byDisk[d.name] = d
 		// Without a disk= field the namespace is known only when its
-		// controller has a single traced namespace ("nvme0" for "nvme0n1").
-		if k := strings.LastIndexByte(d.name, 'n'); k > 0 {
-			ctrl := d.name[:k]
+		// controller (from sysfs) has a single traced namespace.
+		for _, ctrl := range d.ctrls {
 			if _, seen := c.byCtrl[ctrl]; seen {
 				c.byCtrl[ctrl] = nil
 			} else {
@@ -295,7 +297,7 @@ func (c *collector) blockQueued(ev flushtrace.Event) {
 		if !d.blockLayer {
 			return
 		}
-		c.block[key] = append(q, blockEntry{insertNs: ev.TimeNs, dir: dir})
+		c.block[key] = append(q, blockEntry{insertNs: ev.TimeNs, nr: r.Nr, dir: dir})
 	case "block_rq_issue":
 		for i := range q {
 			if q[i].issueNs == 0 {
@@ -303,16 +305,24 @@ func (c *collector) blockQueued(ev flushtrace.Event) {
 				return
 			}
 		}
-		c.block[key] = append(q, blockEntry{issueNs: ev.TimeNs, dir: dir})
+		c.block[key] = append(q, blockEntry{issueNs: ev.TimeNs, nr: r.Nr, dir: dir})
 	case "block_rq_merge":
-		// The absorbed request: it is never issued nor completed on its own.
-		if !d.blockLayer || len(q) == 0 {
+		// The absorbed request is never issued nor completed on its own:
+		// drop the newest queued, not yet issued entry of the same size and
+		// direction. A request merged at insert time (mq-deadline, bfq) has
+		// no entry of its own; nothing matches and the merge is ignored.
+		if !d.blockLayer {
 			return
 		}
-		if len(q) == 1 {
-			delete(c.block, key)
-		} else {
-			c.block[key] = q[:len(q)-1]
+		for i := len(q) - 1; i >= 0; i-- {
+			if q[i].issueNs == 0 && q[i].nr == r.Nr && q[i].dir == dir {
+				if len(q) == 1 {
+					delete(c.block, key)
+				} else {
+					c.block[key] = append(q[:i], q[i+1:]...)
+				}
+				return
+			}
 		}
 	}
 }
@@ -376,7 +386,7 @@ func (c *collector) nvmeSetup(ev flushtrace.Event) {
 	default:
 		return
 	}
-	d := c.byDisk[disk]
+	d := c.byDisk[headName(disk)]
 	if disk == "" {
 		d = c.byCtrl[ctrl]
 	}
@@ -409,6 +419,32 @@ func (c *collector) nvmeComplete(ev flushtrace.Event, startNs int64) {
 		return
 	}
 	c.agg.add(e.dev.name, KindDevice, e.dir, ev.TimeNs-startNs, ev.TimeNs-e.issueNs)
+}
+
+// headName maps a native multipath path device ("nvme0c1n1": subsystem 0,
+// controller 1, namespace 1) to its head ("nvme0n1"); other names are
+// returned as they are.
+func headName(disk string) string {
+	if !strings.HasPrefix(disk, "nvme") {
+		return disk
+	}
+	i := len("nvme")
+	j := skipDigits(disk, i)
+	if j == i || j >= len(disk) || disk[j] != 'c' {
+		return disk
+	}
+	k := skipDigits(disk, j+1)
+	if k == j+1 || k >= len(disk) || disk[k] != 'n' || skipDigits(disk, k+1) != len(disk) || k+1 == len(disk) {
+		return disk
+	}
+	return disk[:j] + disk[k:]
+}
+
+func skipDigits(s string, i int) int {
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	return i
 }
 
 // finish counts the requests still pending as unpaired and returns the

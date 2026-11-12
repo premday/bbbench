@@ -9,7 +9,28 @@
 //
 // Pairing: NVMe commands by (controller, queue, cmdid), exact; block requests
 // by (dev, sector), first-in first-out per sector, with block_rq_merge
-// dropping the absorbed request. Requeues are not handled.
+// dropping the absorbed request (the newest queued, not yet issued entry of
+// the same size and direction; a request merged at insert time has none and
+// its merge is ignored). NVMe native multipath path devices (nvme0c1n1) count
+// for their head (nvme0n1); the controllers come from sysfs.
+//
+// Unpaired events: for block devices, completions with no pending request
+// plus requests still pending at Stop; for NVMe, commands still pending at
+// Stop plus a pending command whose cmdid is reused by a new setup (its
+// completion was lost). An NVMe completion without a pending command is not
+// counted: completions cannot be filtered by opcode, so those of Flushes,
+// discards and admin commands, whose setups the kernel filter drops, look the
+// same.
+//
+// Known limitations, all of the block path:
+//   - requeues (block_rq_requeue) are not handled: a requeued request is
+//     issued twice and its first issue time is kept;
+//   - partial completions (a request completed in several block_rq_complete
+//     events with an advancing sector) leave the later parts unpaired;
+//   - a bio front-merged into an already inserted request moves its start
+//     sector: the insert entry ends up unpaired and the issue starts a new
+//     entry with insertNs = 0, so that request's block-layer latency is
+//     understated (counted from its issue).
 //
 // It runs in a private tracefs instance (flushtrace.Instance): nothing on a
 // drive or in the global trace settings changes.
@@ -18,6 +39,9 @@ package iotrace
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -41,25 +65,31 @@ type Options struct {
 
 // DeviceSummary is what was traced on one device and its phase statistics.
 type DeviceSummary struct {
-	Name       string                 `json:"name"`
-	Source     string                 `json:"source,omitempty"` // "nvme" | "block"; "" = not traced
-	Events     []string               `json:"events,omitempty"` // e.g. "nvme_setup_cmd -> nvme_complete_rq"
-	Pair       string                 `json:"pair,omitempty"`   // "ctrl,qid,cmdid" | "dev,sector"
-	Exact      bool                   `json:"exact"`
-	BlockLayer bool                   `json:"block_layer"`
-	Unpaired   int64                  `json:"unpaired,omitempty"`
-	Stats      map[Kind]map[Dir]Stats `json:"stats,omitempty"`
-	Note       string                 `json:"note,omitempty"` // why not traced
+	Name       string   `json:"name"`
+	Source     string   `json:"source,omitempty"` // "nvme" | "block"; "" = not traced
+	Events     []string `json:"events,omitempty"` // e.g. "nvme_setup_cmd -> nvme_complete_rq"
+	Pair       string   `json:"pair,omitempty"`   // "ctrl,qid,cmdid" | "dev,sector"
+	Exact      bool     `json:"exact"`
+	BlockLayer bool     `json:"block_layer"`
+	// Unpaired is the number of events that found no partner: see the
+	// package doc (block: completions without a request and requests pending
+	// at Stop; NVMe: commands pending at Stop or whose cmdid was reused).
+	Unpaired int64                  `json:"unpaired,omitempty"`
+	Stats    map[Kind]map[Dir]Stats `json:"stats,omitempty"`
+	Note     string                 `json:"note,omitempty"` // why not traced
 }
 
 // Summary is the I/O latency of a phase: the target first, then its members.
 type Summary struct {
-	AvgMsec  int             `json:"avg_msec,omitempty"`
-	OffsetMs int             `json:"offset_ms,omitempty"`
-	Overrun  int64           `json:"overrun,omitempty"` // events the kernel dropped
-	Devices  []DeviceSummary `json:"devices"`
-	Lost     int64           `json:"lost"` // Overrun + every Unpaired
-	Text     string          `json:"text"` // SourceLine
+	AvgMsec  int   `json:"avg_msec,omitempty"`
+	OffsetMs int   `json:"offset_ms,omitempty"`
+	Overrun  int64 `json:"overrun,omitempty"` // events the kernel dropped
+	// StartMissing: the start marker was never read, so no completion was
+	// counted (the events cannot be placed on the phase's clock).
+	StartMissing bool            `json:"start_missing,omitempty"`
+	Devices      []DeviceSummary `json:"devices"`
+	Lost         int64           `json:"lost"` // Overrun + every Unpaired
+	Text         string          `json:"text"` // SourceLine
 }
 
 // Fill sets Lost and Text from the rest.
@@ -114,7 +144,7 @@ func Start(devices []string, opts Options) (*Session, error) {
 	col := newCollector(opts.AvgMsec, opts.OffsetMs)
 	var reasons []string
 	var anyNVMe, anyBlock bool
-	var devFilter []string
+	var devFilter, ctrls []string
 	for _, name := range devices {
 		ds := DeviceSummary{Name: name}
 		maj, min, err := flushtrace.DevNumbers(opts.SysBlock, name)
@@ -143,6 +173,14 @@ func Start(devices []string, opts Options) (*Session, error) {
 			continue
 		}
 		d := &device{name: name, source: ds.Source, maj: maj, min: min, blockLayer: ds.BlockLayer}
+		if d.source == SourceNVMe {
+			d.ctrls = nvmeControllers(opts.SysBlock, name)
+			for _, c := range d.ctrls {
+				if !slices.Contains(ctrls, c) {
+					ctrls = append(ctrls, c)
+				}
+			}
+		}
 		col.addDevice(d)
 		s.traced[name] = d
 		anyNVMe = anyNVMe || d.source == SourceNVMe
@@ -161,7 +199,17 @@ func Start(devices []string, opts Options) (*Session, error) {
 	if anyNVMe {
 		enable = append(enable, "events/"+evNVMeSetup, "events/"+evNVMeDone)
 		// Reads and writes on I/O queues; completions cannot be filtered by opcode.
-		filters["events/"+evNVMeSetup] = "(opcode == 1 || opcode == 2) && qid > 0"
+		setup, done := "(opcode == 1 || opcode == 2) && qid > 0", "qid > 0"
+		if len(ctrls) > 0 {
+			ids := make([]string, len(ctrls))
+			for i, c := range ctrls {
+				ids[i] = "ctrl_id == " + strings.TrimPrefix(c, "nvme")
+			}
+			f := " && (" + strings.Join(ids, " || ") + ")"
+			setup, done = setup+f, done+f
+		}
+		filters["events/"+evNVMeSetup] = setup
+		filters["events/"+evNVMeDone] = done
 	}
 	if anyBlock {
 		blk := []string{evBlockIssue, evBlockDone}
@@ -215,6 +263,41 @@ func (s *Session) Stop() (Result, error) {
 		res.Summary = sum
 	})
 	res.Summary.Overrun = s.inst.Overrun()
+	res.Summary.StartMissing = s.inst.StartNs() == 0
 	res.Summary.Fill()
 	return res, err
+}
+
+// nvmeControllers returns the controllers ("nvme1") of an NVMe namespace,
+// from sysfs: <sysBlock>/<name>/device links to the controller, or, for a
+// native multipath head, to the subsystem, and then the path devices under
+// <sysBlock>/<name>/multipath/ (nvme<subsys>c<ctrl>n<ns>) name them. Empty
+// when sysfs does not say.
+func nvmeControllers(sysBlock, name string) []string {
+	if sysBlock == "" {
+		sysBlock = "/sys/block"
+	}
+	if link, err := os.Readlink(filepath.Join(sysBlock, name, "device")); err == nil {
+		if base := filepath.Base(link); isController(base) {
+			return []string{base}
+		}
+	}
+	paths, _ := os.ReadDir(filepath.Join(sysBlock, name, "multipath"))
+	var out []string
+	for _, p := range paths {
+		n := p.Name()
+		if head := headName(n); head == n || !strings.HasPrefix(n, "nvme") {
+			continue
+		}
+		// nvme<s>c<c>n<n>: the controller is the number after 'c'.
+		i := skipDigits(n, len("nvme"))
+		j := skipDigits(n, i+1)
+		out = append(out, "nvme"+n[i+1:j])
+	}
+	return out
+}
+
+// isController reports whether name is "nvme<N>".
+func isController(name string) bool {
+	return strings.HasPrefix(name, "nvme") && len(name) > len("nvme") && skipDigits(name, len("nvme")) == len(name)
 }

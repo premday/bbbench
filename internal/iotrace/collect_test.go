@@ -157,3 +157,14 @@ func BenchmarkFeed(b *testing.B) {
 
 // secs formats a trace-clock time in ns as the kernel prints it.
 func secs(ns int64) string { return fmt.Sprintf("%d.%06d", ns/1e9, ns%1e9/1e3) }
+
+func TestHeadName(t *testing.T) {
+	for in, want := range map[string]string{
+		"nvme0c1n1": "nvme0n1", "nvme12c3n45": "nvme12n45", "nvme0n1": "nvme0n1", "sdb": "sdb", "": "",
+		"nvme0c1": "nvme0c1", "nvme0cn1": "nvme0cn1", "nvme0c1n": "nvme0c1n", "nvme0c1n1p2": "nvme0c1n1p2",
+	} {
+		if got := headName(in); got != want {
+			t.Errorf("headName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

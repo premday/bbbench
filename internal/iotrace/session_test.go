@@ -87,19 +87,37 @@ func blk(ns int64, ev, dev, rwbs string, sector uint64, nr uint32) string {
 }
 
 func nvmeSetup(ns int64, disk string, qid, cmdid int, cmd string) string {
-	d := ""
-	if disk != "" {
-		d = "disk=" + disk + ", "
-	}
-	return fmt.Sprintf("fio-1 [001] ..... %s: nvme_setup_cmd: nvme0: %sqid=%d, cmdid=%d, nsid=1, flags=0x0, meta=0x0, cmd=(%s)", secs(ns), d, qid, cmdid, cmd)
+	return nvmeSetupOn(ns, "nvme0", disk, qid, cmdid, cmd)
 }
 
 func nvmeDone(ns int64, disk string, qid, cmdid int) string {
+	return nvmeDoneOn(ns, "nvme0", disk, qid, cmdid)
+}
+
+func nvmeSetupOn(ns int64, ctrl, disk string, qid, cmdid int, cmd string) string {
 	d := ""
 	if disk != "" {
 		d = "disk=" + disk + ", "
 	}
-	return fmt.Sprintf("<idle>-0 [001] d.h1. %s: nvme_complete_rq: nvme0: %sqid=%d, cmdid=%d, res=0x0, retries=0, flags=0x0, status=0x0", secs(ns), d, qid, cmdid)
+	return fmt.Sprintf("fio-1 [001] ..... %s: nvme_setup_cmd: %s: %sqid=%d, cmdid=%d, nsid=1, flags=0x0, meta=0x0, cmd=(%s)", secs(ns), ctrl, d, qid, cmdid, cmd)
+}
+
+func nvmeDoneOn(ns int64, ctrl, disk string, qid, cmdid int) string {
+	d := ""
+	if disk != "" {
+		d = "disk=" + disk + ", "
+	}
+	return fmt.Sprintf("<idle>-0 [001] d.h1. %s: nvme_complete_rq: %s: %sqid=%d, cmdid=%d, res=0x0, retries=0, flags=0x0, status=0x0", secs(ns), ctrl, d, qid, cmdid)
+}
+
+// nvmeLink points <sys>/<ns>/device at a controller (or a subsystem for a
+// multipath head), as the kernel does, and adds the head's path devices.
+func nvmeLink(t *testing.T, sys, ns, target string, paths ...string) {
+	t.Helper()
+	must(t, os.Symlink("../../"+target, filepath.Join(sys, ns, "device")))
+	for _, p := range paths {
+		must(t, os.MkdirAll(filepath.Join(sys, ns, "multipath", p), 0o755))
+	}
 }
 
 func run(t *testing.T, devices []string, events []string, sys string, opts Options, lines ...string) (Result, string) {
@@ -530,16 +548,113 @@ func TestSession_EventsBeforeStartMarkerIgnored(t *testing.T) {
 }
 
 func TestSession_NVMeWithoutDiskField(t *testing.T) {
+	// The namespace number says nothing about the controller: nvme0n1 sits on
+	// nvme1 here, as sysfs says.
 	sys := fakeSys(t, map[string]string{"nvme0n1": "259:0"})
+	nvmeLink(t, sys, "nvme0n1", "nvme1")
 	res, _ := run(t, []string{"nvme0n1"}, nvmeEvents, sys, Options{},
 		marker(start, "bbbench-start"),
-		nvmeSetup(10*sec, "", 1, 3, "nvme_cmd_write slba=0, len=7"),
-		nvmeDone(10*sec+40*usec, "", 1, 3),
+		nvmeSetupOn(10*sec, "nvme1", "", 1, 3, "nvme_cmd_write slba=0, len=7"),
+		nvmeDoneOn(10*sec+40*usec, "nvme1", "", 1, 3),
+		nvmeSetupOn(11*sec, "nvme0", "", 1, 4, "nvme_cmd_write slba=0, len=7"), // another controller
+		nvmeDoneOn(11*sec+40*usec, "nvme0", "", 1, 4),
 	)
 	d := dev(t, res.Summary, "nvme0n1")
 	wantStat(t, d, KindDevice, DirWrite, 1, 40_000, 40_000, 40_000)
 	if d.BlockLayer || len(d.Events) != 1 {
 		t.Errorf("device = %+v", d)
+	}
+}
+
+func TestSession_NVMeControllerFilter(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"nvme0n1": "259:0", "nvme2n1": "259:4"})
+	nvmeLink(t, sys, "nvme0n1", "nvme1")
+	nvmeLink(t, sys, "nvme2n1", "nvme2")
+	_, inst := run(t, []string{"nvme0n1", "nvme2n1"}, nvmeEvents, sys, Options{}, marker(start, "bbbench-start"))
+	if f := readFile(t, filepath.Join(inst, "events/nvme/nvme_setup_cmd/filter")); f != "(opcode == 1 || opcode == 2) && qid > 0 && (ctrl_id == 1 || ctrl_id == 2)" {
+		t.Errorf("setup filter = %q", f)
+	}
+	if f := readFile(t, filepath.Join(inst, "events/nvme/nvme_complete_rq/filter")); f != "qid > 0 && (ctrl_id == 1 || ctrl_id == 2)" {
+		t.Errorf("complete filter = %q", f)
+	}
+}
+
+func TestSession_NVMeMultipath(t *testing.T) {
+	// A native multipath head: its I/O runs on the path devices nvme0c0n1 and
+	// nvme0c1n1 (controllers nvme0 and nvme1), which the events name.
+	sys := fakeSys(t, map[string]string{"nvme0n1": "259:0"})
+	nvmeLink(t, sys, "nvme0n1", "nvme-subsys0", "nvme0c0n1", "nvme0c1n1")
+	res, inst := run(t, []string{"nvme0n1"}, nvmeEvents, sys, Options{},
+		marker(start, "bbbench-start"),
+		nvmeSetupOn(10*sec, "nvme1", "nvme0c1n1", 1, 3, "nvme_cmd_read slba=0, len=7"),
+		nvmeDoneOn(10*sec+70*usec, "nvme1", "nvme0c1n1", 1, 3),
+		nvmeSetupOn(10*sec, "nvme0", "nvme0c0n1", 1, 3, "nvme_cmd_read slba=0, len=7"),
+		nvmeDoneOn(10*sec+30*usec, "nvme0", "nvme0c0n1", 1, 3),
+	)
+	wantStat(t, dev(t, res.Summary, "nvme0n1"), KindDevice, DirRead, 2, 50_000, 30_000, 70_000)
+	if f := readFile(t, filepath.Join(inst, "events/nvme/nvme_complete_rq/filter")); f != "qid > 0 && (ctrl_id == 0 || ctrl_id == 1)" {
+		t.Errorf("complete filter = %q", f)
+	}
+}
+
+func TestSession_NVMeOverwrittenCommandIsUnpaired(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"nvme0n1": "259:0"})
+	res, _ := run(t, []string{"nvme0n1"}, nvmeEvents, sys, Options{},
+		marker(start, "bbbench-start"),
+		nvmeSetup(10*sec, "nvme0n1", 1, 5, "nvme_cmd_read slba=0, len=7"), // its completion was lost
+		nvmeSetup(10*sec+10*usec, "nvme0n1", 1, 5, "nvme_cmd_read slba=8, len=7"),
+		nvmeDone(10*sec+50*usec, "nvme0n1", 1, 5),
+	)
+	d := dev(t, res.Summary, "nvme0n1")
+	if d.Unpaired != 1 || res.Summary.Lost != 1 {
+		t.Errorf("unpaired %d, lost %d", d.Unpaired, res.Summary.Lost)
+	}
+	wantStat(t, d, KindDevice, DirRead, 1, 40_000, 40_000, 40_000)
+}
+
+// A request merged at insert time (mq-deadline, bfq) has no block_rq_insert of
+// its own: its merge must not remove another pending request of that sector.
+func TestSession_MergeWithoutInsert(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"sdb": "8:16"}, "sdb")
+	t.Run("pending request inserted only", func(t *testing.T) {
+		res, _ := run(t, []string{"sdb"}, blockEvents, sys, Options{},
+			marker(start, "bbbench-start"),
+			blk(10*sec, "block_rq_insert", "8,16", "W", 64, 8),
+			blk(10*sec+10*usec, "block_rq_merge", "8,16", "W", 64, 16),
+			blk(10*sec+100*usec, "block_rq_issue", "8,16", "W", 64, 8),
+			blk(10*sec+600*usec, "block_rq_complete", "8,16", "W", 64, 8),
+		)
+		d := dev(t, res.Summary, "sdb")
+		if d.Unpaired != 0 {
+			t.Errorf("unpaired = %d", d.Unpaired)
+		}
+		wantStat(t, d, KindDevice, DirWrite, 1, 500_000, 500_000, 500_000)
+		wantStat(t, d, KindBlockLayer, DirWrite, 1, 600_000, 600_000, 600_000)
+	})
+	t.Run("pending request issued", func(t *testing.T) {
+		res, _ := run(t, []string{"sdb"}, blockEvents, sys, Options{},
+			marker(start, "bbbench-start"),
+			blk(10*sec, "block_rq_insert", "8,16", "W", 64, 8),
+			blk(10*sec+100*usec, "block_rq_issue", "8,16", "W", 64, 8),
+			blk(10*sec+200*usec, "block_rq_merge", "8,16", "W", 64, 8),
+			blk(10*sec+600*usec, "block_rq_complete", "8,16", "W", 64, 8),
+		)
+		d := dev(t, res.Summary, "sdb")
+		if d.Unpaired != 0 {
+			t.Errorf("unpaired = %d", d.Unpaired)
+		}
+		wantStat(t, d, KindDevice, DirWrite, 1, 500_000, 500_000, 500_000)
+		wantStat(t, d, KindBlockLayer, DirWrite, 1, 600_000, 600_000, 600_000)
+	})
+}
+
+func TestSession_StartMarkerMissing(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"sdb": "8:16"}, "sdb")
+	res, _ := run(t, []string{"sdb"}, blockEvents, sys, Options{},
+		blk(10*sec, "block_rq_insert", "8,16", "W", 0, 8),
+	)
+	if !res.Summary.StartMissing || !strings.HasSuffix(res.Summary.Text, "lost events: 1 (ring buffer 0, unpaired 1; start marker not seen)") {
+		t.Errorf("summary = %+v", res.Summary)
 	}
 }
 
@@ -590,6 +705,14 @@ func TestSourceLine(t *testing.T) {
 		if got := SourceLine(&c.s); got != c.want {
 			t.Errorf("got  %q\nwant %q", got, c.want)
 		}
+	}
+	missing := Summary{Overrun: 2, StartMissing: true, Devices: []DeviceSummary{md}}
+	if got, want := SourceLine(&missing), "ftrace: block_rq_issue -> block_rq_complete · no request events seen · lost events: 2 (ring buffer 2, unpaired 0; start marker not seen)"; got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	missing.Overrun = 0
+	if got := SourceLine(&missing); strings.Contains(got, "start marker") {
+		t.Errorf("note without loss: %q", got)
 	}
 	s := Summary{Overrun: 10, Devices: []DeviceSummary{lossy}}
 	s.Fill()
