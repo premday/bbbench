@@ -95,32 +95,42 @@ func (h *Hist) Count() int64 { return h.count }
 // Reset forgets every latency.
 func (h *Hist) Reset() { *h = Hist{} }
 
-func (h *Hist) quantile(p float64) int64 {
+// rank is the 1-based rank of quantile p among the recorded latencies.
+func (h *Hist) rank(p float64) int64 {
 	rank := int64(p * float64(h.count))
 	if float64(rank) < p*float64(h.count) {
 		rank++
 	}
-	if rank < 1 {
-		rank = 1
+	return max(rank, 1)
+}
+
+// valueOf is the value reported for a quantile falling in bucket i.
+func (h *Hist) valueOf(i int) int64 {
+	v := upperEdge(i)
+	if i == numBuckets-1 {
+		v = h.max // the last bucket is open-ended
 	}
+	return min(max(v, h.min), h.max)
+}
+
+// quantiles returns the quantiles p and q (p <= q) in one pass over the
+// buckets.
+func (h *Hist) quantiles(p, q float64) (vp, vq int64) {
+	rp, rq := h.rank(p), h.rank(q)
+	vp, vq = h.max, h.max
 	var cum int64
+	found := false
 	for i, c := range h.buckets {
 		cum += c
-		if cum >= rank {
-			v := upperEdge(i)
-			if i == numBuckets-1 {
-				v = h.max // the last bucket is open-ended
-			}
-			if v < h.min {
-				v = h.min
-			}
-			if v > h.max {
-				v = h.max
-			}
-			return v
+		if !found && cum >= rp {
+			vp, found = h.valueOf(i), true
+		}
+		if cum >= rq {
+			vq = h.valueOf(i)
+			break
 		}
 	}
-	return h.max
+	return vp, vq
 }
 
 // Stats returns the summary; the zero Stats when empty.
@@ -128,12 +138,13 @@ func (h *Hist) Stats() Stats {
 	if h.count == 0 {
 		return Stats{}
 	}
+	p50, p99 := h.quantiles(0.5, 0.99)
 	return Stats{
 		Count:  h.count,
 		MeanNs: h.sum / float64(h.count),
 		MinNs:  h.min,
 		MaxNs:  h.max,
-		P50Ns:  h.quantile(0.5),
-		P99Ns:  h.quantile(0.99),
+		P50Ns:  p50,
+		P99Ns:  p99,
 	}
 }

@@ -1,6 +1,9 @@
 package iotrace
 
 import (
+	"cmp"
+	"slices"
+	"sort"
 	"strings"
 
 	"bbbench/internal/flushtrace"
@@ -220,6 +223,41 @@ type device struct {
 	blockLayer bool     // block_rq_insert is traced: block-layer latency
 	ctrls      []string // nvme controllers of a namespace ("nvme1"), from sysfs
 	unpaired   int64
+	// ser caches the device's aggregator series by kind and direction
+	// (kindIndex, dirIndex), so a completion resolves no map key.
+	ser [3][2]*series
+	// bioSpans are the pending bios of a bio-based node, sorted by start
+	// then end sector (the same bios as the collector's bio map), and
+	// bioMaxNr the longest bio queued on it: a split part's pending bio
+	// starts at most that far before it.
+	bioSpans []bioSpan
+	bioMaxNr uint64
+}
+
+func kindIndex(k Kind) int {
+	switch k {
+	case KindBlockLayer:
+		return 1
+	case KindBio:
+		return 2
+	}
+	return 0
+}
+
+func dirIndex(d Dir) int {
+	if d == DirWrite {
+		return 1
+	}
+	return 0
+}
+
+// add records a completion of the device in the aggregator.
+func (c *collector) add(d *device, k Kind, dir Dir, relNs, latNs int64) {
+	p := &d.ser[kindIndex(k)][dirIndex(dir)]
+	if *p == nil {
+		*p = c.agg.series(d.name, k, dir)
+	}
+	c.agg.addTo(*p, relNs, latNs)
 }
 
 // usesBlock reports whether the device's block_rq_* events are paired.
@@ -256,6 +294,43 @@ type bioEntry struct {
 	dir     Dir
 }
 
+// bioSpan is the sectors [start, end) of a pending bio.
+type bioSpan struct{ start, end uint64 }
+
+func compareSpan(a, b bioSpan) int {
+	return cmp.Or(cmp.Compare(a.start, b.start), cmp.Compare(a.end, b.end))
+}
+
+func (d *device) addSpan(sp bioSpan) {
+	i, _ := slices.BinarySearchFunc(d.bioSpans, sp, compareSpan)
+	d.bioSpans = slices.Insert(d.bioSpans, i, sp)
+	d.bioMaxNr = max(d.bioMaxNr, sp.end-sp.start)
+}
+
+func (d *device) removeSpan(sp bioSpan) {
+	if i, ok := slices.BinarySearchFunc(d.bioSpans, sp, compareSpan); ok {
+		d.bioSpans = slices.Delete(d.bioSpans, i, i+1)
+	}
+}
+
+// insideSpan reports whether a pending bio of the node covers the sectors
+// [start, end).
+func (d *device) insideSpan(start, end uint64) bool {
+	// spans[:i] start at or before start; walk them back while they can
+	// still reach end.
+	i := sort.Search(len(d.bioSpans), func(j int) bool { return d.bioSpans[j].start > start })
+	for j := i - 1; j >= 0; j-- {
+		sp := d.bioSpans[j]
+		if start-sp.start > d.bioMaxNr {
+			break // ends before start
+		}
+		if sp.end >= end {
+			return true
+		}
+	}
+	return false
+}
+
 type nvmeKey struct {
 	ctrl       string
 	qid, cmdid int
@@ -271,17 +346,20 @@ type nvmeEntry struct {
 // latencies. It is not safe for concurrent use: the Instance calls feed with
 // its mutex held, and Stop reads it through Locked.
 type collector struct {
-	agg      *aggregator
-	devs     []*device
-	byNum    map[devNum]*device
-	byDisk   map[string]*device // nvme namespaces by name
-	byCtrl   map[string]*device // nvme controller -> its only traced namespace (nil = ambiguous)
-	block    map[blockKey][]blockEntry
-	bioDevs  map[devNum]*device // bio-based nodes (SourceBio)
-	bio      map[bioKey][]bioEntry
-	nvme     map[nvmeKey]nvmeEntry
-	startNs  int64 // start marker of the counted completions (0 = none yet)
-	finished bool
+	agg     *aggregator
+	devs    []*device
+	byNum   map[devNum]*device
+	byDisk  map[string]*device // nvme namespaces by name
+	byCtrl  map[string]*device // nvme controller -> its only traced namespace (nil = ambiguous)
+	block   map[blockKey][]blockEntry
+	bioDevs map[devNum]*device // bio-based nodes (SourceBio)
+	bio     map[bioKey][]bioEntry
+	nvme    map[nvmeKey]nvmeEntry
+	// ctrlNames interns the controller names of the pending NVMe commands,
+	// so a pending entry does not keep its whole trace line alive.
+	ctrlNames map[string]string
+	startNs   int64 // start marker of the counted completions (0 = none yet)
+	finished  bool
 }
 
 func newCollector(windowMs, offsetMs int) *collector {
@@ -294,6 +372,8 @@ func newCollector(windowMs, offsetMs int) *collector {
 		bioDevs: map[devNum]*device{},
 		bio:     map[bioKey][]bioEntry{},
 		nvme:    map[nvmeKey]nvmeEntry{},
+
+		ctrlNames: map[string]string{},
 	}
 }
 
@@ -436,7 +516,7 @@ func (c *collector) blockComplete(ev flushtrace.Event, startNs int64) {
 	}
 	rel := ev.TimeNs - startNs
 	if d.source == SourceBlock && e.issueNs != 0 {
-		c.agg.add(d.name, KindDevice, dir, rel, ev.TimeNs-e.issueNs)
+		c.add(d, KindDevice, dir, rel, ev.TimeNs-e.issueNs)
 	}
 	if d.blockLayer {
 		from := e.insertNs
@@ -444,7 +524,7 @@ func (c *collector) blockComplete(ev flushtrace.Event, startNs int64) {
 			from = e.issueNs
 		}
 		if from != 0 {
-			c.agg.add(d.name, KindBlockLayer, dir, rel, ev.TimeNs-from)
+			c.add(d, KindBlockLayer, dir, rel, ev.TimeNs-from)
 		}
 	}
 }
@@ -452,15 +532,21 @@ func (c *collector) blockComplete(ev flushtrace.Event, startNs int64) {
 // bioQueued records a read or write bio submitted to a bio-based node.
 func (c *collector) bioQueued(ev flushtrace.Event) {
 	r, ok := parseBlockBio(ev.Payload)
-	if !ok || c.bioDevs[devNum{r.Maj, r.Min}] == nil {
+	if !ok {
+		return
+	}
+	d := c.bioDevs[devNum{r.Maj, r.Min}]
+	if d == nil {
 		return
 	}
 	dir, ok := dirOf(r.RWBS, r.Nr)
 	if !ok {
 		return
 	}
-	key := bioKey{r.Maj, r.Min, r.Sector + uint64(r.Nr)}
+	end := r.Sector + uint64(r.Nr)
+	key := bioKey{r.Maj, r.Min, end}
 	c.bio[key] = append(c.bio[key], bioEntry{start: r.Sector, queueNs: ev.TimeNs, dir: dir})
+	d.addSpan(bioSpan{r.Sector, end})
 }
 
 // bioComplete pairs a completed bio with the oldest pending bio of the same
@@ -492,20 +578,14 @@ func (c *collector) bioComplete(ev flushtrace.Event, startNs int64) {
 		} else {
 			c.bio[key] = append(q[:i:i], q[i+1:]...)
 		}
+		d.removeSpan(bioSpan{e.start, end})
 		if startNs != 0 && ev.TimeNs >= startNs {
-			c.agg.add(d.name, KindBio, e.dir, ev.TimeNs-startNs, ev.TimeNs-e.queueNs)
+			c.add(d, KindBio, e.dir, ev.TimeNs-startNs, ev.TimeNs-e.queueNs)
 		}
 		return
 	}
-	for k, q := range c.bio {
-		if k.maj != r.Maj || k.min != r.Min || k.end < end {
-			continue
-		}
-		for _, e := range q {
-			if e.start <= r.Sector {
-				return // a split part of a pending bio
-			}
-		}
+	if d.insideSpan(r.Sector, end) {
+		return // a split part of a pending bio
 	}
 	if startNs != 0 && ev.TimeNs >= startNs {
 		d.unpaired++
@@ -533,6 +613,12 @@ func (c *collector) nvmeSetup(ev flushtrace.Event) {
 	if d == nil {
 		return
 	}
+	if name, ok := c.ctrlNames[ctrl]; ok {
+		ctrl = name
+	} else {
+		ctrl = strings.Clone(ctrl)
+		c.ctrlNames[ctrl] = ctrl
+	}
 	key := nvmeKey{ctrl, qid, cmdid}
 	if old, ok := c.nvme[key]; ok { // its completion was never seen
 		old.dev.unpaired++
@@ -558,7 +644,7 @@ func (c *collector) nvmeComplete(ev flushtrace.Event, startNs int64) {
 	if startNs == 0 || ev.TimeNs < startNs {
 		return
 	}
-	c.agg.add(e.dev.name, KindDevice, e.dir, ev.TimeNs-startNs, ev.TimeNs-e.issueNs)
+	c.add(e.dev, KindDevice, e.dir, ev.TimeNs-startNs, ev.TimeNs-e.issueNs)
 }
 
 // headName maps a native multipath path device ("nvme0c1n1": subsystem 0,
@@ -604,6 +690,9 @@ func (c *collector) finish() ([]Window, map[string]map[Kind]map[Dir]Stats) {
 		}
 		for _, e := range c.nvme {
 			e.dev.unpaired++
+		}
+		for _, d := range c.devs {
+			d.bioSpans = nil
 		}
 		c.block, c.bio, c.nvme = map[blockKey][]blockEntry{}, map[bioKey][]bioEntry{}, map[nvmeKey]nvmeEntry{}
 	}

@@ -156,3 +156,55 @@ func TestBucketSweep(t *testing.T) {
 		}
 	}
 }
+
+// quantileRef is one quantile by its own scan, the definition quantiles
+// computes two at a time.
+func quantileRef(h *Hist, p float64) int64 {
+	rank := int64(p * float64(h.count))
+	if float64(rank) < p*float64(h.count) {
+		rank++
+	}
+	if rank < 1 {
+		rank = 1
+	}
+	var cum int64
+	for i, c := range h.buckets {
+		cum += c
+		if cum >= rank {
+			v := upperEdge(i)
+			if i == numBuckets-1 {
+				v = h.max
+			}
+			if v < h.min {
+				v = h.min
+			}
+			if v > h.max {
+				v = h.max
+			}
+			return v
+		}
+	}
+	return h.max
+}
+
+func TestHistQuantilesOnePass(t *testing.T) {
+	r := rand.New(rand.NewPCG(7, 7))
+	for it := 0; it < 2000; it++ {
+		var h Hist
+		n := 1 + r.IntN(300)
+		for i := 0; i < n; i++ {
+			switch r.IntN(3) {
+			case 0:
+				h.Add(r.Int64N(200))
+			case 1:
+				h.Add(r.Int64N(10_000_000))
+			default:
+				h.Add(r.Int64N(1 << 45)) // beyond the last bucket too
+			}
+		}
+		p50, p99 := h.quantiles(0.5, 0.99)
+		if w50, w99 := quantileRef(&h, 0.5), quantileRef(&h, 0.99); p50 != w50 || p99 != w99 {
+			t.Fatalf("n=%d: quantiles = %d, %d; want %d, %d", n, p50, p99, w50, w99)
+		}
+	}
+}

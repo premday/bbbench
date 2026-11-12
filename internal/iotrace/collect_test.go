@@ -2,7 +2,10 @@ package iotrace
 
 import (
 	"fmt"
+	"math/rand/v2"
+	"strings"
 	"testing"
+	"unsafe"
 
 	"bbbench/internal/flushtrace"
 )
@@ -187,5 +190,196 @@ func TestParseBlockBio(t *testing.T) {
 		if ok != c.ok || (ok && got != c.want) {
 			t.Errorf("parseBlockBio(%q) = %+v, %v; want %+v, %v", c.in, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// bioModel is the bio pairing by its definition, over a plain list of
+// pending bios in queue order: the oldest pending bio of the node with the
+// same end that starts at or before the completion pairs; else a pending bio
+// covering the completion makes it a split part; else it is unpaired.
+type bioModel struct {
+	pending []struct {
+		min        int
+		start, end uint64
+		t          int64
+		dir        Dir
+	}
+	lat      map[Dir][]int64
+	unpaired int64
+}
+
+func (m *bioModel) queue(min int, start, end uint64, t int64, dir Dir) {
+	m.pending = append(m.pending, struct {
+		min        int
+		start, end uint64
+		t          int64
+		dir        Dir
+	}{min, start, end, t, dir})
+}
+
+func (m *bioModel) complete(min int, start, end uint64, t int64) {
+	for i, e := range m.pending {
+		if e.min == min && e.end == end && e.start <= start {
+			m.lat[e.dir] = append(m.lat[e.dir], t-e.t)
+			m.pending = append(m.pending[:i], m.pending[i+1:]...)
+			return
+		}
+	}
+	for _, e := range m.pending {
+		if e.min == min && e.end >= end && e.start <= start {
+			return
+		}
+	}
+	m.unpaired++
+}
+
+// The per-node index of pending bios pairs exactly like the definition, with
+// many bios pending on two nodes, overlapping, split in parts and completed
+// out of order, plus completions that match nothing.
+func TestBioPairingIndexMatchesDefinition(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 3))
+	for round := 0; round < 50; round++ {
+		c := newCollector(1000, 0)
+		nodes := []*device{
+			{name: "md0", source: SourceBio, maj: 9, min: 0},
+			{name: "md1", source: SourceBio, maj: 9, min: 1},
+		}
+		for _, d := range nodes {
+			c.addDevice(d)
+		}
+		m := &bioModel{lat: map[Dir][]int64{}}
+		now := int64(2_000_000_000)
+		ev := func(name string, min int, rwbs string, start, end uint64) {
+			now += 1000 + r.Int64N(100_000)
+			c.feed(flushtrace.Event{TimeNs: now, Name: name,
+				Payload: fmt.Sprintf("9,%d %s %d + %d [x]", min, rwbs, start, end-start)}, 1_000_000_000)
+		}
+		for step := 0; step < 3000; step++ {
+			min := r.IntN(2)
+			rwbs, dir := "W", DirWrite
+			if r.IntN(2) == 0 {
+				rwbs, dir = "R", DirRead
+			}
+			switch k := r.IntN(10); {
+			case k < 4 || len(m.pending) == 0:
+				start := uint64(r.IntN(512)) * 8
+				end := start + []uint64{8, 16, 64, 256, 1024}[r.IntN(5)]
+				ev("block_bio_queue", min, rwbs, start, end)
+				m.queue(min, start, end, now, dir)
+			case k < 9:
+				p := m.pending[r.IntN(len(m.pending))]
+				start, end := p.start, p.end
+				if n := end - start; n > 8 {
+					cut := start + uint64(1+r.IntN(int(n/8)-1))*8
+					switch r.IntN(3) {
+					case 0:
+						end = cut // the front part split off
+					case 1:
+						start = cut // the remainder
+					}
+				}
+				ev("block_bio_complete", p.min, rwbs, start, end)
+				m.complete(p.min, start, end, now)
+			default:
+				start := uint64(r.IntN(600)) * 8
+				end := start + uint64(1+r.IntN(64))*8
+				ev("block_bio_complete", min, rwbs, start, end)
+				m.complete(min, start, end, now)
+			}
+		}
+		var unpaired int64
+		for _, d := range nodes {
+			unpaired += d.unpaired
+		}
+		if unpaired != m.unpaired {
+			t.Fatalf("round %d: unpaired = %d, want %d", round, unpaired, m.unpaired)
+		}
+		pending := 0
+		for _, q := range c.bio {
+			pending += len(q)
+		}
+		spans := len(nodes[0].bioSpans) + len(nodes[1].bioSpans)
+		if pending != len(m.pending) || spans != pending {
+			t.Fatalf("round %d: pending %d, spans %d, want %d", round, pending, spans, len(m.pending))
+		}
+		_, sum := c.finish()
+		for _, dir := range []Dir{DirRead, DirWrite} {
+			var got int64
+			for _, d := range nodes {
+				got += sum[d.name][KindBio][dir].Count
+			}
+			if want := int64(len(m.lat[dir])); got != want {
+				t.Fatalf("round %d: %s pairs = %d, want %d", round, dir, got, want)
+			}
+		}
+	}
+}
+
+// BenchmarkBioSplitParts completes split parts with a deep queue pending on
+// the node: each part looks for the bio covering it.
+func BenchmarkBioSplitParts(b *testing.B) {
+	c := newCollector(1000, 0)
+	d := &device{name: "md0", source: SourceBio, maj: 9, min: 0}
+	c.addDevice(d)
+	for i := 0; i < 1024; i++ {
+		c.feed(flushtrace.Event{TimeNs: 2_000_000_000, Name: "block_bio_queue",
+			Payload: fmt.Sprintf("9,0 W %d + 256 [fio]", i*256)}, 1_000_000_000)
+	}
+	parts := make([]flushtrace.Event, 1024)
+	for i := range parts {
+		parts[i] = flushtrace.Event{TimeNs: 2_000_100_000, Name: "block_bio_complete",
+			Payload: fmt.Sprintf("9,0 W %d + 128 [0]", i*256)}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.feed(parts[i%len(parts)], 1_000_000_000)
+	}
+}
+
+// Once a series is resolved, a completion in the open window allocates
+// nothing, through the aggregator or the collector's per-device cache.
+func TestAggregatorAddAllocatesNothing(t *testing.T) {
+	a := newAggregator(1000, 0)
+	s := a.series("sda", KindDevice, DirRead)
+	a.addTo(s, 0, 1)
+	if n := testing.AllocsPerRun(1000, func() { a.addTo(s, 5*ms, 1000) }); n != 0 {
+		t.Errorf("addTo: %v allocs per add", n)
+	}
+	c := newCollector(1000, 0)
+	d := &device{name: "sdb", source: SourceBlock, maj: 8, min: 16}
+	c.addDevice(d)
+	c.add(d, KindDevice, DirWrite, 0, 1)
+	if n := testing.AllocsPerRun(1000, func() { c.add(d, KindDevice, DirWrite, 5*ms, 1000) }); n != 0 {
+		t.Errorf("collector add: %v allocs per add", n)
+	}
+	// A new window reuses the series' histogram: only the finished window
+	// is appended (amortized), no histogram is allocated.
+	c2 := newCollector(1000, 0)
+	d2 := &device{name: "sdc", source: SourceBlock, maj: 8, min: 32}
+	c2.addDevice(d2)
+	c2.agg.done = make([]Window, 0, 2000)
+	rel := int64(0)
+	if n := testing.AllocsPerRun(1000, func() { rel += 1000 * ms; c2.add(d2, KindDevice, DirWrite, rel, 1000) }); n != 0 {
+		t.Errorf("window change: %v allocs per add", n)
+	}
+}
+
+// Pending NVMe commands keep their own copy of the controller name, one per
+// controller, not a slice of the trace line.
+func TestNVMeControllerNameInterned(t *testing.T) {
+	c := newCollector(1000, 0)
+	c.addDevice(&device{name: "nvme0n1", source: SourceNVMe})
+	line := []byte("nvme0: disk=nvme0n1, qid=1, cmdid=40, nsid=1, flags=0x0, meta=0x0, cmd=(nvme_cmd_read slba=0, len=7)")
+	c.feed(flushtrace.Event{TimeNs: 2, Name: "nvme_setup_cmd", Payload: string(line)}, 1)
+	c.feed(flushtrace.Event{TimeNs: 3, Name: "nvme_setup_cmd", Payload: strings.Replace(string(line), "cmdid=40", "cmdid=41", 1)}, 1)
+	var names []string
+	for k := range c.nvme {
+		names = append(names, k.ctrl)
+	}
+	if len(names) != 2 || names[0] != "nvme0" || unsafe.StringData(names[0]) != unsafe.StringData(names[1]) {
+		t.Fatalf("pending controllers = %q", names)
+	}
+	if len(c.ctrlNames) != 1 {
+		t.Errorf("interned names = %v", c.ctrlNames)
 	}
 }

@@ -23,17 +23,24 @@ type seriesKey struct {
 	dir  Dir
 }
 
-type openWindow struct {
-	idx  int64
-	hist Hist
+// series is the aggregation of one device, kind and direction: the open
+// window (reused from one window to the next) and the phase after the ramp.
+// A series is created on its first latency and lives as long as its
+// aggregator, so a collector can keep a pointer to it.
+type series struct {
+	key   seriesKey
+	open  bool  // a window is open
+	idx   int64 // the open window
+	win   Hist
+	phase Hist
 }
 
 type aggregator struct {
 	windowNs int64
 	windowMs int64
 	offsetNs int64
-	open     map[seriesKey]*openWindow
-	phase    map[seriesKey]*Hist
+	byKey    map[seriesKey]*series
+	all      []*series
 	done     []Window
 }
 
@@ -45,68 +52,91 @@ func newAggregator(windowMs, offsetMs int) *aggregator {
 		windowNs: int64(windowMs) * 1_000_000,
 		windowMs: int64(windowMs),
 		offsetNs: int64(offsetMs) * 1_000_000,
-		open:     map[seriesKey]*openWindow{},
-		phase:    map[seriesKey]*Hist{},
+		byKey:    map[seriesKey]*series{},
 	}
 }
 
-// reset discards every window and the phase summary (time zero moved).
+// reset discards every window and the phase summary (time zero moved). The
+// series stay, emptied, so pointers to them remain valid.
 func (a *aggregator) reset() {
-	a.open, a.phase, a.done = map[seriesKey]*openWindow{}, map[seriesKey]*Hist{}, nil
+	for _, s := range a.all {
+		s.open = false
+		s.win.Reset()
+		s.phase.Reset()
+	}
+	a.done = nil
 }
 
-func (a *aggregator) close(k seriesKey, w *openWindow) {
-	a.done = append(a.done, Window{EndMs: (w.idx + 1) * a.windowMs, Dev: k.dev, Kind: k.kind, Dir: k.dir, Stats: w.hist.Stats()})
+// series returns the series of a device, kind and direction, created empty
+// on first use.
+func (a *aggregator) series(dev string, k Kind, d Dir) *series {
+	key := seriesKey{dev, k, d}
+	s := a.byKey[key]
+	if s == nil {
+		s = &series{key: key}
+		a.byKey[key] = s
+		a.all = append(a.all, s)
+	}
+	return s
+}
+
+// closeWindow appends the open window of s to the finished ones.
+func (a *aggregator) closeWindow(s *series) {
+	a.done = append(a.done, Window{EndMs: (s.idx + 1) * a.windowMs, Dev: s.key.dev, Kind: s.key.kind, Dir: s.key.dir, Stats: s.win.Stats()})
+	s.open = false
+	s.win.Reset()
 }
 
 // add records a completion at relNs (since the phase start) with latency latNs.
 func (a *aggregator) add(dev string, k Kind, d Dir, relNs, latNs int64) {
-	key := seriesKey{dev, k, d}
+	a.addTo(a.series(dev, k, d), relNs, latNs)
+}
+
+// addTo is add on a resolved series; it allocates nothing but the finished
+// window it appends when a later window starts.
+func (a *aggregator) addTo(s *series, relNs, latNs int64) {
 	idx := relNs / a.windowNs
 	if idx < 0 {
 		idx = 0
 	}
-	w := a.open[key]
-	if w != nil && idx > w.idx {
-		a.close(key, w)
-		w = nil
+	if s.open && idx > s.idx {
+		a.closeWindow(s)
 	}
-	if w == nil {
-		w = &openWindow{idx: idx}
-		a.open[key] = w
+	if !s.open {
+		s.open, s.idx = true, idx
 	}
-	w.hist.Add(latNs)
+	s.win.Add(latNs)
 	if relNs >= a.offsetNs {
-		h := a.phase[key]
-		if h == nil {
-			h = &Hist{}
-			a.phase[key] = h
-		}
-		h.Add(latNs)
+		s.phase.Add(latNs)
 	}
 }
 
 // finish closes the open windows and returns every window (sorted by end,
 // device, kind, direction) and the phase summary per device, kind and direction.
 func (a *aggregator) finish() ([]Window, map[string]map[Kind]map[Dir]Stats) {
-	for k, w := range a.open {
-		a.close(k, w)
+	for _, s := range a.all {
+		if s.open {
+			a.closeWindow(s)
+		}
 	}
-	a.open = map[seriesKey]*openWindow{}
 	ws := a.done
 	slices.SortFunc(ws, func(x, y Window) int {
 		return cmp.Or(cmp.Compare(x.EndMs, y.EndMs), cmp.Compare(x.Dev, y.Dev),
 			cmp.Compare(x.Kind, y.Kind), cmp.Compare(x.Dir, y.Dir))
 	})
 	sum := map[string]map[Kind]map[Dir]Stats{}
-	for k, h := range a.phase {
+	for _, s := range a.all {
+		if s.phase.Count() == 0 {
+			continue
+		}
+		k := s.key
 		if sum[k.dev] == nil {
 			sum[k.dev] = map[Kind]map[Dir]Stats{}
 		}
 		if sum[k.dev][k.kind] == nil {
 			sum[k.dev][k.kind] = map[Dir]Stats{}
 		}
-		sum[k.dev][k.kind][k.dir] = h.Stats()
+		sum[k.dev][k.kind][k.dir] = s.phase.Stats()
 	}
 	return ws, sum
 }
