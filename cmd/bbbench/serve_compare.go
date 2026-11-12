@@ -526,7 +526,7 @@ __NAVBAR_HTML__
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: items => 'at ' + items[0].raw.x + ' s',
-                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc) + ' ' + sc.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                         }}
                     },
                     scales: {
@@ -581,7 +581,7 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'right',
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { callbacks: {
-                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw, sc) + ' ' + sc.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit,
                         }}
                     },
                     scales: {

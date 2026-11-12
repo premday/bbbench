@@ -101,8 +101,15 @@ const chartSharedJS = `function rampOf(d) {
     // prefix letter, no space: no decimals from 100, one from 10, two from 1,
     // two significant digits below 1, trailing zeros trimmed ('2G', '1.5M',
     // '800\u03bc'); 0 is '0'.
-    function fmtScaled(v, sc) {
+    // With fixed (tooltips) there are always at least two digits after the
+    // dot and zeros are kept ('2.00G', '950.00', '0.0033').
+    function fmtScaled(v, sc, fixed) {
         const x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
+        if (fixed) {
+            const pre = sc && sc.prefix ? sc.prefix : '';
+            if (!isFinite(x) || x === 0) return '0.00';
+            return x.toFixed(Math.min(20, Math.max(2, 1 - Math.floor(Math.log10(x))))) + pre;
+        }
         if (!isFinite(x) || x === 0) return '0';
         let s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toPrecision(2);
         if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');

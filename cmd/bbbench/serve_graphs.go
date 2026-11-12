@@ -812,7 +812,7 @@ __NAVBAR_HTML__
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
                             title: items => 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
-                            label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc) + ' ' + sc.unit +
+                            label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit +
                                 ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
                     },
                     scales: {
@@ -833,7 +833,7 @@ __NAVBAR_HTML__
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false },
-                    tooltip: { callbacks: { label: ctx => fmtScaled(ctx.raw, sc) + ' ' + sc.unit } } },
+                    tooltip: { callbacks: { label: ctx => fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit } } },
                 scales: { y: { min: 0, max: yHigh * sc.mul, title: yAxisTitle(sc),
                     ticks: { callback: tick, font: {size: 9} } } }
             }
@@ -1033,7 +1033,7 @@ __NAVBAR_HTML__
         const totals = stacked ? g.totals : {};
         const dirs = ['r', 'w'].filter(dir => members.some(m => m.dir === dir));
         // v in the base unit; the stack totals are in the metric's units.
-        const fmt = v => fmtScaled(v, sc) + ' ' + sc.unit;
+        const fmt = v => fmtScaled(v, sc, true) + ' ' + sc.unit;
         const totalLines = i => {
             const s = totals[xs[i]];
             if (!s) return [];
@@ -1335,7 +1335,7 @@ __NAVBAR_HTML__
                         tooltip: { callbacks: {
                             title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
-                                          fmtScaled(ctx.raw.y, sc) + ' ' + sc.unit,
+                                          fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                             afterBody: items => mdTipLines(d, items)
                         }}
                     },
@@ -1362,7 +1362,7 @@ __NAVBAR_HTML__
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: { legend: { display: false },
                         tooltip: { callbacks: { label: ctx =>
-                            fmtScaled(ctx.raw, sc) + ' ' + sc.unit } }
+                            fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit } }
                     },
                     scales: { y: { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
                         ticks: { callback: tick, font: {size: 9} } } }

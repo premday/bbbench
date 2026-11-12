@@ -74,6 +74,8 @@ const G = {mul: 1, div: 1e9, prefix: 'G', unit: 'bytes/s'}, N = {mul: 1, div: 1,
 [[0, G, '0'], [950, N, '950'], [2e9, G, '2G'], [1.5e9, G, '1.5G'], [-1.5e9, G, '1.5G'], [1.234e9, G, '1.23G'],
  [12.34e9, G, '12.3G'], [123.4e9, G, '123G'], [0.25e9, G, '0.25G'], [12.5, N, '12.5'], [0.333, N, '0.33']]
     .forEach(([v, sc, want]) => assert.strictEqual(fmtScaled(v, sc), want, String(v)));
+[[0, G, '0.00'], [950, N, '950.00'], [2e9, G, '2.00G'], [1.5e9, G, '1.50G'], [123.4e9, G, '123.40G'], [0.0033, N, '0.0033'], [-1.5e9, G, '1.50G']]
+    .forEach(([v, sc, want]) => assert.strictEqual(fmtScaled(v, sc, true), want, 'fixed ' + v));
 console.log('OK');
 `)
 }
@@ -125,16 +127,16 @@ assert.strictEqual(label(1, 0), 'Write: 1.57G bytes/s');
 // A 900 MiB/s peak with 15% headroom on the axis (1035) stays M.
 makeChart({}, {ts_bw: [{t: 1, r: 900, w: 0}]}, BW, 0, 1035);
 assert.strictEqual(tick(9e8), '900M');
-assert.strictEqual(label(0, 0), 'Read: 944M bytes/s');
+assert.strictEqual(label(0, 0), 'Read: 943.72M bytes/s');
 // IOPS of 1.2 M, latency of 2500 us.
 makeChart({}, {ts_iops: [{t: 1, r: 1.2e6, w: 0}]}, IOPS, 0, 1.38e6);
 assert.strictEqual(yTitle(), 'IOPS');
 assert.strictEqual(tick(1e6), '1M');
-assert.strictEqual(label(0, 0), 'Read: 1.2M IOPS');
+assert.strictEqual(label(0, 0), 'Read: 1.20M IOPS');
 makeChart({}, {ts_lat: [{t: 1, r: 2500, w: 0}]}, LAT, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(tick(0.002), '2m');
-assert.strictEqual(label(0, 0), 'Read: 2.5m s');
+assert.strictEqual(label(0, 0), 'Read: 2.50m s');
 // Bar fallback (no series).
 makeChart({}, {r: 2300}, BW, 0, 2645);
 assert.strictEqual(yTitle(), 'bytes/s');
@@ -143,11 +145,11 @@ assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.
 // Flush latency: the series and the bar.
 makeChart({}, {ts_flush: [{t: 0, w: 2500}], flush: {avg_msec: 1000}}, FLUSH, 0, 2875);
 assert.strictEqual(yTitle(), 's');
-assert.ok(label(0, 0).startsWith('Flush latency: 2.5m s'), label(0, 0));
+assert.ok(label(0, 0).startsWith('Flush latency: 2.50m s'), label(0, 0));
 makeChart({}, {}, FLUSH, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(tick(0.0025), '2.5m');
-assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.5m s');
+assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.50m s');
 // Members: member lines, stack totals and the array line.
 const d = {log_avg_msec: 1000, ts_bw: [{t: 1, r: 2300, w: 0}],
     ts_members: {sdb: {bw: [{t: 0, r: 1200, w: 0}]}, sdc: {bw: [{t: 0, r: 1100, w: 0}]}}};
@@ -167,7 +169,7 @@ const dl = {log_avg_msec: 1000, ts_lat: [{t: 1, r: 2500, w: 0}],
 makeChart({}, dl, LAT, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 const ml = last.data.datasets.find(x => x.member === 'sdb');
-assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 0.8m s');
+assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 0.80m s');
 console.log('OK');
 `)
 }
