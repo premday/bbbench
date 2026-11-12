@@ -641,7 +641,13 @@ __NAVBAR_HTML__
         { key: 'iolat', label: 'Device latency (ftrace)', unit: '\u03bcs', tsKey: 'ts_iolat', source: 'ftrace',
           srcTitle: 'Measured from kernel ftrace events (each read and write request, issue to completion), not by fio',
           has:  d => !!d.io_trace || !!d.io_trace_note,
-          sumR: d => iolatMean(d, 'r'), sumW: d => iolatMean(d, 'w') },
+          sumR: d => iolatMean(d, 'r', 'device'), sumW: d => iolatMean(d, 'w', 'device') },
+        // The same requests timed from their block-layer insert (time in
+        // the I/O scheduler and the software queues included).
+        { key: 'iolatblk', label: 'Block-layer latency (ftrace)', unit: '\u03bcs', tsKey: 'ts_iolat', source: 'ftrace',
+          srcTitle: 'Measured from kernel ftrace events (each read and write request, block-layer insert to completion), not by fio',
+          has:  (d, all) => iolatBlkHas(d, all), none: data => iolatBlkNoneText(data),
+          sumR: d => iolatMean(d, 'r', 'blocklayer'), sumW: d => iolatMean(d, 'w', 'blocklayer') },
     ];
     const SRC_TITLE = {
         fio: 'Measured by fio',
@@ -653,26 +659,62 @@ __NAVBAR_HTML__
             ? ': the kernel sends no Flush to this drive (write cache: write through, i.e. its volatile write cache is disabled or absent).'
             : '.');
     }
+    // iolatKind is the ftrace latency kind a card draws on its own: device
+    // for Device latency, blocklayer for Block-layer latency, '' otherwise
+    // (the Latency card overlays the means of both).
+    function iolatKind(metric) {
+        return metric.key === 'iolat' ? 'device' : metric.key === 'iolatblk' ? 'blocklayer' : '';
+    }
     // iolatMean is the traced device's summary mean latency (us) of a
-    // direction: the first traced device is the target.
-    function iolatMean(d, dir) {
+    // direction and kind (default device): the first traced device is the target.
+    function iolatMean(d, dir, kind) {
         const dev = d.io_trace && d.io_trace.devices ? d.io_trace.devices[0] : null;
-        const st = dev && dev.stats && dev.stats.device && dev.stats.device[dir];
+        const k = dev && dev.stats && dev.stats[kind || 'device'];
+        const st = k && k[dir];
         return st && st.mean_ns > 0 ? st.mean_ns / 1000 : 0;
     }
-    // iolatNone explains a Device latency card that has nothing to draw: the
-    // reason ftrace was off, or that the target saw no read or write request
-    // (a bio-based md/dm node has no request events; its members do).
+    // iolatHasKind: the entry has latency of that kind, the target's or a
+    // member's, as a series or a summary.
+    function iolatHasKind(d, kind) {
+        const pts = ps => (ps || []).some(p => p.kind === kind && p.n > 0);
+        if (pts(d.ts_iolat) || (d.ts_iolat_members && Object.values(d.ts_iolat_members).some(pts))) return true;
+        const devs = (d.io_trace && d.io_trace.devices) || [];
+        return devs.some(dev => !!(dev.stats && dev.stats[kind] && Object.keys(dev.stats[kind]).length > 0));
+    }
+    // iolatBlkHas: an entry gets a Block-layer latency card when it has
+    // block-layer latency, or when it was traced (or ftrace was off) and
+    // another entry shown has some: its card says why it has none. With no
+    // block-layer data at all, no card.
+    function iolatBlkHas(d, all) {
+        if (iolatHasKind(d, 'blocklayer')) return true;
+        return (!!d.io_trace || !!d.io_trace_note) && (all || []).some(x => iolatHasKind(x, 'blocklayer'));
+    }
+    // iolatBlkNoneText is the text of a Block-layer latency section without
+    // a card: the reasons of the shown entries, once each.
+    function iolatBlkNoneText(data) {
+        const why = [];
+        data.forEach(d => {
+            const w = iolatNone(d, {key: 'iolatblk'}).replace(/^no block-layer series: /, '');
+            if (w && why.indexOf(w) === -1) why.push(w);
+        });
+        return 'No block-layer data for the selected disks and phases' + (why.length ? ': ' + why.join('; ') : '.');
+    }
+    // iolatNone explains a Device or Block-layer latency card that has
+    // nothing to draw: the reason ftrace was off, that the target saw no
+    // read or write request (a bio-based md/dm node has no request events;
+    // its members do), or why it has no block-layer series (the device's
+    // block_layer_note: no insert tracepoint, a multipath head, ...).
     function iolatNone(d, metric) {
-        if (metric.key !== 'iolat') return '';
+        const kind = iolatKind(metric);
+        if (!kind) return '';
         if (!d.io_trace) return d.io_trace_note || '';
         const dev = d.io_trace.devices && d.io_trace.devices[0];
         if (!dev) return 'no traced device';
-        const any = dev.stats && Object.values(dev.stats).some(k => k && Object.keys(k).length > 0);
-        if (any) return '';
-        const members = d.ts_iolat_members && Object.values(d.ts_iolat_members).some(pts => pts && pts.length > 0);
-        if (members) return '';
-        return dev.note || 'ftrace saw no read or write requests on ' + dev.name;
+        const own = dev.stats && dev.stats[kind] && Object.keys(dev.stats[kind]).length > 0;
+        const members = d.ts_iolat_members && Object.values(d.ts_iolat_members).some(pts => (pts || []).some(p => p.kind === kind && p.n > 0));
+        if (own || members) return '';
+        if (kind === 'device') return dev.note || 'ftrace saw no read or write requests on ' + dev.name;
+        return 'no block-layer series: ' + (dev.block_layer_note || dev.note || 'ftrace saw no block-layer requests on ' + dev.name);
     }
     // iolatPoints turns the points of one kind and direction into chart
     // points: x on the member window grid, y = stat in us (negative for
@@ -684,15 +726,16 @@ __NAVBAR_HTML__
     }
     // ftraceDatasets are the ftrace lines of a chart: the Latency card gets
     // the mean device and block layer latency of the target next to fio's,
-    // the Device latency card mean and p99 of both plus each member's device
-    // mean. A kind and direction without points has no dataset.
+    // the Device latency card mean and p99 of the device kind plus each
+    // member's device mean, the Block-layer latency card the same of the
+    // block-layer kind. A kind and direction without points has no dataset.
     function ftraceDatasets(d, metric) {
-        const out = [];
-        if (metric.key !== 'lat' && metric.key !== 'iolat') return out;
-        const full = metric.key === 'iolat';
+        const out = [], only = iolatKind(metric);
+        if (metric.key !== 'lat' && !only) return out;
+        const full = !!only;
         const base = {fill: false, tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5, spanGaps: true};
         const rgb = {r: [37, 99, 235], w: [220, 38, 38]};
-        const kinds = [['device', 'device', [6, 3]], ['blocklayer', 'block layer', [2, 2]]];
+        const kinds = [['device', 'device', [6, 3]], ['blocklayer', 'block layer', [2, 2]]].filter(k => !only || k[0] === only);
         ['r', 'w'].forEach(dir => kinds.forEach(([kind, kname, dash]) => {
             (full ? [['mean', ' mean', dash, 0.9], ['p99', ' p99', [8, 3, 2, 3], 0.6]] : [['mean', '', dash, 0.9]]).forEach(([stat, sname, dsh, a]) => {
                 const data = iolatPoints(d, d.ts_iolat, kind, dir, stat);
@@ -706,12 +749,13 @@ __NAVBAR_HTML__
         }));
         if (full && d.ts_iolat_members) {
             const names = Object.keys(d.ts_iolat_members).sort(), colors = memberColors(names);
+            const kname = kinds[0][1];
             ['r', 'w'].forEach(dir => names.forEach(n => {
-                const data = iolatPoints(d, d.ts_iolat_members[n], 'device', dir, 'mean');
+                const data = iolatPoints(d, d.ts_iolat_members[n], only, dir, 'mean');
                 if (!data.length) return;
                 const c = rgba(colors[n], 0.9);
                 out.push(Object.assign({}, base, {
-                    label: n + (dir === 'r' ? ' read' : ' write') + ' device mean (ftrace)', data,
+                    label: n + (dir === 'r' ? ' read ' : ' write ') + kname + ' mean (ftrace)', data,
                     skey: 'ftrace.member:' + n, dir, borderColor: c, backgroundColor: c, borderDash: dir === 'w' ? [4, 2] : [],
                     borderWidth: 1.2,
                 }));
@@ -735,13 +779,15 @@ __NAVBAR_HTML__
         case 'flush':
             return d.flush_source || '';
         case 'iolat':
-            return trace;
+            return (d.io_trace && d.io_trace.text_device) || trace;
+        case 'iolatblk':
+            return (d.io_trace && d.io_trace.text_blocklayer) || trace;
         }
         return '';
     }
     // lossNote warns when the kernel dropped trace events of this phase.
     function lossNote(d, metric) {
-        if (metric.key !== 'lat' && metric.key !== 'iolat') return '';
+        if (metric.key !== 'lat' && !iolatKind(metric)) return '';
         const n = d.io_trace ? d.io_trace.lost || 0 : 0;
         return n > 0 ? '\u26a0 ' + n + ' trace events lost: the ftrace series are incomplete' : '';
     }
@@ -868,7 +914,8 @@ __NAVBAR_HTML__
 
     function initFilters() {
         // graph_type: static list
-        const GT = [['iops','IOPS'],['bw','Bandwidth'],['lat','Latency'],['flush','Flush latency'],['iolat', 'Device latency (ftrace)']];
+        const GT = [['iops','IOPS'],['bw','Bandwidth'],['lat','Latency'],['flush','Flush latency'],['iolat', 'Device latency (ftrace)'],
+            ['iolatblk', 'Block-layer latency (ftrace)']];
         const ul = document.getElementById('list-graph_type');
         GT.forEach(([v, label]) => {
             SEL.graph_type.add(v);
@@ -1460,7 +1507,7 @@ __NAVBAR_HTML__
     function makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode) {
         const ts = d[metric.tsKey];
         if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
-        if (metric.key === 'iolat') return makeIOLatChart(canvas, d, metric, yLow, yHigh);
+        if (iolatKind(metric)) return makeIOLatChart(canvas, d, metric, yLow, yHigh);
         if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
         // One unit for every card of the phase: chosen from the phase's scale.
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
@@ -1509,11 +1556,12 @@ __NAVBAR_HTML__
         });
     }
 
-    // makeIOLatChart draws the Device latency card: the ftrace lines alone
-    // (bars of the summary means when the phase has no series).
+    // makeIOLatChart draws the Device and the Block-layer latency cards: the
+    // ftrace lines of the card's kind alone (bars of the summary means when
+    // the phase has no series).
     function makeIOLatChart(canvas, d, metric, yLow, yHigh) {
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
-        // Device latency has no member stack: always the normal datasets.
+        // These cards have no member stack: always the normal datasets.
         const cd = chartDatasets(d, metric, 'normal');
         const datasets = toBase(cd.datasets, sc);
         const yAxis = { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
@@ -1557,8 +1605,9 @@ __NAVBAR_HTML__
     // Each series of a card has a key (skey): fio.r and fio.w (a drive's
     // read and write, an array's own fio lines, the bars), member:<name>
     // (both directions of a member, kernel stat), ftrace.<kind>.<stat>.<dir>
-    // (ftrace.device.mean.r), ftrace.member:<name> (a member's device
-    // latency) and flush. HIDDEN maps a metric key to the Set of the keys
+    // (ftrace.device.mean.r), ftrace.member:<name> (a member's device latency
+    // on the Device card, its block-layer latency on the Block-layer card)
+    // and flush. HIDDEN maps a metric key to the Set of the keys
     // hidden on every card of that metric: page memory only (not stored), so
     // it survives a re-render and is gone on reload.
     const HIDDEN = {};
@@ -1599,11 +1648,13 @@ __NAVBAR_HTML__
                 datasets: members.concat(arrayDatasets(g, stacked).filter(shown), ftraceOnGrid(d, metric, g.xs).filter(shown))};
         }
         const ftrace = ftraceDatasets(d, metric);
-        if (metric.key === 'iolat') {
+        const kind = iolatKind(metric);
+        if (kind) {
             if (ftrace.length > 0) return {stacked: false, bars: false, datasets: ftrace.filter(shown)};
             const r = metric.sumR(d), w = metric.sumW(d), out = [];
-            if (r > 0) out.push(bar('ftrace.device.mean.r', 'Read device (ftrace)', 'r', r, 'rgba(37,99,235,0.75)'));
-            if (w > 0) out.push(bar('ftrace.device.mean.w', 'Write device (ftrace)', 'w', -w, 'rgba(220,38,38,0.75)'));
+            const kname = kind === 'device' ? 'device' : 'block layer';
+            if (r > 0) out.push(bar('ftrace.' + kind + '.mean.r', 'Read ' + kname + ' (ftrace)', 'r', r, 'rgba(37,99,235,0.75)'));
+            if (w > 0) out.push(bar('ftrace.' + kind + '.mean.w', 'Write ' + kname + ' (ftrace)', 'w', -w, 'rgba(220,38,38,0.75)'));
             return {stacked: false, bars: true, datasets: out.filter(shown)};
         }
         if ((ts && ts.length > 0) || ftrace.length > 0) {
@@ -1874,14 +1925,16 @@ __NAVBAR_HTML__
             secHdr.addEventListener('click', () => toggleSection(secHdr, secBody));
 
             // Group data by phase, preserving encounter order. Metrics with a
-            // "has" test (Flush) only show disks that have that data.
+            // "has" test (Flush, ftrace latency) only show disks that have
+            // that data (has may look at the other entries shown); "none"
+            // gives the text of a section without a card.
             const phaseOrder = [];
             const byPhase = {};
-            const mdata = metric.has ? data.filter(metric.has) : data;
+            const mdata = metric.has ? data.filter(d => metric.has(d, data)) : data;
             if (mdata.length === 0) {
                 const none = document.createElement('div');
                 none.className = 'placeholder';
-                none.textContent = 'No ' + metric.source + ' data for the selected disks and phases.';
+                none.textContent = metric.none ? metric.none(data) : 'No ' + metric.source + ' data for the selected disks and phases.';
                 secBody.appendChild(none);
             }
             mdata.forEach(d => {

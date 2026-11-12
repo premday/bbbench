@@ -439,8 +439,9 @@ latency series. md and dm nodes themselves are bio-based and issue no requests,
 so the target usually shows `no request events seen` while its members are
 traced. A native NVMe multipath drive may show no block layer series: its block
 requests are issued on the hidden path disks (`nvme0c1n1`), not on the head
-bbbench traces, even though the source line lists the `block_rq_insert`
-tracepoint.
+bbbench traces; its Block-layer card then says `no block-layer events seen`
+with that hint, although the Latency card's source line lists the
+`block_rq_insert` tracepoint.
 
 **How it is stored.** The latencies go into histograms inside bbbench (relative
 error under 2 %), nothing is kept per I/O. Like Flush tracing, they are saved
@@ -502,10 +503,14 @@ disturbs a measurement.
 
 **In the web UI.** The Latency chart draws the traced mean latency as dashed
 lines next to fio's (device and block layer, reads and writes), a card says
-which tracepoints each series comes from, and the graph type **Device latency
-(ftrace)** shows the device and block layer mean and p99, and the members of an
-array. The members' ftrace series appear only on that graph, not on the Latency
-chart. Every series has a checkbox to show or hide it; the y scale follows the
+which tracepoints each series comes from, and two graph types of their own
+show the mean and p99 per direction and each member's mean: **Device latency
+(ftrace)** the device latency, **Block-layer latency (ftrace)** the block layer
+latency. The members' ftrace series appear only on those graphs, not on the
+Latency chart. A drive without block layer series (kernel without
+`block_rq_insert`, a native NVMe multipath head, a bio-based target whose
+members have none) gets a Block-layer card that says why; a run with no block
+layer data at all has no Block-layer card. Every series has a checkbox to show or hide it; the y scale follows the
 shown series, and the choice is kept in the page only until it is reloaded. The
 compare page does not draw this data. See
 [documentation/web-ui.md](documentation/web-ui.md).
