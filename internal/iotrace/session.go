@@ -77,6 +77,9 @@ type DeviceSummary struct {
 	Unpaired int64                  `json:"unpaired,omitempty"`
 	Stats    map[Kind]map[Dir]Stats `json:"stats,omitempty"`
 	Note     string                 `json:"note,omitempty"` // why not traced
+	// BlockLayerNote says why the device has no block-layer series ("" when
+	// it has one); set by Fill, not stored in the log.
+	BlockLayerNote string `json:"block_layer_note,omitempty"`
 }
 
 // Summary is the I/O latency of a phase: the target first, then its members.
@@ -90,15 +93,22 @@ type Summary struct {
 	Devices      []DeviceSummary `json:"devices"`
 	Lost         int64           `json:"lost"` // Overrun + every Unpaired
 	Text         string          `json:"text"` // SourceLine
+	// TextDevice and TextBlockLayer are SourceLineOf for each kind: the
+	// source lines of the Device and the Block-layer latency cards.
+	TextDevice     string `json:"text_device"`
+	TextBlockLayer string `json:"text_blocklayer"`
 }
 
-// Fill sets Lost and Text from the rest.
+// Fill sets Lost, the texts and each device's BlockLayerNote from the rest.
 func (s *Summary) Fill() {
 	s.Lost = s.Overrun
-	for _, d := range s.Devices {
-		s.Lost += d.Unpaired
+	for i := range s.Devices {
+		s.Lost += s.Devices[i].Unpaired
+		s.Devices[i].BlockLayerNote = blockLayerNote(s.Devices[i])
 	}
 	s.Text = SourceLine(s)
+	s.TextDevice = SourceLineOf(s, KindDevice)
+	s.TextBlockLayer = SourceLineOf(s, KindBlockLayer)
 }
 
 // Result is a finished session: the summary and the windows.
@@ -155,7 +165,7 @@ func Start(devices []string, opts Options) (*Session, error) {
 			ds.Source, ds.Pair = SourceNVMe, "ctrl,qid,cmdid"
 			ds.Events = []string{"nvme_setup_cmd -> nvme_complete_rq"}
 		case hasBlock:
-			ds.Source, ds.Pair = SourceBlock, "dev,sector"
+			ds.Source, ds.Pair = SourceBlock, PairBlock
 			ds.Events = []string{"block_rq_issue -> block_rq_complete"}
 		default:
 			ds.Note = "no nvme or block request tracepoints"

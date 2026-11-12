@@ -750,8 +750,66 @@ func TestSourceLine(t *testing.T) {
 	}
 	s := Summary{Overrun: 10, Devices: []DeviceSummary{lossy}}
 	s.Fill()
-	if s.Lost != 12 || s.Text != SourceLine(&s) {
+	if s.Lost != 12 || s.Text != SourceLine(&s) || s.TextDevice != SourceLineOf(&s, KindDevice) ||
+		s.TextBlockLayer != SourceLineOf(&s, KindBlockLayer) {
 		t.Errorf("Fill: %+v", s)
+	}
+}
+
+// TestSourceLineOf: the device card names the device tracepoints and their
+// pairing, the block-layer card the block-layer ones, always paired first-in
+// first-out by (dev, sector); a device without block-layer series says why.
+func TestSourceLineOf(t *testing.T) {
+	both := map[Kind]map[Dir]Stats{KindDevice: {DirRead: {Count: 1}}, KindBlockLayer: {DirRead: {Count: 1}}}
+	devOnly := map[Kind]map[Dir]Stats{KindDevice: {DirRead: {Count: 1}}}
+	nvme := DeviceSummary{Name: "nvme0n1", Source: SourceNVMe, Exact: true, BlockLayer: true, Pair: "ctrl,qid,cmdid",
+		Events: []string{"nvme_setup_cmd -> nvme_complete_rq", "block_rq_insert -> block_rq_complete"}, Stats: both}
+	hdd := DeviceSummary{Name: "sdb", Source: SourceBlock, BlockLayer: true, Pair: "dev,sector",
+		Events: []string{"block_rq_issue -> block_rq_complete", "block_rq_insert -> block_rq_complete"}, Stats: both}
+	noIns := DeviceSummary{Name: "sdc", Source: SourceBlock, Pair: "dev,sector",
+		Events: []string{"block_rq_issue -> block_rq_complete"}, Stats: devOnly}
+	mpath := nvme
+	mpath.Stats = devOnly
+	md := DeviceSummary{Name: "md0", Source: SourceBlock, BlockLayer: true, Pair: "dev,sector",
+		Events: []string{"block_rq_issue -> block_rq_complete", "block_rq_insert -> block_rq_complete"}}
+	sdz := DeviceSummary{Name: "sdz", Note: "no such device"}
+	for _, c := range []struct {
+		s          Summary
+		dev, block string
+	}{
+		{Summary{Devices: []DeviceSummary{nvme}},
+			"ftrace: nvme_setup_cmd -> nvme_complete_rq · pairing: exact (ctrl,qid,cmdid) · lost events: 0",
+			"ftrace: block_rq_insert -> block_rq_complete · pairing: first-in first-out (dev,sector) · lost events: 0"},
+		{Summary{Overrun: 2, Devices: []DeviceSummary{hdd}},
+			"ftrace: block_rq_issue -> block_rq_complete · pairing: first-in first-out (dev,sector) · lost events: 2 (ring buffer 2, unpaired 0)",
+			"ftrace: block_rq_insert -> block_rq_complete · pairing: first-in first-out (dev,sector) · lost events: 2 (ring buffer 2, unpaired 0)"},
+		{Summary{Devices: []DeviceSummary{noIns}},
+			"ftrace: block_rq_issue -> block_rq_complete · pairing: first-in first-out (dev,sector) · lost events: 0",
+			"ftrace: no block_rq_insert tracepoint · lost events: 0"},
+		{Summary{Devices: []DeviceSummary{mpath}},
+			"ftrace: nvme_setup_cmd -> nvme_complete_rq · pairing: exact (ctrl,qid,cmdid) · lost events: 0",
+			"ftrace: block_rq_insert -> block_rq_complete · no block-layer events seen · lost events: 0"},
+		{Summary{Devices: []DeviceSummary{md, hdd, sdz}},
+			"ftrace: md0: no request events seen; sdb: block_rq_issue -> block_rq_complete · pairing: first-in first-out (dev,sector); sdz: not traced (no such device) · lost events: 0",
+			"ftrace: md0: no block-layer events seen; sdb: block_rq_insert -> block_rq_complete · pairing: first-in first-out (dev,sector); sdz: not traced (no such device) · lost events: 0"},
+	} {
+		if got := SourceLineOf(&c.s, KindDevice); got != c.dev {
+			t.Errorf("device:\ngot  %q\nwant %q", got, c.dev)
+		}
+		if got := SourceLineOf(&c.s, KindBlockLayer); got != c.block {
+			t.Errorf("block layer:\ngot  %q\nwant %q", got, c.block)
+		}
+	}
+	s := Summary{Devices: []DeviceSummary{nvme, noIns, mpath, md, sdz}}
+	s.Fill()
+	for i, want := range []string{"",
+		"the kernel has no block_rq_insert tracepoint",
+		"ftrace saw no block-layer requests on nvme0n1 (a native NVMe multipath drive queues them on its hidden path disks)",
+		"ftrace saw no block-layer requests on md0",
+		"not traced (no such device)"} {
+		if got := s.Devices[i].BlockLayerNote; got != want {
+			t.Errorf("BlockLayerNote %s = %q, want %q", s.Devices[i].Name, got, want)
+		}
 	}
 }
 
