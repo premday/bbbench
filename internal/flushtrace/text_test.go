@@ -1,6 +1,10 @@
 package flushtrace
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestFlushSourceLine(t *testing.T) {
 	for _, c := range []struct {
@@ -13,5 +17,24 @@ func TestFlushSourceLine(t *testing.T) {
 		if got := SourceLine(&c.s); got != c.want {
 			t.Errorf("SourceLine(%s) = %q, want %q", c.s.Source, got, c.want)
 		}
+	}
+}
+
+func TestSummarizeEvents(t *testing.T) {
+	for src, want := range map[string]string{"nvme": "nvme_setup_cmd -> nvme_complete_rq", "block": "block_rq_issue -> block_rq_complete"} {
+		s := Summarize(src, src == "nvme", 0, nil)
+		if len(s.Events) != 1 || s.Events[0] != want {
+			t.Errorf("%s: Events = %v", src, s.Events)
+		}
+	}
+	if s := Summarize("", false, 0, nil); len(s.Events) != 0 {
+		t.Errorf("unknown source: Events = %v", s.Events)
+	}
+}
+
+func TestSummaryJSONCarriesEvents(t *testing.T) {
+	b, err := json.Marshal(Summarize("block", false, 0, nil))
+	if err != nil || !strings.Contains(string(b), `"events":["block_rq_issue -\u003e block_rq_complete"]`) {
+		t.Errorf("json = %s, err %v", b, err)
 	}
 }

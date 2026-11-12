@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func TestFlushLog_RoundTrip(t *testing.T) {
 		t.Fatalf("log must sit next to the fio logs as <prefix>_flush.1.log: %v", err)
 	}
 	got, series, ok := loadFlushLog(prefix)
-	if !ok || *got != sum {
+	if !ok || !reflect.DeepEqual(*got, sum) {
 		t.Fatalf("loaded %+v ok=%v, want %+v", got, ok, sum)
 	}
 	// 1s windows, stamped at their start: [0,1s) mean 200us at t=0, [1s,2s)

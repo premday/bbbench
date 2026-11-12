@@ -2,6 +2,7 @@ package flushtrace
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestLogRoundTripKeepsSummaryAndWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("summary after round trip = %+v, want %+v", got, want)
 	}
 	// 100 samples every 10 ms (10..1000 ms) in 500 ms windows: [0,500) has 49,

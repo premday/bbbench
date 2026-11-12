@@ -81,7 +81,7 @@ func ReadLog(r io.Reader) (Summary, []Window, error) {
 				k, v, _ := strings.Cut(f, "=")
 				switch k {
 				case "source":
-					sum.Source = v
+					sum.Source, sum.Events = v, EventsOf(v)
 				case "exact":
 					sum.Exact = v == "true"
 				case "lost":

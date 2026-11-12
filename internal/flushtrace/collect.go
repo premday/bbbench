@@ -10,15 +10,17 @@ import (
 
 // Summary is the Flush latency measured for one device during a phase.
 type Summary struct {
-	Source string  `json:"source"`           // "nvme" or "block"
-	Count  int     `json:"count"`            // completed Flushes
-	MeanNs float64 `json:"mean_ns"`          // exact for both sources
-	MinNs  int64   `json:"min_ns,omitempty"` // only when Exact
-	MaxNs  int64   `json:"max_ns,omitempty"` // only when Exact
-	P50Ns  int64   `json:"p50_ns,omitempty"` // only when Exact
-	P99Ns  int64   `json:"p99_ns,omitempty"` // only when Exact
-	Exact  bool    `json:"exact"`            // per-Flush pairing is exact
-	Lost   int     `json:"lost,omitempty"`   // issued but never seen completing
+	Source string `json:"source"` // "nvme" or "block"
+	// Events are the tracepoint pairs the Flushes were timed from (EventsOf(Source)).
+	Events []string `json:"events,omitempty"`
+	Count  int      `json:"count"`            // completed Flushes
+	MeanNs float64  `json:"mean_ns"`          // exact for both sources
+	MinNs  int64    `json:"min_ns,omitempty"` // only when Exact
+	MaxNs  int64    `json:"max_ns,omitempty"` // only when Exact
+	P50Ns  int64    `json:"p50_ns,omitempty"` // only when Exact
+	P99Ns  int64    `json:"p99_ns,omitempty"` // only when Exact
+	Exact  bool     `json:"exact"`            // per-Flush pairing is exact
+	Lost   int      `json:"lost,omitempty"`   // issued but never seen completing
 	// WriteCache is the kernel's view of the device cache while tracing
 	// ("write back" or "write through"; empty = unknown). A write-through
 	// device is sent no Flush commands at all, so zero Flushes is expected.
@@ -67,7 +69,7 @@ func (s *samples) summary(source string, exact bool, lost int) Summary {
 // re-summarized later (and pick up improvements) without re-running a test.
 // lost is the number of Flushes issued but never seen completing.
 func Summarize(source string, exact bool, lost int, all []Sample) Summary {
-	out := Summary{Source: source, Count: len(all), Exact: exact, Lost: lost}
+	out := Summary{Source: source, Events: EventsOf(source), Count: len(all), Exact: exact, Lost: lost}
 	if len(all) == 0 {
 		return out
 	}
@@ -192,3 +194,16 @@ func (c *Block) Feed(ev Event) {
 
 func (c *Block) Summary() Summary  { return c.s.summary("block", false, len(c.pending)) }
 func (c *Block) Samples() []Sample { return c.s.all }
+
+// EventsOf names the tracepoint pair a Flush source times: "nvme" nvme_setup_cmd
+// -> nvme_complete_rq (flush opcode), "block" block_rq_issue -> block_rq_complete
+// (rwbs F, 0 sectors); nil for an unknown source.
+func EventsOf(source string) []string {
+	switch source {
+	case "nvme":
+		return []string{"nvme_setup_cmd -> nvme_complete_rq"}
+	case "block":
+		return []string{"block_rq_issue -> block_rq_complete"}
+	}
+	return nil
+}
