@@ -264,6 +264,59 @@ func TestIOTraceBufferKB(t *testing.T) {
 	}
 }
 
+// Flush sessions take their share of the same budget, at most the Flush
+// default.
+func TestFlushTraceBufferKB(t *testing.T) {
+	for _, c := range []struct{ sessions, cpus, want int }{
+		{1, 8, 8192}, // capped at the Flush default
+		{8, 16, 2048},
+		{24, 64, 1024}, // floor
+	} {
+		if got := flushTraceBufferKB(c.sessions, c.cpus); got != c.want {
+			t.Errorf("flushTraceBufferKB(%d, %d) = %d, want %d", c.sessions, c.cpus, got, c.want)
+		}
+	}
+}
+
+// Every concurrent session counts against the budget: one I/O session per
+// drive, plus a Flush session per drive whose phase fsyncs.
+func TestTraceSessions(t *testing.T) {
+	fsync := []FioJob{{Name: "j", Section: "[j]\nfsync=1\n"}}
+	plain := []FioJob{{Name: "j", Section: "[j]\n"}}
+	var drives []DriveInfo
+	workloads := map[string]*FioWorkload{}
+	for i, name := range []string{"sda", "sdb", "sdc", "sdd"} {
+		drives = append(drives, DriveInfo{Device: blockdev.Device{Name: name}})
+		phase1 := fsync
+		if i == 3 {
+			phase1 = plain // another workload: phase 1 does not fsync
+		}
+		workloads[name] = &FioWorkload{Phases: [][]FioJob{plain, phase1}}
+	}
+	workloads["sdd"].Phases = workloads["sdd"].Phases[:1] // sdd has no phase 2 below
+	workloads["sda"].Phases = append(workloads["sda"].Phases, plain)
+	for _, c := range []struct {
+		mode      string
+		flush, io bool
+		drive     string
+		phase     int
+		want      int
+	}{
+		{"parallel-sync", true, true, "sda", 0, 4},
+		{"parallel-sync", true, true, "sda", 1, 6}, // 3 drives have phase 2 (index 1), all fsync
+		{"parallel-sync", false, true, "sda", 1, 3},
+		{"parallel-sync", true, false, "sda", 1, 3},
+		{"parallel-sync", true, true, "sda", 2, 1},
+		{"sequential", true, true, "sda", 1, 2},
+		{"sequential", false, false, "sda", 1, 1}, // nothing traced: one session's worth
+	} {
+		ec := &ExecutionCoordinator{mode: c.mode, drives: drives, workloads: workloads, flushTrace: c.flush, ioTrace: c.io}
+		if got := ec.traceSessions(c.drive, c.phase); got != c.want {
+			t.Errorf("%s flush=%t io=%t %s phase %d: sessions = %d, want %d", c.mode, c.flush, c.io, c.drive, c.phase, got, c.want)
+		}
+	}
+}
+
 // A phase whose drive cannot be traced still runs: the reason is a note of
 // the result, not an error.
 func TestExecutePhaseIOTraceNoteNotError(t *testing.T) {

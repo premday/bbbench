@@ -81,15 +81,33 @@ func (ec *ExecutionCoordinator) avgMsec() int {
 	return ec.logAvgMsec
 }
 
-// ioTraceBufferKB is the per-CPU ring buffer of one I/O trace session: in
-// parallel-sync mode every drive has its session at the same time, so they
-// share the budget (see ioTraceBufferKB).
-func (ec *ExecutionCoordinator) ioTraceBufferKB() int {
-	sessions := 1
+// traceSessions is the number of trace sessions open at the same time in
+// phase phaseIdx of drive: per drive one I/O session and, when that drive's
+// phase fsyncs, one Flush session; in parallel-sync mode every drive runs its
+// phase phaseIdx at the same time. They share the budget (see
+// ioTraceBufferKB). At least 1.
+func (ec *ExecutionCoordinator) traceSessions(drive string, phaseIdx int) int {
+	names := []string{drive}
 	if ec.mode == "parallel-sync" {
-		sessions = len(ec.drives)
+		names = names[:0]
+		for _, d := range ec.drives {
+			names = append(names, d.Device.Name)
+		}
 	}
-	return ioTraceBufferKB(sessions, traceCPUs())
+	n := 0
+	for _, name := range names {
+		w := ec.workloads[name]
+		if w == nil || phaseIdx >= len(w.Phases) {
+			continue
+		}
+		if ec.ioTrace {
+			n++
+		}
+		if ec.flushTrace && phaseHasFsync(w.Phases[phaseIdx]) {
+			n++
+		}
+	}
+	return max(n, 1)
 }
 
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
@@ -1106,15 +1124,16 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	// another's) and re-marked when it opens, so their time zero is fio's.
 	// Failure to trace never fails the phase: Flush tracing logs it, I/O
 	// tracing leaves a note for the phase.
+	sessions, cpus := ec.traceSessions(drive.Device.Name, phaseIdx), traceCPUs()
 	var flush *flushTraceRun
 	if ec.flushTrace && phaseHasFsync(phase) {
 		flush = startFlushTrace(drive.Device.Name, logPrefix, logAvgMsec, rampMs,
-			flushtrace.Options{SysBlock: ec.sysBlock})
+			flushtrace.Options{SysBlock: ec.sysBlock, BufferKB: flushTraceBufferKB(sessions, cpus)})
 	}
 	var ioTrace *ioTraceRun
 	if ec.ioTrace {
 		ioTrace, result.IOTraceNote = startIOTraceWith(drive, logPrefix, logAvgMsec, rampMs,
-			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ec.ioTraceBufferKB()})
+			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ioTraceBufferKB(sessions, cpus)})
 	}
 	// A force quit (cleanup) must not leave the instances behind.
 	untrack := ec.registerTrace(func() {

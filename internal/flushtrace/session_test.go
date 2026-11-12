@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -161,6 +162,21 @@ func TestSession_NVMeFallsBackToBlockWithoutNVMeTracepoints(t *testing.T) {
 	}
 	if sum, _ := s.Stop(); sum.Source != "block" {
 		t.Errorf("want block fallback, got %q", sum.Source)
+	}
+}
+
+// The per-CPU ring buffer is Options.BufferKB, 8192 KB by default.
+func TestStart_BufferKB(t *testing.T) {
+	for _, c := range []struct{ opt, want int }{{0, 8192}, {2048, 2048}} {
+		root, inst := fakeTracefs(t, []string{"nvme/nvme_setup_cmd", "nvme/nvme_complete_rq"}, "")
+		s, err := Start("nvme0n1", Options{TracefsRoot: root, InstanceName: "test", BufferKB: c.opt})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		_, _ = s.Stop()
+		if got := read(t, filepath.Join(inst, "buffer_size_kb")); got != strconv.Itoa(c.want) {
+			t.Errorf("BufferKB %d: buffer_size_kb = %q, want %d", c.opt, got, c.want)
+		}
 	}
 }
 

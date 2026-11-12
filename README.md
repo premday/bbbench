@@ -459,8 +459,13 @@ request). It is shown on the cards and the Details page and is never hidden.
 **Cost and opt-out.** Tracing every read and write costs CPU, and at very high
 IOPS it can disturb the numbers it measures; this is why `--no-io-trace` exists.
 The kernel allocates the trace ring buffer per CPU. Concurrent sessions share a
-256 MiB budget: each CPU gets at least 1 MiB and at most 16 MiB (one drive on 16
-CPUs: 16 MiB per CPU; 12 drives on 64 CPUs: the 1 MiB floor, 768 MiB in total).
+256 MiB budget: every drive running a phase at the same time has one I/O latency
+session and, in a phase that fsyncs, one Flush session, each counting as one
+session. Each CPU of an I/O session gets at least 1 MiB and at most 16 MiB, of a
+Flush session at least 1 MiB and at most 8 MiB (one drive on 16 CPUs: 16 MiB per
+CPU; 12 drives on 64 CPUs: the 1 MiB floor, 768 MiB in total, twice that in an
+fsync phase). Above the floor the budget holds; at the floor it is exceeded
+rather than buffers shrunk further.
 Like Flush tracing it uses a private tracefs instance
 (`instances/bbbench-iolat-*`), removed when the phase ends. Instances left by a
 killed or crashed bbbench (`bbbench-iolat-*` and `bbbench-flush-*`) keep their

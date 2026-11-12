@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"bbbench/internal/flushtrace"
 	"bbbench/internal/iotrace"
 )
 
@@ -84,10 +85,11 @@ func (r *ioTraceRun) Close() {
 	}
 }
 
-// I/O trace ring buffer sizing. The kernel allocates buffer_size_kb for every
-// CPU of every session, and a parallel run has one session per drive (its
-// members included) in each phase: 16 MiB x 64 CPUs x 12 drives would be
-// 12 GiB. The reader drains trace_pipe continuously, so the buffer only has
+// Trace ring buffer sizing. The kernel allocates buffer_size_kb for every
+// CPU of every session, and a parallel run has one I/O session per drive (its
+// members included) in each phase, plus one Flush session per drive in a
+// phase that fsyncs: 16 MiB x 64 CPUs x 12 drives would be 12 GiB. Both kinds
+// count as one session each against the budget. The reader drains trace_pipe continuously, so the buffer only has
 // to absorb a reader stall; the concurrent sessions share ioTraceBudgetKB,
 // each CPU getting at least ioTraceMinBufferKB (about 13k events, a stall of
 // a fraction of a second at a few hundred thousand IOPS per CPU: an overrun
@@ -104,6 +106,12 @@ const (
 func ioTraceBufferKB(sessions, cpus int) int {
 	sessions, cpus = max(sessions, 1), max(cpus, 1)
 	return min(max(ioTraceBudgetKB/(sessions*cpus), ioTraceMinBufferKB), ioTraceMaxBufferKB)
+}
+
+// flushTraceBufferKB is the per-CPU buffer of a Flush session: the same
+// share of the budget, at most the Flush default (it sees only Flushes).
+func flushTraceBufferKB(sessions, cpus int) int {
+	return min(ioTraceBufferKB(sessions, cpus), flushtrace.DefaultBufferKB)
 }
 
 // IOLatPoint is the I/O latency of one traced device over one window, in µs;

@@ -17,7 +17,12 @@ type Options struct {
 	TracefsRoot  string // default: autodetect /sys/kernel/tracing, /sys/kernel/debug/tracing
 	SysBlock     string // default /sys/block
 	InstanceName string // default bbbench-flush-<pid>-<n>
+	BufferKB     int    // per-CPU ring buffer; 0 = DefaultBufferKB
 }
+
+// DefaultBufferKB is the per-CPU ring buffer of a session when Options does
+// not set one.
+const DefaultBufferKB = 8192
 
 // Session is one running trace of one device's Flushes. It uses a private
 // ftrace instance, so the system-wide trace buffer and settings are left
@@ -65,8 +70,11 @@ func Start(name string, opts Options) (*Session, error) {
 	if instName == "" {
 		instName = InstanceName("flush")
 	}
-	// A generous buffer so a busy device does not overwrite events.
-	inst, err := OpenInstance(root, instName, 8192, enable, filters, col.Feed)
+	buf := opts.BufferKB
+	if buf <= 0 {
+		buf = DefaultBufferKB
+	}
+	inst, err := OpenInstance(root, instName, buf, enable, filters, col.Feed)
 	if err != nil {
 		return nil, err
 	}
