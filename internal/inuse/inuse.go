@@ -9,6 +9,7 @@ package inuse
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -402,18 +403,9 @@ func readTrim(p string) string {
 	return strings.TrimSpace(string(b))
 }
 
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func (s *scanner) scanHolders() {
 	disks := s.disks()
-	for _, name := range sortedKeys(disks) {
+	for _, name := range slices.Sorted(maps.Keys(disks)) {
 		for _, d := range disks[name] {
 			hs, _ := os.ReadDir(filepath.Join(d.dir, "holders"))
 			for _, h := range hs {
@@ -462,7 +454,7 @@ func (s *scanner) scanPVs() {
 
 func (s *scanner) scanSignatures() {
 	disks := s.disks()
-	for _, name := range sortedKeys(disks) {
+	for _, name := range slices.Sorted(maps.Keys(disks)) {
 		hasPV, inMD := false, false
 		for _, have := range s.r.Busy[name] {
 			if strings.HasPrefix(have, "is an LVM physical volume") {

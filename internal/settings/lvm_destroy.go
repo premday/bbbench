@@ -228,7 +228,7 @@ func (b *lvm) Existing(ctx context.Context) ([]Existing, error) {
 			foreign[key] = append(foreign[key], r["pv_name"])
 		}
 	}
-	for _, name := range slices.Sorted(mapKeys(foreign)) {
+	for _, name := range slices.Sorted(maps.Keys(foreign)) {
 		paths := slices.Sorted(slices.Values(foreign[name]))
 		// Its ID never equals a VG name: it is tied to no VG uuid.
 		e := Existing{Backend: b.Name(), ID: "foreign:" + name, Name: name,
@@ -243,16 +243,6 @@ func (b *lvm) Existing(ctx context.Context) ([]Existing, error) {
 		out = append(out, b.existingOrphan(r))
 	}
 	return out, nil
-}
-
-func mapKeys[V any](m map[string]V) func(func(string) bool) {
-	return func(yield func(string) bool) {
-		for k := range m {
-			if !yield(k) {
-				return
-			}
-		}
-	}
 }
 
 func plural(n int, one, many string) string {

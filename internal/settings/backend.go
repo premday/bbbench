@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 )
 
@@ -133,9 +132,4 @@ func ArrayName(variantName string) (string, error) {
 		return "", fmt.Errorf("array name %q is longer than %d characters", n, maxArrayName)
 	}
 	return n, nil
-}
-
-// sortedOptionKeys are the keys of m in order, for stable messages.
-func sortedOptionKeys(m map[string]string) []string {
-	return slices.Sorted(maps.Keys(m))
 }

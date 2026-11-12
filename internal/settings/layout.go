@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,7 +104,7 @@ func (s *layout) ValidateLayout(l Layout, disks []Disk) error {
 		if len(disks) == 0 {
 			return errors.New("none needs at least 1 disk")
 		}
-		if ks := sortedOptionKeys(l.Options); len(ks) > 0 {
+		if ks := slices.Sorted(maps.Keys(l.Options)); len(ks) > 0 {
 			return fmt.Errorf("%s has no %s option", LevelNone, ks[0])
 		}
 		return nil
@@ -119,7 +120,7 @@ func (s *layout) ValidateLayout(l Layout, disks []Disk) error {
 		}
 	}
 	opts := b.Options(l.Level, data)
-	for _, k := range sortedOptionKeys(l.Options) {
+	for _, k := range slices.Sorted(maps.Keys(l.Options)) {
 		if !slices.ContainsFunc(opts, func(o Option) bool { return o.Key == k }) {
 			return fmt.Errorf("%s has no %s option", l.Level, k)
 		}
