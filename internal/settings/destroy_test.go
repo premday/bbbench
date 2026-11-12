@@ -663,3 +663,26 @@ func TestLayout_DestroyRefusesLVMWhenThePVListIsIncomplete(t *testing.T) {
 		t.Errorf("md: %v %v", bs, err)
 	}
 }
+
+// A provider key the core does not declare is compared too: a VG removed and
+// made again with the same name, LVs and PV paths has another uuid.
+func TestLayout_DestroyComparesTheWholeExtra(t *testing.T) {
+	ctx := context.Background()
+	saw := vgData()
+	saw.Extra["vg_uuid"], saw.Extra["lvs"], saw.Extra["pvs"] = "uuid-old", "home", "/dev/sdb"
+	fresh := vgData()
+	fresh.Extra["vg_uuid"], fresh.Extra["lvs"], fresh.Extra["pvs"] = "uuid-new", "home", "/dev/sdb"
+	r := newDestroyRig(t, sysHolders(t, map[string][]string{"dm-0": nil, "dm-1": nil}), fresh)
+	r.reports = []*inuse.Report{reportOf(nil)}
+	bs, err := r.s.DestroyBlockers(ctx, saw)
+	if err != nil || len(bs) != 1 || !strings.Contains(bs[0], "changed since it was shown") {
+		t.Errorf("blockers %v %v", bs, err)
+	}
+	err = r.s.Destroy(ctx, saw)
+	if err == nil || !strings.Contains(err.Error(), "changed since it was shown") {
+		t.Errorf("destroy: %v", err)
+	}
+	if len(r.d.destroyed) != 0 {
+		t.Errorf("the provider was called: %+v", r.d.destroyed)
+	}
+}

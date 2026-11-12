@@ -20,8 +20,9 @@ import (
 // an md superblock group, a volume group, an orphan physical volume) that
 // the user may select for destruction.
 //
-// Provider convention for Extra (the core reads only these keys and only
-// compares strings; anything not declared is not the configuration's):
+// Provider convention for Extra (the core reads only these keys; the gate
+// compares the whole map, so a provider keeps only stable values there and
+// anything that changes on its own, such as resync progress, in Summary):
 //   - md array or superblock group: ExtraKind = KindMDValue, ID = the array
 //     uuid, ExtraOwnedNodes = the md node ("md127") when assembled.
 //   - volume group: ExtraOwnedVG = the VG name, ExtraOwnedNodes = every dm
@@ -443,8 +444,9 @@ func safeNode(n string) bool {
 
 // sameExisting says how fresh differs from what the user saw, "" when it
 // does not: name, disk set (kernel name, path, serial, model), what it is
-// made of (owned nodes, VG, kind, orphan flag), Blocked and the stack the
-// user confirmed. Summary is not compared (resync progress changes it).
+// made of (owned nodes, VG, kind, orphan flag), the whole Extra, Blocked and
+// the stack the user confirmed. Summary is not compared (resync progress
+// changes it): a provider puts nothing in Extra that changes on its own.
 func sameExisting(saw, fresh Existing) string {
 	if saw.Name != fresh.Name {
 		return fmt.Sprintf("name %s is now %s", saw.Name, fresh.Name)
@@ -468,6 +470,11 @@ func sameExisting(saw, fresh Existing) string {
 	}
 	if saw.Extra[ExtraKind] != fresh.Extra[ExtraKind] || (saw.Extra[ExtraOrphanPV] == "yes") != (fresh.Extra[ExtraOrphanPV] == "yes") {
 		return "its kind differs"
+	}
+	// The provider's own keys too (a uuid, the member devices): a
+	// configuration made again with the same names is another one.
+	if !maps.Equal(saw.Extra, fresh.Extra) {
+		return "what the provider records of it differs"
 	}
 	if saw.Blocked != fresh.Blocked {
 		return "whether it may be destroyed differs"
