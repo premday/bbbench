@@ -12,6 +12,7 @@ import (
 	"bbbench/internal/blockdev"
 	"bbbench/internal/config"
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/iotrace"
 	"bbbench/internal/templating"
 )
 
@@ -221,5 +222,41 @@ func TestBuildPhaseFioFile_DropsTemplateLogAvgMsec(t *testing.T) {
 		if !strings.Contains(out, keep) {
 			t.Errorf("lost %q:\n%s", keep, out)
 		}
+	}
+}
+
+func TestFormatIOTraceSummary(t *testing.T) {
+	rw := map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
+		iotrace.KindDevice: {
+			iotrace.DirRead:  {Count: 10, MeanNs: 85_000, P99Ns: 120_000},
+			iotrace.DirWrite: {Count: 5, MeanNs: 30_100, P99Ns: 41_000},
+		},
+		iotrace.KindBlockLayer: {iotrace.DirRead: {Count: 10, MeanNs: 99_000, P99Ns: 150_000}},
+	}
+	s := &iotrace.Summary{Devices: []iotrace.DeviceSummary{
+		{Name: "md0", Source: "block", Stats: rw},
+		{Name: "sdb", Source: "block", Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
+			iotrace.KindDevice: {iotrace.DirRead: {Count: 1, MeanNs: 9e6, P99Ns: 9e6}}}},
+	}}
+	want := "ftrace device: read avg 85.0 us p99 120.0 us, write avg 30.1 us p99 41.0 us"
+	if got := formatIOTraceSummary(s); got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	s.Lost = 12
+	if got := formatIOTraceSummary(s); got != want+" (12 events lost)" {
+		t.Errorf("with loss: %q", got)
+	}
+	readOnly := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "sda", Source: "block", Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
+		iotrace.KindDevice: {iotrace.DirRead: {Count: 3, MeanNs: 4.5e6, P99Ns: 9e6}}}}}}
+	if got := formatIOTraceSummary(readOnly); got != "ftrace device: read avg 4500.0 us p99 9000.0 us" {
+		t.Errorf("read only: %q", got)
+	}
+	// An md node is bio-based: no request events of its own.
+	none := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "md0", Source: "block"}, {Name: "sdb", Source: "block", Stats: rw}}}
+	if got := formatIOTraceSummary(none); got != "ftrace: no request events seen" {
+		t.Errorf("no events: %q", got)
+	}
+	if got := formatIOTraceSummary(&iotrace.Summary{}); got != "ftrace: no request events seen" {
+		t.Errorf("no devices: %q", got)
 	}
 }

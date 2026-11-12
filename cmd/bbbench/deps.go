@@ -167,19 +167,29 @@ func (ec *ExecutionCoordinator) checkEnvironment() error {
 	if err := checkFioEngines(fioEngineList(), ec.workloads); err != nil {
 		return err
 	}
-	if !ec.flushTrace {
-		return nil
+	if ec.flushTrace && ec.hasFsyncPhase() {
+		if err := flushtrace.TracefsAvailable(); err != nil {
+			fmt.Printf("  warning: Flush latency cannot be traced: %v\n"+
+				"           mount it with `mount -t tracefs nodev /sys/kernel/tracing`; the fsync phases still run and report fio's fsync latency only\n", err)
+		}
 	}
-	for _, w := range ec.workloads {
-		for _, phase := range w.Phases {
-			if phaseHasFsync(phase) {
-				if err := flushtrace.TracefsAvailable(); err != nil {
-					fmt.Printf("  warning: Flush latency cannot be traced: %v\n"+
-						"           mount it with `mount -t tracefs nodev /sys/kernel/tracing`; the fsync phases still run and report fio's fsync latency only\n", err)
-				}
-				return nil
-			}
+	if ec.ioTrace {
+		if err := flushtrace.TracefsAvailable(); err != nil {
+			fmt.Printf("  warning: I/O latency cannot be traced: %v\n"+
+				"           the phases still run and report fio's latency only\n", err)
 		}
 	}
 	return nil
+}
+
+// hasFsyncPhase reports whether any workload has a phase that fsyncs.
+func (ec *ExecutionCoordinator) hasFsyncPhase() bool {
+	for _, w := range ec.workloads {
+		for _, phase := range w.Phases {
+			if phaseHasFsync(phase) {
+				return true
+			}
+		}
+	}
+	return false
 }

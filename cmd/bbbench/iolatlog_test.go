@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"bbbench/internal/blockdev"
 	"bbbench/internal/iotrace"
+	"bbbench/internal/rungroup"
 )
 
 func testIOLatResult(offsetMs int) iotrace.Result {
@@ -109,5 +112,180 @@ func TestLoadBenchmarkSummary_LoadsIOLat(t *testing.T) {
 	}
 	if p2.IOTrace != nil || p2.IOTraceNotes["nvme0n1"] != "no tracefs" {
 		t.Errorf("phase 2: %+v %+v", p2.IOTrace, p2.IOTraceNotes)
+	}
+}
+
+// A tracefs that cannot be used is a note for the phase, never an error:
+// stop gives nothing and can be called again.
+func TestStartIOTraceNoteOnFailure(t *testing.T) {
+	quietLogger(t)
+	drive := DriveInfo{Device: blockdev.Device{Name: "sda"}}
+	prefix := filepath.Join(t.TempDir(), "sda_phase0_1_log")
+	stop, note := startIOTraceWith(drive, prefix, 1000, 0, iotrace.Options{TracefsRoot: t.TempDir()})
+	if !strings.HasPrefix(note, "no ftrace latency: ") {
+		t.Errorf("note = %q", note)
+	}
+	if s := stop(); s != nil {
+		t.Errorf("stop() = %+v, want nil", s)
+	}
+	if s := stop(); s != nil {
+		t.Errorf("second stop() = %+v, want nil", s)
+	}
+	if _, err := os.Stat(iotrace.LogName(prefix)); err == nil {
+		t.Error("a log was written for an untraced phase")
+	}
+}
+
+// An array target is traced with its members in one session, and the log
+// next to fio's names all of them.
+func TestStartIOTraceWritesLog(t *testing.T) {
+	quietLogger(t)
+	root := t.TempDir()
+	inst := filepath.Join(root, "instances", "test")
+	for _, e := range []string{"block/block_rq_issue", "block/block_rq_complete", "block/block_rq_insert"} {
+		for _, base := range []string{root, inst} {
+			if err := os.MkdirAll(filepath.Join(base, "events", e), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	pipe := strings.Join([]string{
+		"bbbench-1 [000] ..... 1.000000000: tracing_mark_write: bbbench-start",
+		"fio-1 [001] ..... 2.000000000: block_rq_insert: 8,16 W 4096 () 2048 + 8 none,0,0 [fio]",
+		"fio-1 [001] ..... 2.000010000: block_rq_issue: 8,16 W 4096 () 2048 + 8 none,0,0 [fio]",
+		"<idle>-0 [001] d.h1. 2.005000000: block_rq_complete: 8,16 W () 2048 + 8 none,0,0 [0]",
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(inst, "trace_pipe"), []byte(pipe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := t.TempDir()
+	for name, dev := range map[string]string{"md0": "9:0", "sdb": "8:16", "sdc": "8:32"} {
+		if err := os.MkdirAll(filepath.Join(sys, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sys, name, "dev"), []byte(dev+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drive := DriveInfo{Device: blockdev.Device{Name: "md0"}, Members: []rungroup.Member{
+		{Name: "sdb", Role: "data"}, {Name: "sdc", Role: "data"}}}
+	prefix := filepath.Join(t.TempDir(), "md0_phase0_1_log")
+	stop, note := startIOTraceWith(drive, prefix, 1000, 0,
+		iotrace.Options{TracefsRoot: root, SysBlock: sys, InstanceName: "test"})
+	if note != "" {
+		t.Fatalf("note = %q", note)
+	}
+	sum := stop()
+	if sum == nil {
+		t.Fatal("stop() = nil")
+	}
+	if again := stop(); again != sum {
+		t.Errorf("second stop() = %p, want the same summary %p", again, sum)
+	}
+	var names []string
+	for _, d := range sum.Devices {
+		names = append(names, d.Name)
+	}
+	if strings.Join(names, ",") != "md0,sdb,sdc" {
+		t.Errorf("devices = %v", names)
+	}
+	data, err := os.ReadFile(iotrace.LogName(prefix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"md0", "sdb", "sdc"} {
+		if !strings.Contains(string(data), name) {
+			t.Errorf("log lacks %s:\n%s", name, data)
+		}
+	}
+	loaded, series, ok := loadIOLatLog(prefix)
+	if !ok || len(loaded.Devices) != 3 || len(series["sdb"]) == 0 {
+		t.Errorf("reloaded: ok=%v sum=%+v series=%+v", ok, loaded, series)
+	}
+}
+
+// The live phase carries the note of an untraced drive and the summary and
+// series of a traced one (from its stored log, like a reload).
+func TestUpdateLivePhaseCarriesIOTrace(t *testing.T) {
+	quietLogger(t)
+	dir := t.TempDir()
+	phase := []FioJob{{Name: "randread", Section: "[randread]\nrw=randread\n"}}
+	nv := DriveInfo{Device: blockdev.Device{Name: "nvme0n1"}}
+	sd := DriveInfo{Device: blockdev.Device{Name: "sda"}}
+	sdPrefix := filepath.Join(dir, "sda_phase0_1_log")
+	if err := writeIOLatLog(sdPrefix, testIOLatResult(0)); err != nil {
+		t.Fatal(err)
+	}
+	stored := testIOLatResult(0).Summary
+	ec := &ExecutionCoordinator{
+		drives: []DriveInfo{nv, sd},
+		workloads: map[string]*FioWorkload{
+			"nvme0n1": {Phases: [][]FioJob{phase}},
+			"sda":     {Phases: [][]FioJob{phase}},
+		},
+		results: map[string][]*FioResult{
+			"nvme0n1": {{DeviceName: "nvme0n1", Phase: 0, LogPrefix: filepath.Join(dir, "nvme0n1_phase0_1_log"),
+				IOTraceNote: "no ftrace latency: no tracefs"}},
+			"sda": {{DeviceName: "sda", Phase: 0, LogPrefix: sdPrefix, IOTrace: &stored}},
+		},
+		liveResult: &BenchmarkResult{ID: "live-iotrace", Drives: []DriveInfo{nv, sd}},
+	}
+	ec.updateLivePhase(0)
+	t.Cleanup(globalResultsStore.Clear)
+	p := ec.liveResult.Phases[0]
+	if p.IOTraceNotes["nvme0n1"] != "no ftrace latency: no tracefs" || len(p.IOTraceNotes) != 1 {
+		t.Errorf("IOTraceNotes = %+v", p.IOTraceNotes)
+	}
+	if p.IOTrace["sda"] == nil || p.IOTrace["nvme0n1"] != nil {
+		t.Errorf("IOTrace = %+v", p.IOTrace)
+	}
+	if len(p.IOTraceSeries["sda"]["nvme0n1"]) == 0 || len(p.IOTraceSeries["sda"]["sdb"]) == 0 {
+		t.Errorf("IOTraceSeries = %+v", p.IOTraceSeries)
+	}
+}
+
+// The ring buffer of the concurrent sessions shares one budget, within a
+// floor (a reader stall of a fraction of a second at high IOPS) and the
+// iotrace default.
+func TestIOTraceBufferKB(t *testing.T) {
+	for _, c := range []struct{ sessions, cpus, want int }{
+		{1, 8, 16384},  // 256 MiB / 8 CPUs = 32 MiB, capped at the default
+		{1, 16, 16384}, // exactly the budget
+		{4, 16, 4096},
+		{12, 64, 1024}, // floor
+		{0, 0, 16384},  // unknown counts = one session on one CPU
+	} {
+		if got := ioTraceBufferKB(c.sessions, c.cpus); got != c.want {
+			t.Errorf("ioTraceBufferKB(%d, %d) = %d, want %d", c.sessions, c.cpus, got, c.want)
+		}
+	}
+}
+
+// A phase whose drive cannot be traced still runs: the reason is a note of
+// the result, not an error.
+func TestExecutePhaseIOTraceNoteNotError(t *testing.T) {
+	quietLogger(t)
+	bin := t.TempDir()
+	fio := "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --output=*) printf '{\"jobs\":[]}' > \"${a#--output=}\";; esac; done\n"
+	if err := os.WriteFile(filepath.Join(bin, "fio"), []byte(fio), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	drive := DriveInfo{Device: blockdev.Device{Name: "sdq", Path: "/dev/sdq"}}
+	phase := []FioJob{{Name: "randread", Section: "[randread]\nrw=randread\n"}}
+	ec := &ExecutionCoordinator{
+		ctx:       context.Background(),
+		drives:    []DriveInfo{drive},
+		outputDir: t.TempDir(),
+		sysBlock:  t.TempDir(), // sdq is unknown: tracing cannot start
+		ioTrace:   true,
+		workloads: map[string]*FioWorkload{"sdq": {Phases: [][]FioJob{phase}}},
+	}
+	res := ec.executePhase(drive, phase, 0, nil, nil)
+	if res.Error != nil {
+		t.Fatalf("phase error: %v", res.Error)
+	}
+	if !strings.HasPrefix(res.IOTraceNote, "no ftrace latency: ") || res.IOTrace != nil {
+		t.Errorf("note = %q, trace = %+v", res.IOTraceNote, res.IOTrace)
 	}
 }

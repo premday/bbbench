@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"bbbench/internal/diskinfo"
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/iotrace"
 	"bbbench/internal/rungroup"
 )
 
@@ -46,6 +48,7 @@ type ExecutionCoordinator struct {
 	liveResult  *BenchmarkResult // updated after each phase for live web view
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
 	flushTrace  bool             // trace device Flush latency during phases that fsync
+	ioTrace     bool             // trace read and write latency (kernel events) during every phase
 
 	labels  map[string]rungroup.Label // device -> setting label (run groups; nil otherwise)
 	groupID string
@@ -74,6 +77,17 @@ func (ec *ExecutionCoordinator) avgMsec() int {
 	return ec.logAvgMsec
 }
 
+// ioTraceBufferKB is the per-CPU ring buffer of one I/O trace session: in
+// parallel-sync mode every drive has its session at the same time, so they
+// share the budget (see ioTraceBufferKB).
+func (ec *ExecutionCoordinator) ioTraceBufferKB() int {
+	sessions := 1
+	if ec.mode == "parallel-sync" {
+		sessions = len(ec.drives)
+	}
+	return ioTraceBufferKB(sessions, runtime.NumCPU())
+}
+
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
 // It is logAvgMsec/10, with a minimum of 1000ms (1 second).
 func (ec *ExecutionCoordinator) coalesceMsec() int64 {
@@ -98,6 +112,12 @@ type FioResult struct {
 	// FlushTrace is the device Flush latency measured from kernel trace
 	// events, for phases that issue fsyncs. Nil when not measured.
 	FlushTrace *flushtrace.Summary
+	// IOTrace is the read and write latency measured from kernel trace
+	// events (the drive, then an array's members). Nil when not traced;
+	// IOTraceNote then says why ("no ftrace latency: <reason>"), unless
+	// tracing was off.
+	IOTrace     *iotrace.Summary
+	IOTraceNote string
 	// Skipped is why the phase was not run on this device (not an error).
 	Skipped string
 	// Warning is a caveat about a phase that did run (e.g. no Flush to trace).
@@ -565,6 +585,20 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 					// Same path as reloading a saved run: from the stored log.
 					applyFlushLog(&phaseResult, deviceName, result.LogPrefix)
 					applyMembersLog(&phaseResult, deviceName, result.LogPrefix)
+				}
+				if result.IOTrace != nil {
+					if phaseResult.IOTrace == nil {
+						phaseResult.IOTrace = make(map[string]*iotrace.Summary)
+					}
+					phaseResult.IOTrace[deviceName] = result.IOTrace
+				}
+				if result.IOTraceNote != "" {
+					if phaseResult.IOTraceNotes == nil {
+						phaseResult.IOTraceNotes = make(map[string]string)
+					}
+					phaseResult.IOTraceNotes[deviceName] = result.IOTraceNote
+				}
+				if result.LogPrefix != "" {
 					applyIOLatLog(&phaseResult, deviceName, result.LogPrefix)
 				}
 				if len(result.JsonOutput) > 0 {
@@ -1063,6 +1097,14 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	// Sample the members of an array (no-op for a drive) while fio runs.
 	stopMembers := startMemberSampler(drive, logPrefix, logAvgMsec, rampMs)
 
+	// Time every read and write (the drive and an array's members) from
+	// kernel trace events. A failure to trace is a note, never an error.
+	stopIOTrace := func() *iotrace.Summary { return nil }
+	if ec.ioTrace {
+		stopIOTrace, result.IOTraceNote = startIOTraceWith(drive, logPrefix, logAvgMsec, rampMs,
+			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ec.ioTraceBufferKB()})
+	}
+
 	// Execute fio with context for cancellation support
 	cmd := exec.CommandContext(ec.ctx, "fio",
 		"--output-format=json",
@@ -1091,6 +1133,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 
 	output, err := cmd.CombinedOutput()
 	stopMembers()
+	result.IOTrace = stopIOTrace()
 	stopTrace()
 	if err != nil {
 		// Check if it was cancelled

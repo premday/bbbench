@@ -199,6 +199,11 @@ func Start(devices []string, opts Options) (*Session, error) {
 	if anyNVMe {
 		enable = append(enable, "events/"+evNVMeSetup, "events/"+evNVMeDone)
 		// Reads and writes on I/O queues; completions cannot be filtered by opcode.
+		// The ctrl_id field is taken from the kernel's nvme trace header and
+		// not verified on a real kernel. Should the kernel reject it, the
+		// whole filter of that event is not applied (filters are best effort)
+		// and the collector filters the same way in userspace (opcode, qid,
+		// disk or controller), at a higher event rate.
 		setup, done := "(opcode == 1 || opcode == 2) && qid > 0", "qid > 0"
 		if len(ctrls) > 0 {
 			ids := make([]string, len(ctrls))
@@ -272,7 +277,8 @@ func (s *Session) Stop() (Result, error) {
 // from sysfs: <sysBlock>/<name>/device links to the controller, or, for a
 // native multipath head, to the subsystem, and then the path devices under
 // <sysBlock>/<name>/multipath/ (nvme<subsys>c<ctrl>n<ns>) name them. Empty
-// when sysfs does not say.
+// when sysfs does not say. The multipath layout is taken from kernel sources
+// and not verified on a real multipath system.
 func nvmeControllers(sysBlock, name string) []string {
 	if sysBlock == "" {
 		sysBlock = "/sys/block"

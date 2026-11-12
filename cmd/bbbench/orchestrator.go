@@ -86,6 +86,7 @@ func runOrchestrator(args []string) error {
 	filterMaxCap := fs.Uint64("filter-max-capacity", 0, "filter drives by maximum capacity in GB (0 = no limit)")
 	skipWriteThrough := fs.Bool("skip-write-through", false, "do not run fsync (Flush-latency) phases on write-through devices, where the kernel sends no Flush (default: run them and warn)")
 	noFlushTrace := fs.Bool("no-flush-trace", false, "do not trace device Flush latency (kernel trace events) during fsync phases")
+	noIOTrace := fs.Bool("no-io-trace", false, "do not trace read and write latency (kernel trace events) during phases")
 	logAvgMsec := fs.Int("log-avg-msec", 1000, "fio log averaging interval in milliseconds (--log_avg_msec)")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
 	sysBlock := fs.String("sys-block", "", "override /sys/block (tests)")
@@ -357,6 +358,7 @@ func runOrchestrator(args []string) error {
 		DryRun:           *dryRun,
 		Verbose:          *verbose,
 		FlushTrace:       !*noFlushTrace,
+		IOTrace:          !*noIOTrace,
 		SkipWriteThrough: *skipWriteThrough,
 		LogAvgMsec:       *logAvgMsec,
 	}
@@ -450,6 +452,7 @@ type runOptions struct {
 	Resume           *ExecutionState
 	DryRun, Verbose  bool
 	FlushTrace       bool
+	IOTrace          bool
 	SkipWriteThrough bool
 	LogAvgMsec       int
 	// OnStarted, when non-nil, is called once the run's live result is in
@@ -509,6 +512,7 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 	coordinator.verbose = opts.Verbose
 	coordinator.logAvgMsec = opts.LogAvgMsec
 	coordinator.flushTrace = opts.FlushTrace
+	coordinator.ioTrace = opts.IOTrace
 	coordinator.labels = spec.Labels
 	coordinator.groupID = spec.GroupID
 	if err := coordinator.checkEnvironment(); err != nil {

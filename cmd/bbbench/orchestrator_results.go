@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/iotrace"
 )
 
 // FioJsonOutput represents the structure of fio's JSON output.
@@ -182,6 +184,11 @@ func displayResults(coordinator *ExecutionCoordinator) error {
 			if result.FlushTrace != nil {
 				parts = append(parts, formatFlushSummary(result.FlushTrace))
 			}
+			if result.IOTrace != nil {
+				parts = append(parts, formatIOTraceSummary(result.IOTrace))
+			} else if result.IOTraceNote != "" {
+				parts = append(parts, result.IOTraceNote)
+			}
 
 			if len(parts) > 0 {
 				fmt.Printf("%s (%.1fs)\n", joinStrings(parts, ", "), duration.Seconds())
@@ -239,4 +246,32 @@ func formatFlushSummary(s *flushtrace.Summary) string {
 		out += fmt.Sprintf(", p99 %.1f us, max %.1f us", float64(s.P99Ns)/1000, float64(s.MaxNs)/1000)
 	}
 	return fmt.Sprintf("%s (%d flushes)", out, s.Count)
+}
+
+// formatIOTraceSummary renders the kernel-measured device latency of the
+// target (the first traced device) for the run summary; an array's members
+// are on the pages. A target without request events (an md or dm node is
+// bio-based) says so.
+func formatIOTraceSummary(s *iotrace.Summary) string {
+	var dev map[iotrace.Dir]iotrace.Stats
+	if len(s.Devices) > 0 {
+		dev = s.Devices[0].Stats[iotrace.KindDevice]
+	}
+	var dirs []string
+	for _, d := range []struct {
+		dir  iotrace.Dir
+		name string
+	}{{iotrace.DirRead, "read"}, {iotrace.DirWrite, "write"}} {
+		if st, ok := dev[d.dir]; ok && st.Count > 0 {
+			dirs = append(dirs, fmt.Sprintf("%s avg %.1f us p99 %.1f us", d.name, st.MeanNs/1000, float64(st.P99Ns)/1000))
+		}
+	}
+	if len(dirs) == 0 {
+		return "ftrace: no request events seen"
+	}
+	out := "ftrace device: " + strings.Join(dirs, ", ")
+	if s.Lost > 0 {
+		out += fmt.Sprintf(" (%d events lost)", s.Lost)
+	}
+	return out
 }

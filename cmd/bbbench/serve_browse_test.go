@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -283,5 +284,21 @@ func TestBrowseIntegration(t *testing.T) {
 
 	if result.ID != "browse-1" {
 		t.Errorf("API returned wrong result: %s", result.ID)
+	}
+}
+
+// The Details page lists each traced device's source text and each note of
+// an untraced drive.
+func TestDetailsPageShowsIOTrace(t *testing.T) {
+	globalResultsStore.Clear()
+	globalResultsStore.AddResult(&BenchmarkResult{ID: "detail-iotrace", Timestamp: time.Now(), Phases: []PhaseResult{{PhaseName: "p"}}})
+	defer globalResultsStore.Clear()
+	w := httptest.NewRecorder()
+	handleResultDetailPage(w, httptest.NewRequest("GET", "/result?id=detail-iotrace", nil))
+	body := w.Body.String()
+	for _, want := range []string{"Object.entries(phase.io_trace || {})", "Object.entries(phase.io_trace_notes || {})", "s.text"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
 	}
 }

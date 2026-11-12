@@ -3,9 +3,76 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"bbbench/internal/iotrace"
 )
+
+// startIOTraceWith times every read and write of a phase from kernel trace
+// events: one session for the drive, or for an array target together with
+// its members (an md or dm node is bio-based and has no request events of
+// its own: its members carry the series). opts sets the host paths and the
+// ring buffer; AvgMsec and OffsetMs come from avgMsec and rampMs. Tracing never fails a phase: when it cannot
+// start, note says why ("no ftrace latency: <reason>", for the phase's
+// io_trace_notes) and stop returns nil. Otherwise stop ends the session,
+// stores the log next to fio's and returns the summary; it is idempotent.
+//
+// Not verified on a real kernel yet: the NVMe tracepoint filter on ctrl_id
+// and the NVMe native multipath sysfs layout (iotrace.nvmeControllers). If
+// either differs, the NVMe source may see no events (the source line then
+// says "no request events seen") but the phase still runs.
+func startIOTraceWith(drive DriveInfo, logPrefix string, avgMsec, rampMs int, opts iotrace.Options) (stop func() *iotrace.Summary, note string) {
+	devices := []string{drive.Device.Name}
+	for _, m := range drive.Members {
+		devices = append(devices, m.Name)
+	}
+	opts.AvgMsec, opts.OffsetMs = avgMsec, rampMs
+	sess, err := iotrace.Start(devices, opts)
+	if err != nil {
+		note = "no ftrace latency: " + err.Error()
+		if logger != nil {
+			logger.Warn("I/O latency tracing unavailable", "device", drive.Device.Name, "err", err)
+		}
+		return func() *iotrace.Summary { return nil }, note
+	}
+	var once sync.Once
+	var sum *iotrace.Summary
+	return func() *iotrace.Summary {
+		once.Do(func() {
+			res, err := sess.Stop()
+			if err != nil && logger != nil {
+				logger.Warn("I/O latency tracing cleanup", "device", drive.Device.Name, "err", err)
+			}
+			if err := writeIOLatLog(logPrefix, res); err != nil && logger != nil {
+				logger.Warn("storing I/O latency", "device", drive.Device.Name, "err", err)
+			}
+			sum = &res.Summary
+		})
+		return sum
+	}, ""
+}
+
+// I/O trace ring buffer sizing. The kernel allocates buffer_size_kb for every
+// CPU of every session, and a parallel run has one session per drive (its
+// members included) in each phase: 16 MiB x 64 CPUs x 12 drives would be
+// 12 GiB. The reader drains trace_pipe continuously, so the buffer only has
+// to absorb a reader stall; the concurrent sessions share ioTraceBudgetKB,
+// each CPU getting at least ioTraceMinBufferKB (about 13k events, a stall of
+// a fraction of a second at a few hundred thousand IOPS per CPU: an overrun
+// beyond it is counted and shown, never hidden) and at most the iotrace
+// default.
+const (
+	ioTraceBudgetKB    = 256 * 1024
+	ioTraceMinBufferKB = 1024
+	ioTraceMaxBufferKB = 16384
+)
+
+// ioTraceBufferKB is the per-CPU buffer of one of sessions concurrent
+// sessions on cpus CPUs.
+func ioTraceBufferKB(sessions, cpus int) int {
+	sessions, cpus = max(sessions, 1), max(cpus, 1)
+	return min(max(ioTraceBudgetKB/(sessions*cpus), ioTraceMinBufferKB), ioTraceMaxBufferKB)
+}
 
 // IOLatPoint is the I/O latency of one traced device over one window, in µs;
 // T is the window start in seconds on the trace clock.

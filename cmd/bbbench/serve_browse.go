@@ -599,10 +599,17 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
                     const warned = Object.entries(phase.warnings || {}).map(([dev, why]) =>
                         '<div class="phase-stats" style="color:#8a5300;background:#fff3e0;border-radius:4px;padding:4px 8px;margin-top:4px;white-space:pre-line;">' +
                         '&#9888; ' + esc(why) + '</div>').join('');
+                    // Read and write latency from kernel trace events: the
+                    // source of each traced drive, or why it was not traced.
+                    const traced = Object.entries(phase.io_trace || {}).map(([dev, s]) =>
+                        '<div class="phase-stats">' + esc(dev) + ': ' + esc(s.text || '') + '</div>').join('');
+                    const untraced = Object.entries(phase.io_trace_notes || {}).map(([dev, why]) =>
+                        '<div class="phase-stats" style="color:#8a5300;background:#fff3e0;border-radius:4px;padding:4px 8px;margin-top:4px;white-space:pre-line;">' +
+                        '&#9888; ' + esc(dev) + ': ' + esc(why) + '</div>').join('');
                     return '<li class="phase-item">' +
                         '<div class="phase-name">Phase ' + (i + 1) + ': ' + esc(phase.phase_name || 'Unnamed') + '</div>' +
                         '<div class="phase-stats">Jobs: ' + jobCount + ' | Duration: ' + duration + 's</div>' +
-                        warned + skipped + '</li>';
+                        warned + skipped + traced + untraced + '</li>';
                 }).join('');
             })
             .catch(error => {
