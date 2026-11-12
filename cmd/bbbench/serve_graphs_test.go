@@ -869,7 +869,7 @@ console.log('OK');
 
 // A loss note shown in the modal must not survive into the next one.
 func TestGraphsPageModalClearsWarn(t *testing.T) {
-	runPageJS(t, []string{"openModal", "iolatKind", "lossNote", "addLossNote", "sourceLine"}, `
+	runPageJS(t, []string{"openModal", "iolatKind", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote"}, `
 const assert = require('assert');
 const els = {};
 const el = id => els[id] || (els[id] = {id, textContent: '', className: '', innerHTML: '',
@@ -887,6 +887,11 @@ openModal(lossy, {key: 'lat', label: 'Latency', source: 'fio'}, 0, 1, 'normal');
 assert.ok(el('modal-ts-warn').textContent.includes('4 trace events lost'));
 openModal({disk: 'sda'}, {key: 'bw', label: 'BW', source: 'fio'}, 0, 1, 'normal');
 assert.strictEqual(el('modal-ts-warn').textContent, '');
+// a bio-based node's Block-layer modal adds the node's note to the source line
+openModal({disk: 'md0', io_trace: {text_blocklayer: 'ftrace: md0: bio-based, no block layer',
+    devices: [{name: 'md0', bio_based: true, block_layer_note: 'bio-based (no request queue)'}]}},
+    {key: 'iolatblk', label: 'Block', source: 'ftrace'}, 0, 1, 'normal');
+assert.strictEqual(el('modal-src').textContent, 'ftrace: md0: bio-based, no block layer \u00b7 md0: bio-based (no request queue)');
 console.log('OK');
 `)
 }
@@ -1509,4 +1514,110 @@ func TestGraphsPageNormalModeNoStackTotals(t *testing.T) {
 	if !strings.Contains(mc, "const totals = stacked ? g.totals : {};") {
 		t.Errorf("Stack total lines are not limited to stacked mode:\n%s", mc)
 	}
+}
+
+// bioNodeEntry is an md0 target whose node is bio-based: its own series are
+// the bios (kind bio), its members' the device and block-layer requests.
+const bioNodeJS = `
+const md0 = (scale) => ({log_avg_msec: 1000, kind: 'array',
+    io_trace: {text: 'ftrace: md0: block_bio_queue -> block_bio_complete', devices: [
+        {name: 'md0', source: 'bio', bio_based: true, block_layer: false, events: ['block_bio_queue -> block_bio_complete'],
+         block_layer_note: 'bio-based (no request queue): no block-layer series; bio-level latency (block_bio_queue -> block_bio_complete) on the Device latency card',
+         stats: {bio: {r: {count: 4, mean_ns: 300 * scale * 1000}, w: {count: 4, mean_ns: 900 * scale * 1000}}}},
+        {name: 'sdb', source: 'block', block_layer: true, events: ['block_rq_issue -> block_rq_complete', 'block_rq_insert -> block_rq_complete'],
+         stats: {device: {r: {count: 2}}}}]},
+    ts_iolat: [pt(0, 'bio', 'r', 4, 300 * scale, 500 * scale), pt(0, 'bio', 'w', 4, 900 * scale, 1500 * scale),
+        pt(1, 'bio', 'w', 2, 800 * scale, 1000 * scale)],
+    ts_iolat_members: {sdb: [pt(0, 'device', 'r', 2, 50 * scale, 60 * scale), pt(0, 'blocklayer', 'r', 2, 55 * scale, 65 * scale)]}});
+`
+
+// TestGraphsPageBioNodeSeries: the Device latency card of a bio-based array
+// target draws the node's bio mean and p99 in the array's fio colours next to
+// its members' device lines, the Latency card overlays the bio mean, the
+// Block-layer card draws the members only (the node says it has none), and
+// toggles and the y extent follow the new series.
+func TestGraphsPageBioNodeSeries(t *testing.T) {
+	runPageJS(t, append(append([]string{}, ftraceFuncs...), "iolatNodeNote", "setShown"), ftraceTestPrelude+bioNodeJS+`
+const d = md0(1);
+const io = ftraceDatasets(d, IOLAT);
+assert.deepStrictEqual(io.map(x => x.label), [
+    'Array read bio mean (ftrace)', 'Array read bio p99 (ftrace)',
+    'Array write bio mean (ftrace)', 'Array write bio p99 (ftrace)',
+    'sdb read device mean (ftrace)']);
+assert.deepStrictEqual(io.map(x => x.skey), ['ftrace.bio.mean.r', 'ftrace.bio.p99.r', 'ftrace.bio.mean.w', 'ftrace.bio.p99.w', 'ftrace.member:sdb']);
+assert.deepStrictEqual(io.slice(0, 4).map(x => x.borderDash), [[6, 3], [8, 3, 2, 3], [6, 3], [8, 3, 2, 3]]);
+assert.ok(io[0].borderColor.startsWith('rgba(37,99,235') && io[2].borderColor.startsWith('rgba(220,38,38'));
+assert.ok(io.slice(0, 4).every(x => x.borderWidth === 2 && x.fill === false));
+assert.deepStrictEqual(io[2].data, [{x: 0, y: -900}, {x: 1, y: -800}]);
+assert.strictEqual(io[1].data[0].y, 500);
+// the Latency card: the node's bio mean as a dashed line
+const lat = ftraceDatasets(d, LAT);
+assert.deepStrictEqual(lat.map(x => x.label), ['Array read bio mean (ftrace)', 'Array write bio mean (ftrace)']);
+assert.deepStrictEqual(lat[0].borderDash, [6, 3]);
+// the Block-layer card: members only, and the node's note
+assert.deepStrictEqual(ftraceDatasets(d, IOLATBLK).map(x => x.label), ['sdb read block layer mean (ftrace)']);
+assert.strictEqual(iolatNone(d, IOLATBLK), '');
+assert.strictEqual(iolatNodeNote(d, IOLATBLK), 'md0: ' + d.io_trace.devices[0].block_layer_note);
+assert.strictEqual(iolatNodeNote(d, IOLAT), '');
+assert.strictEqual(iolatNodeNote(entry('nvme', 1), IOLATBLK), '');
+// without members the node's bio series still fills the Device card
+const alone = md0(1);
+delete alone.ts_iolat_members;
+assert.strictEqual(iolatNone(alone, IOLAT), '');
+assert.strictEqual(iolatNone(alone, IOLATBLK), 'no block-layer series: ' + alone.io_trace.devices[0].block_layer_note);
+// a request-based drive never shows a bio line
+assert.ok(!ftraceDatasets(entry('block', 1), IOLAT).some(x => x.skey.indexOf('bio') !== -1));
+// y extent: the bio p99 counts, and hiding it recomputes the range
+const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, a + ' != ' + b);
+let e = phaseExtent([d], IOLAT, 'normal');
+close(e.yHigh, 500 * 1.15);
+close(e.yLow, -1500 * 1.15);
+setShown('iolat', 'ftrace.bio.p99.w', false);
+e = phaseExtent([d], IOLAT, 'normal');
+close(e.yLow, -900 * 1.15);
+assert.ok(!chartDatasets(d, IOLAT, 'normal').datasets.some(x => x.skey === 'ftrace.bio.p99.w'));
+setShown('iolat', 'ftrace.bio.p99.w', true);
+// HDD-scale latencies (seconds) keep their SI scale
+const slow = md0(1e4);
+const sc = siScale(IOLAT, 1.5e7);
+assert.strictEqual(sc.prefix, '');
+assert.strictEqual(fmtScaled(toBase(ftraceDatasets(slow, IOLAT), sc)[1].data[0].y, sc, true), '5.00');
+console.log('OK');
+`)
+}
+
+// TestGraphsPageBioNodeCharts: the Device latency chart of a bio-based node
+// draws its bio lines in seconds for an HDD array, with two decimals.
+func TestGraphsPageBioNodeCharts(t *testing.T) {
+	runPageJS(t, chartFuncs, chartStubJS+`
+const IOLAT = {key: 'iolat', unit: 'μs', tsKey: 'ts_iolat', sumR: d => 0, sumW: d => 0};
+const pt = (t, kind, dir, n, mean, p99) => ({t, kind, dir, n, mean, p50: mean, p99});
+const d = {log_avg_msec: 1000, ts_iolat: [pt(0, 'bio', 'r', 3, 2.5e6, 4e6)]};
+makeChart({}, d, IOLAT, 0, 4.6e6);
+assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Array read bio mean (ftrace)', 'Array read bio p99 (ftrace)']);
+assert.strictEqual(yTitle(), 's');
+const label = (k, i) => last.options.plugins.tooltip.callbacks.label({dataset: last.data.datasets[k], raw: last.data.datasets[k].data[i]});
+assert.strictEqual(label(1, 0), 'Array read bio p99 (ftrace): 4.00 s');
+console.log('OK');
+`)
+}
+
+// The tracepoint reference of the badges names the bio pair of a bio-based
+// node for the Device latency, Latency and Flush metrics.
+func TestGraphsPageSrcBadgeBioNode(t *testing.T) {
+	runPageJS(t, []string{"ftraceRef", "ftraceEvents"}, `
+const assert = require('assert');
+for (const key of ['iolat', 'lat', 'flush']) {
+    const r = ftraceRef({key});
+    assert.ok(r.includes('bio-based md/dm node') && r.includes('block_bio_queue -> block_bio_complete'), key + ': ' + r);
+}
+assert.ok(ftraceRef({key: 'iolatblk'}).includes('none on a bio-based md/dm node'));
+const md = {io_trace: {devices: [{block_layer: false, events: ['block_bio_queue -> block_bio_complete']},
+    {block_layer: true, events: ['block_rq_issue -> block_rq_complete', 'block_rq_insert -> block_rq_complete']}]},
+    flush: {events: ['block_bio_queue -> block_bio_complete']}};
+assert.deepStrictEqual(ftraceEvents([md], {key: 'iolat'}), ['block_bio_queue -> block_bio_complete', 'block_rq_issue -> block_rq_complete']);
+assert.deepStrictEqual(ftraceEvents([md], {key: 'iolatblk'}), ['block_rq_insert -> block_rq_complete']);
+assert.deepStrictEqual(ftraceEvents([md], {key: 'flush'}), ['block_bio_queue -> block_bio_complete']);
+console.log('OK');
+`)
 }

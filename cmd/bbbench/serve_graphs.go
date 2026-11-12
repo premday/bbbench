@@ -711,11 +711,21 @@ __NAVBAR_HTML__
         if (!d.io_trace) return d.io_trace_note || '';
         const dev = d.io_trace.devices && d.io_trace.devices[0];
         if (!dev) return 'no traced device';
-        const own = dev.stats && dev.stats[kind] && Object.keys(dev.stats[kind]).length > 0;
+        // A bio-based node's own series on the Device card are its bios.
+        const has = k => !!(dev.stats && dev.stats[k] && Object.keys(dev.stats[k]).length > 0);
+        const own = has(kind) || (kind === 'device' && has('bio'));
         const members = d.ts_iolat_members && Object.values(d.ts_iolat_members).some(pts => (pts || []).some(p => p.kind === kind && p.n > 0));
         if (own || members) return '';
         if (kind === 'device') return dev.note || 'ftrace saw no read or write requests on ' + dev.name;
         return 'no block-layer series: ' + (dev.block_layer_note || dev.note || 'ftrace saw no block-layer requests on ' + dev.name);
+    }
+    // iolatNodeNote: the Block-layer card of a bio-based target (an md or
+    // dm node: no request queue) draws its members only; the target's
+    // block_layer_note says so and where its bio series is. '' otherwise.
+    function iolatNodeNote(d, metric) {
+        if (metric.key !== 'iolatblk' || !d.io_trace) return '';
+        const dev = (d.io_trace.devices || [])[0];
+        return dev && dev.bio_based && dev.block_layer_note ? dev.name + ': ' + dev.block_layer_note : '';
     }
     // iolatPoints turns the points of one kind and direction into chart
     // points: x on the member window grid, y = stat in us (negative for
@@ -729,7 +739,10 @@ __NAVBAR_HTML__
     // the mean device and block layer latency of the target next to fio's,
     // the Device latency card mean and p99 of the device kind plus each
     // member's device mean, the Block-layer latency card the same of the
-    // block-layer kind. A kind and direction without points has no dataset.
+    // block-layer kind. A bio-based target (an md or dm node) has bio-level
+    // series instead (kind bio): on the Latency card its mean, on the Device
+    // latency card mean and p99, in the array's fio colours. A kind and
+    // direction without points has no dataset.
     function ftraceDatasets(d, metric) {
         const out = [], only = iolatKind(metric);
         if (metric.key !== 'lat' && !only) return out;
@@ -748,6 +761,17 @@ __NAVBAR_HTML__
                 }));
             });
         }));
+        if (!only || only === 'device') ['r', 'w'].forEach(dir => {
+            (full ? [['mean', [6, 3], 0.95], ['p99', [8, 3, 2, 3], 0.6]] : [['mean', [6, 3], 0.95]]).forEach(([stat, dsh, a]) => {
+                const data = iolatPoints(d, d.ts_iolat, 'bio', dir, stat);
+                if (!data.length) return;
+                const c = rgba(rgb[dir], a);
+                out.push(Object.assign({}, base, {
+                    label: 'Array ' + (dir === 'r' ? 'read' : 'write') + ' bio ' + stat + ' (ftrace)', data,
+                    skey: 'ftrace.bio.' + stat + '.' + dir, dir, borderColor: c, backgroundColor: c, borderDash: dsh, borderWidth: 2,
+                }));
+            });
+        });
         if (full && d.ts_iolat_members) {
             const names = Object.keys(d.ts_iolat_members).sort(), colors = memberColors(names);
             const kname = kinds[0][1];
@@ -803,9 +827,10 @@ __NAVBAR_HTML__
     // events) behind an ftrace metric and the pair each latency spans, per
     // source: NVMe vs everything else. '' for a metric without ftrace data.
     function ftraceRef(metric) {
-        const flush = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (flush opcode); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (rwbs F, 0 sectors)';
-        const dev = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (read and write commands); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (read and write requests)';
-        const blk = 'every device, NVMe included: block_rq_insert -> block_rq_complete (a request issued without an insert counts from block_rq_issue; merges via block_rq_merge)';
+        const bio = 'a bio-based md/dm node (no request queue): block_bio_queue -> block_bio_complete';
+        const flush = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (flush opcode); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (rwbs F, 0 sectors); ' + bio + ' (its flush bios: rwbs F, 0 sectors)';
+        const dev = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (read and write commands); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (read and write requests); ' + bio + ' (its read and write bios)';
+        const blk = 'every device, NVMe included: block_rq_insert -> block_rq_complete (a request issued without an insert counts from block_rq_issue; merges via block_rq_merge); none on a bio-based md/dm node';
         switch (metric.key) {
         case 'flush': return flush;
         case 'iolat': return dev;
@@ -1655,7 +1680,8 @@ __NAVBAR_HTML__
     // Each series of a card has a key (skey): fio.r and fio.w (a drive's
     // read and write, an array's own fio lines, the bars), member:<name>
     // (both directions of a member, kernel stat), ftrace.<kind>.<stat>.<dir>
-    // (ftrace.device.mean.r), ftrace.member:<name> (a member's device latency
+    // (ftrace.device.mean.r; ftrace.bio.mean.r for a bio-based node's bios),
+    // ftrace.member:<name> (a member's device latency
     // on the Device card, its block-layer latency on the Block-layer card)
     // and flush. HIDDEN maps a metric key to the Set of the keys
     // hidden on every card of that metric: page memory only (not stored), so
@@ -1863,7 +1889,7 @@ __NAVBAR_HTML__
         const seriesEl = document.getElementById('modal-series');
         seriesEl.innerHTML = '';
         seriesEl.appendChild(seriesRow(d, metric, mode, 'modal:' + metric.key));
-        document.getElementById('modal-src').textContent = sourceLine(d, metric);
+        document.getElementById('modal-src').textContent = [sourceLine(d, metric), iolatNodeNote(d, metric)].filter(Boolean).join(' \u00b7 ');
         document.getElementById('modal-overlay').classList.add('active');
     }
 
@@ -1907,6 +1933,13 @@ __NAVBAR_HTML__
         }
         if (mdh && mdh.note) card.appendChild(mdh.note);
         const why = d.skipped ? 'Skipped: ' + d.skipped : flushNone(d, metric) || iolatNone(d, metric);
+        const nodeNote = why ? '' : iolatNodeNote(d, metric);
+        if (nodeNote) {
+            const t4 = document.createElement('div');
+            t4.className = 'src-line';
+            t4.textContent = nodeNote;
+            card.appendChild(t4);
+        }
         if (!why) card.appendChild(seriesRow(d, metric, mode, cid));
 
         const wrap = document.createElement('div');
