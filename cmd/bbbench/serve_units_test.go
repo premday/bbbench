@@ -75,11 +75,12 @@ function Chart(canvas, cfg) { last = cfg; this.cfg = cfg; }
 const mdPlugin = {id: 'mdTrack'};
 const MEMBER_PALETTE = [[22, 163, 74], [217, 119, 6], [124, 58, 237]];
 let X_MAX = 0;
+const AXIS_HEADROOM = 1.15;
 const tick = v => last.options.scales.y.ticks.callback(v);
 const yTitle = () => last.options.scales.y.title && last.options.scales.y.title.display && last.options.scales.y.title.text;
 `
 
-var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "unitScale", "fmtScaled", "tsWarn", "memberMetric",
+var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "unitScale", "fmtScaled", "phaseScale", "tsWarn", "memberMetric",
 	"memberNames", "memberColors", "memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "rgba",
 	"stackedMemberDatasets", "memberLatencyDatasets", "arrayDatasets", "makeMembersChart",
 	"mdMetric", "hasMD", "mdBusy", "mdActions", "mdBands", "mdIndex", "mdTipLines", "mdMarkers", "mdOptions",
@@ -108,6 +109,11 @@ assert.strictEqual(lbl({raw: {x: 1, y: -1500}}), 'Write: 1.5 GB/s');
 makeChart({}, {ts_bw: [{t: 1, r: 400, w: 0}]}, BW, 0, 460);
 assert.strictEqual(yTitle(), 'MB/s');
 assert.strictEqual(tick(400), '400');
+// A 900 MB/s peak has 15% headroom on the axis (1035): the unit follows the
+// data, not the axis, so it stays MB/s.
+makeChart({}, {ts_bw: [{t: 1, r: 900, w: 0}]}, BW, 0, 1035);
+assert.strictEqual(yTitle(), 'MB/s');
+assert.strictEqual(tick(900), '900');
 // IOPS of 1.2 M, latency of 2500 us.
 makeChart({}, {ts_iops: [{t: 1, r: 1.2e6, w: 0}]}, IOPS, 0, 1.38e6);
 assert.strictEqual(yTitle(), 'MIOPS');
@@ -151,7 +157,7 @@ func TestChartPagesDropFixedUnit(t *testing.T) {
 				t.Errorf("%s page still has %q", name, bad)
 			}
 		}
-		if !strings.Contains(body, "unitScale(metric.unit,") {
+		if !strings.Contains(body, "unitScale(metric.unit,") && !strings.Contains(body, "phaseScale(metric,") {
 			t.Errorf("%s page does not scale the unit", name)
 		}
 	}

@@ -782,9 +782,17 @@ __NAVBAR_HTML__
         return { display: true, text: sc.unit, color: '#94a3b8', font: {size: 9} };
     }
 
+    // phaseScale is the unit of a card: chosen from the data maximum of its
+    // phase, not from the axis maximum, which has 15% headroom (a 900 MB/s
+    // peak must not turn into an axis in GB/s that stops at 1).
+    const AXIS_HEADROOM = 1.15;
+    function phaseScale(metric, yLow, yHigh) {
+        return unitScale(metric.unit, Math.max(yHigh || 0, -(yLow || 0)) / AXIS_HEADROOM);
+    }
+
     function makeFlushChart(canvas, d, metric, yHigh) {
         const ts = d[metric.tsKey];
-        const sc = unitScale(metric.unit, yHigh || 0), tick = v => fmtScaled(v, sc);
+        const sc = phaseScale(metric, 0, yHigh), tick = v => fmtScaled(v, sc);
         const color = 'rgba(124,58,237,0.9)';
         if (ts && ts.length > 0) {
             const pts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: p.w}));
@@ -1020,7 +1028,7 @@ __NAVBAR_HTML__
         const datasets = members.concat(array);
         const totals = stacked ? g.totals : {};
         const dirs = ['r', 'w'].filter(dir => members.some(m => m.dir === dir));
-        const sc = unitScale(metric.unit, Math.max(yHigh || 0, -(yLow || 0))), tick = v => fmtScaled(v, sc);
+        const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
         const fmt = v => fmtScaled(v, sc) + ' ' + sc.unit;
         const totalLines = i => {
             const s = totals[xs[i]];
@@ -1294,7 +1302,7 @@ __NAVBAR_HTML__
         if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
         if (memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl);
         // One unit for every card of the phase: chosen from the phase's scale.
-        const sc = unitScale(metric.unit, Math.max(yHigh || 0, -(yLow || 0))), tick = v => fmtScaled(v, sc);
+        const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
         if (ts && ts.length > 0) {
             tsWarn(warnEl, ts);
             const ramp = rampOf(d), shift = fioShift(d);
@@ -1532,8 +1540,8 @@ __NAVBAR_HTML__
                         if (e.w > 0 && -e.w < yMin) yMin = -e.w;
                     }
                 });
-                const yHigh = yMax > 0 ? yMax * 1.15 : (yMin < 0 ? 0 : 1);
-                const yLow  = yMin < 0 ? yMin * 1.15 : 0;
+                const yHigh = yMax > 0 ? yMax * AXIS_HEADROOM : (yMin < 0 ? 0 : 1);
+                const yLow  = yMin < 0 ? yMin * AXIS_HEADROOM : 0;
 
                 const phaseHdr = document.createElement('div');
                 phaseHdr.className = 'phase-hdr';
