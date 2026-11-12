@@ -283,7 +283,7 @@ Enter on a usable entry opens the confirmation: under a red `THIS DESTROYS DATA`
 
 **Per-member charts.** While a phase runs on an array, bbbench reads `/sys/block/<dev>/stat` of every member (data, spare and journal disks) once per `--log-avg-msec` window and stores the per-window deltas in `<fio log prefix>_members.1.log`. The graphs page draws IOPS and bandwidth of the phase as a stacked area of the members (reads up, writes mirrored down) with the array's own fio series as a line outside the stack, and latency as one line per member and direction (never stacked); hovering lists each member, `Stack total` and the array value. A Normal | Stacked toggle in the IOPS and bandwidth phase headers switches to Normal: every member and the array as plain unfilled lines at their own values (no `Stack total`). The member values are the kernel's counters on each member, so they include what md or LVM adds (parity, mirroring, read-modify-write, resync) and the stack total can exceed the array value. Member latency is the kernel's per-request time (queue plus service, 1 ms tick resolution, coarse at low load); the array line is fio's. Only runs made with this version have the series, the compare page does not draw it, and a sampling failure only logs a warning. **md state.** For an md array the sampler also reads, once per window, `sync_action`, `sync_completed`, `sync_speed`, `degraded`, `array_state` and `raid_disks` under `/sys/block/<array>/md/` and each member's `md/dev-<member>/state`, into the same `_members.1.log`. The graphs mark windows where `sync_action` is not `idle` with an opaque strip across the top of the plot, labelled with the action (resync, recover, check, repair, reshape, frozen) and a light tint, and draw every change between two windows (`sync_action`, `array_state`, `degraded`, `raid_disks`, a member's state, a removed member as `sdb: in_sync -> removed`) as a vertical marker with its text; a non-idle `sync_action` or a `degraded` count above 0 already present when the phase starts is reported as `(at phase start)` (a faulty member or a non-clean `array_state` present at the start is not reported until it changes), and an unreadable value is not a change. The hover adds `md: <action> <pct>% <speed> MiB/s, degraded <n>` for a busy window and `md: idle, degraded <n>` for an idle one, the card gets a badge (`resync 43% -> 61%`, `degraded`) and the line `array busy: results include administrative work`. bbbench still waits for the initial resync before a run starts, so a sync seen during a phase is one that started during that phase (a scheduled check, a rebuild after a member failure, a reshape), and the phase's numbers include the sync's own I/O. md arrays only (LVM has the member series only), not the compare page; a phase shorter than the ramp-up loses its md events with its points; an unreadable `degraded` is unknown (shown as `degraded unknown` in the hover, never an event).
 
-**Not verified on hardware.** The layout code is tested against fake tools and a fake sysfs; this has not been run on real disks yet. Unverified: the exact `mdadm --create` command line and the sysfs values it is checked against, the `lvcreate` command lines and the fields of the `lvs`/`vgs`/`pvs` JSON reports, the handling of the LVM devices file (`lvmdevices`: bbbench records which member entries `pvcreate` adds and removes only those, leaving the entries of foreign physical volumes alone), Flush tracing on md and dm devices (they are bio-based, so a phase may show 0 Flushes, see [Flush tracing](#flush-tracing)), and trim on arrays that do not support discard. Two known gaps: when `lvmdevices` reported no devices file at the start, `pvcreate` may create one; nothing records it, so the teardown does not remove it. And after `mdadm --stop`, udev change events could assemble the members again before `--zero-superblock`; the wipe then fails because the disk is busy, which is a safe teardown failure (the group stops and prints the manual command). The per-member sampler and charts and the md state track (above) have not been run on real arrays either (the md sysfs files are read from a fake tree in tests; the charts were checked in headless Chrome only). The destroy action (`x`) is also tested against fake tools only. Unverified: the format of `mdadm --examine --scan --verbose` (and its exit status when no disk carries a superblock), what `mdadm --detail --export` prints for an inactive array, the sysfs state of an array after `mdadm --stop`, the `--foreign` and `--shared` options of `vgs`/`lvs`/`pvs` and the `vg_systemid`, `vg_shared` and `vg_attr` fields (the positions read for partial, exported and clustered/shared), the device-mapper uuid form `LVM-<vg uuid><lv uuid>` that attributes dm nodes to a volume group, `lvremove --yes <vg>` on thin pools, snapshots and raid or mirror logical volumes, and whether `pvremove` already drops the devices-file entry (`lvmdevices --deldev` is run for an entry still listed). Known gaps: between a check by name and the next command by name, lvm could be changed by something else (a short window, narrowed by re-reading the volume group uuid before `vgremove`); for md, between `mdadm --examine` showing the uuid on a member and `mdadm --zero-superblock`, something else could write a new superblock to the member or assemble it (a short window; an assembled member makes the zero fail busy, because mdadm opens the device exclusively for it); only md and LVM are supported (hardware RAID controllers later). Run it first on disks you can lose and report what differs.
+**Not verified on hardware.** The layout code is tested against fake tools and a fake sysfs; this has not been run on real disks yet. Unverified: the exact `mdadm --create` command line and the sysfs values it is checked against, the `lvcreate` command lines and the fields of the `lvs`/`vgs`/`pvs` JSON reports, the handling of the LVM devices file (`lvmdevices`: bbbench records which member entries `pvcreate` adds and removes only those, leaving the entries of foreign physical volumes alone), Flush and I/O latency tracing of the md and dm nodes themselves (they are bio-based: timed at the bio level, see [Flush tracing](#flush-tracing) and [I/O latency tracing](#io-latency-tracing)), and trim on arrays that do not support discard. Two known gaps: when `lvmdevices` reported no devices file at the start, `pvcreate` may create one; nothing records it, so the teardown does not remove it. And after `mdadm --stop`, udev change events could assemble the members again before `--zero-superblock`; the wipe then fails because the disk is busy, which is a safe teardown failure (the group stops and prints the manual command). The per-member sampler and charts and the md state track (above) have not been run on real arrays either (the md sysfs files are read from a fake tree in tests; the charts were checked in headless Chrome only). The destroy action (`x`) is also tested against fake tools only. Unverified: the format of `mdadm --examine --scan --verbose` (and its exit status when no disk carries a superblock), what `mdadm --detail --export` prints for an inactive array, the sysfs state of an array after `mdadm --stop`, the `--foreign` and `--shared` options of `vgs`/`lvs`/`pvs` and the `vg_systemid`, `vg_shared` and `vg_attr` fields (the positions read for partial, exported and clustered/shared), the device-mapper uuid form `LVM-<vg uuid><lv uuid>` that attributes dm nodes to a volume group, `lvremove --yes <vg>` on thin pools, snapshots and raid or mirror logical volumes, and whether `pvremove` already drops the devices-file entry (`lvmdevices --deldev` is run for an entry still listed). Known gaps: between a check by name and the next command by name, lvm could be changed by something else (a short window, narrowed by re-reading the volume group uuid before `vgremove`); for md, between `mdadm --examine` showing the uuid on a member and `mdadm --zero-superblock`, something else could write a new superblock to the member or assemble it (a short window; an assembled member makes the zero fail busy, because mdadm opens the device exclusively for it); only md and LVM are supported (hardware RAID controllers later). Run it first on disks you can lose and report what differs.
 
 **Hardware RAID** (Dell PERC, HPE Smart Array, each as its own provider) is not part of this; it comes in a later branch as another provider (see CLAUDE.md, "What the hardware-RAID branch plugs into").
 
@@ -367,6 +367,14 @@ comparing it with the fsync time shows how much of the cost is the drive.
   exact, because it only depends on the sum of times, but with several Flushes in
   flight individual samples can be swapped, so percentiles and max are not
   reported.
+- *A bio-based md or dm node* (an array target: `queue/` without `mq/` in
+  sysfs) has no request events at all, so its own Flushes are the empty flush
+  bios submitted to it: `block_bio_queue` / `block_bio_complete` (rwbs `F`, 0
+  sectors, only the node's device number), paired in order like the block
+  source. The time covers the node's handling, its members' flushes included.
+  The summary says `Flush (bio)`, the source line names the bio tracepoints.
+  A kernel without those tracepoints takes the request path, which sees no
+  Flush on such a node (`Flush (block): none seen`).
 
 **Stored with the run.** The Flush latency is written like fio's own logs, to
 `<output>/<device>_phase<N>_<ts>_log_flush.1.log` next to the `_iops/_bw/_lat`
@@ -414,11 +422,11 @@ cache is enabled.
   active during phases that fsync, with kernel-side filters to keep event volume
   low, but it still adds a little overhead to those phases.
 - Timestamps have microsecond resolution, which is coarse for fast Flushes.
-- Stacked devices (md arrays, device-mapper volumes) are bio-based or remap
-  requests to their member disks, so they may issue no Flush requests of their
-  own; the summary then shows `Flush (block): none seen`. Trace the underlying
-  disks (benchmark them directly) to get a number. This has not been verified
-  on a live kernel.
+- Stacked devices (md arrays, device-mapper volumes) are bio-based: their
+  Flushes are timed at the bio level (above). Not verified on a live kernel:
+  whether `block_bio_complete` fires for the node's own flush bios on md, dm
+  and LVM (it depends on the kernel's `BIO_TRACE_COMPLETION` handling), and the
+  bio payload format.
 - This has been tested against hand-written sample trace lines and a fake tracefs, not yet
   on a live kernel; kernels differ in tracepoint fields, so check the first real
   run.
@@ -433,7 +441,7 @@ the time spent before it. It is **on by default** and needs root and a mounted
 tracefs; if tracing is unavailable the phase still runs, a warning is printed
 once and the phase carries a note saying why. Use `--no-io-trace` to turn it
 off. The terminal prints a line such as
-`ftrace device (nvme): read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only, with its source, `nvme` or `block`; the rest is in the log and the web UI). For an md or dm target, which has no request events of its own, it says so and gives the members' device mean over all their requests, e.g. `ftrace (block): target bio-based, 4 members traced, members' device read avg 95.2 us, write avg 130.4 us`.
+`ftrace device (nvme): read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only, with its source, `nvme` or `block`; the rest is in the log and the web UI). For an md or dm target, which has no request events of its own, it gives the node's bio-level latency and then the members' device mean over all their requests, e.g. `ftrace bio (md0, block_bio_queue -> block_bio_complete): read avg 310.2 us p99 920.0 us, write avg 640.8 us p99 1800.0 us; 4 members traced (block), members' device read avg 95.2 us, write avg 130.4 us`; without the bio tracepoints it says `target bio-based` and gives the members' mean only.
 
 **What is measured** (reads and writes only; Flush, discard and admin commands
 are left out, Flush has its own tracing above):
@@ -444,15 +452,25 @@ are left out, Flush has its own tracing above):
 - *Block layer latency*: `block_rq_insert` (or the issue, for a request issued
   directly) to `block_rq_complete`. It adds the time in the I/O scheduler and the
   software queues to the device latency.
+- *Bio latency* of a bio-based node (an md or dm array target, no request
+  queue: `queue/` without `mq/` in sysfs): `block_bio_queue` to
+  `block_bio_complete` of the bios submitted to the node itself, so the whole
+  time the array takes for an I/O, its members included. Only such a node gets
+  it (a request-based device never has the bio events enabled, so nothing is
+  counted twice), and it has no block layer latency.
 
 Block events carry no request id, so they are paired by device and start sector,
 first in first out; `block_rq_merge` drops the absorbed request. HDDs use this
 block path for both metrics: the device latency is issue to complete, the block
 layer latency insert to complete. For an array target (md or LVM layout) the
 members are traced too, in the same session: they appear as their own device
-latency series. md and dm nodes themselves are bio-based and issue no requests,
-so the target usually shows `no request events seen` while its members are
-traced. A native NVMe multipath drive may show no block layer series: its block
+latency series. md and dm nodes themselves are bio-based and issue no requests:
+the target gets its bio latency instead (kind `bio`), paired by device, sector
+and length first in first out, through the end sector, so the remainder of a bio
+the node splits pairs with the bio as queued and the parts split off are not
+counted; bios the node sends to its members carry the members' device numbers
+and are filtered out. Without the bio tracepoints the target shows
+`no request events seen` while its members are traced. A native NVMe multipath drive may show no block layer series: its block
 requests are issued on the hidden path disks (`nvme0c1n1`), not on the head
 bbbench traces; its Block-layer card then says `no block-layer events seen`
 with that hint, although the Latency card's source line lists the
@@ -461,10 +479,10 @@ with that hint, although the Latency card's source line lists the
 **How it is stored.** The latencies go into histograms inside bbbench (relative
 error under 2 %), nothing is kept per I/O. Like Flush tracing, they are saved
 next to the fio logs as `<output>/<device>_phase<N>_<ts>_log_iolat.1.log`: one
-line per `--log-avg-msec` window (end time, kind, direction, count, mean, min,
-max, p50, p99, device), stamped at the window end, plus header lines with the
+line per `--log-avg-msec` window (end time, kind `device`, `blocklayer` or
+`bio`, direction, count, mean, min, max, p50, p99, device), stamped at the window end, plus header lines with the
 metadata (window, ramp offset, ring buffer overruns, per-device tracepoints and
-pairing) and the phase summary (count, mean, min, max, p50, p99 per kind and
+pairing; `bio_based=true` for a node without a request queue) and the phase summary (count, mean, min, max, p50, p99 per kind and
 direction, computed after the ramp-up). It has up to four lines per window
 (device and block layer, reads and writes) for every traced device, so an
 8-member array traced for an hour with 1 s windows gives about 130,000 lines
@@ -504,7 +522,12 @@ and removed.
 lines and a fake tracefs tree and has not been run end to end on a real kernel.
 Unverified: the payload formats of the tracepoints beyond the Flush lines
 already tested (`block_rq_insert`, `block_rq_merge`, the read opcode names, a
-`block_rq_complete` line with the I/O priority field); the `ctrl_id` filter field
+`block_rq_complete` line with the I/O priority field, `block_bio_queue` and
+`block_bio_complete`, taken from the kernel's `TP_printk` as
+`maj,min rwbs sector + nr [comm|error]`); whether `block_bio_complete` fires
+for the node's own bios on md, dm and LVM nodes (`BIO_TRACE_COMPLETION`) and
+with which sector after a split or a dm remap, and the queue and complete event
+counts on real arrays; the `ctrl_id` filter field
 of `nvme_setup_cmd` and `nvme_complete_rq` (if the kernel rejects it the filter
 is lost and bbbench filters in user space: correct but a higher event rate); the
 NVMe native multipath sysfs layout (`<head>/multipath/nvme<s>c<c>n<n>`: without
@@ -522,7 +545,11 @@ which tracepoints each series comes from, and two graph types of their own
 show the mean and p99 per direction and each member's mean: **Device latency
 (ftrace)** the device latency, **Block-layer latency (ftrace)** the block layer
 latency. The members' ftrace series appear only on those graphs, not on the
-Latency chart. A drive without block layer series (kernel without
+Latency chart. A bio-based array target adds its own bio series: `Array read bio
+mean (ftrace)` and `p99` (and write) in the array's colours on the Device
+latency card next to its members' lines, the bio mean as a dashed line on the
+Latency chart; its Block-layer card draws the members only, with a note that
+the node has no block layer. A drive without block layer series (kernel without
 `block_rq_insert`, a native NVMe multipath head, a bio-based target whose
 members have none) gets a Block-layer card that says why; a run with no block
 layer data at all has no Block-layer card. Every series has a checkbox to show or hide it; the y scale follows the
@@ -534,10 +561,10 @@ compare page does not draw this data. See
 
 | Metric (graph type) | Kernel tracepoints (trace events) and the pair the latency spans |
 |---|---|
-| Flush latency | Device Flush commands. NVMe: `nvme_setup_cmd` -> `nvme_complete_rq` (flush opcode, I/O queues, paired exactly by controller, queue, command id). Any other device, and NVMe without those tracepoints: `block_rq_issue` -> `block_rq_complete` (rwbs `F`, 0 sectors, first-in first-out) |
-| Device latency (ftrace) | Each read and write. NVMe: `nvme_setup_cmd` -> `nvme_complete_rq` (read and write commands, exact). Any other device (SATA, SAS, HDDs, array members), and NVMe without those tracepoints: `block_rq_issue` -> `block_rq_complete` (first-in first-out per sector) |
-| Block-layer latency (ftrace) | Every device, NVMe included: `block_rq_insert` -> `block_rq_complete` (a request issued without an insert counts from `block_rq_issue`; merges via `block_rq_merge`), so it adds the I/O scheduler and software queues |
-| Latency chart, dashed ftrace lines | Both of the previous: the Device latency and the Block-layer latency means |
+| Flush latency | Device Flush commands. NVMe: `nvme_setup_cmd` -> `nvme_complete_rq` (flush opcode, I/O queues, paired exactly by controller, queue, command id). Any other device, and NVMe without those tracepoints: `block_rq_issue` -> `block_rq_complete` (rwbs `F`, 0 sectors, first-in first-out). A bio-based md/dm node: `block_bio_queue` -> `block_bio_complete` (its flush bios: rwbs `F`, 0 sectors, first-in first-out) |
+| Device latency (ftrace) | Each read and write. NVMe: `nvme_setup_cmd` -> `nvme_complete_rq` (read and write commands, exact). Any other device (SATA, SAS, HDDs, array members), and NVMe without those tracepoints: `block_rq_issue` -> `block_rq_complete` (first-in first-out per sector). A bio-based md/dm node (array target): `block_bio_queue` -> `block_bio_complete` (its read and write bios, first-in first-out by device, sector and length) |
+| Block-layer latency (ftrace) | Every request-based device, NVMe included: `block_rq_insert` -> `block_rq_complete` (a request issued without an insert counts from `block_rq_issue`; merges via `block_rq_merge`), so it adds the I/O scheduler and software queues. None on a bio-based md/dm node |
+| Latency chart, dashed ftrace lines | Both of the previous: the Device latency and the Block-layer latency means, and a bio-based node's bio mean |
 
 The same text is the tooltip of each metric's source badge (the `ftrace` badge in the graph-type list, the section headers and the card titles; the Latency badge says `fio` and its tooltip adds the dashed lines). The tooltip and the section header then also list the tracepoints actually monitored in the shown runs, from the data (`io_trace.devices[].events`, `flush.events` in the run summary JSON), so they match reality when a kernel lacks one.
 
