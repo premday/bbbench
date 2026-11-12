@@ -372,7 +372,7 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
 		"label: 'Read',  data: readPts,",
 		"label: 'Write', data: writePts,",
-		"if (memberMetric(d, metric)) return makeMembersChart(",
+		"if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("graphs page lacks %q", want)
@@ -383,6 +383,33 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 	if !strings.Contains(mm, "d.ts_members") {
 		t.Errorf("memberMetric does not test ts_members:\n%s", mm)
 	}
+}
+
+// The per-phase graph mode: stacked (members) is the default, normal draws the
+// plain series, and the choice is kept per metric and phase.
+func TestGraphsPageGraphMode(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{
+		"const GRAPH_MODES = [['normal', 'Normal'], ['stacked', 'Stacked']];",
+		"if (phaseData.some(d => memberMetric(d, metric))) phaseHdr.appendChild(toggle);",
+		"if (mode !== 'normal' && memberMetric(d, metric)) {",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graphs page lacks %q", want)
+		}
+	}
+	runPageJS(t, []string{"graphMode"}, `
+const assert = require('assert');
+const GRAPH_MODES = [['normal', 'Normal'], ['stacked', 'Stacked']];
+const graphModeOf = {};
+const M = {key: 'bw'};
+assert.strictEqual(graphMode(M, 'randread'), 'stacked');
+graphModeOf['bw:randread'] = 'normal';
+assert.strictEqual(graphMode(M, 'randread'), 'normal');
+assert.strictEqual(graphMode(M, 'seqwrite'), 'stacked');
+assert.strictEqual(graphMode({key: 'iops'}, 'randread'), 'stacked');
+console.log('OK');
+`)
 }
 
 // memberGridJS is the node script TestGraphsPageMemberGrid runs over the page's

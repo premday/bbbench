@@ -466,6 +466,10 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .phase-hdr .chev { display: inline-block; font-size: 9px; color: #94a3b8; transition: transform 0.18s; }
         .phase-hdr.collapsed .chev { transform: rotate(-90deg); }
         .phase-count { font-weight: 400; color: #94a3b8; font-size: 11px; }
+        .mode-toggle { margin-left: auto; display: inline-flex; border: 1px solid #cbd5e1; border-radius: 5px; overflow: hidden; }
+        .mode-toggle button { font: inherit; font-size: 11px; font-weight: 600; padding: 2px 9px; border: 0; background: #fff; color: #475569; cursor: pointer; }
+        .mode-toggle button + button { border-left: 1px solid #cbd5e1; }
+        .mode-toggle button.on { background: #2563eb; color: #fff; }
         .phase-body { padding-bottom: 8px; }
         .phase-body.hidden { display: none; }
 
@@ -757,6 +761,14 @@ __NAVBAR_HTML__
 
     // ── Chart rendering ──
 
+
+    // The graph of a phase: GRAPH_MODES lists the choices (more can be
+    // added); the choice is kept per metric and phase. 'normal' draws the
+    // plain series of each result (an array's own fio numbers), 'stacked' adds
+    // the per-member breakdown to arrays (the default; a drive has none).
+    const GRAPH_MODES = [['normal', 'Normal'], ['stacked', 'Stacked']];
+    const graphModeOf = {};
+    function graphMode(metric, pname) { return graphModeOf[metric.key + ':' + pname] || 'stacked'; }
 
     function destroyAllCharts() {
         Object.keys(charts).forEach(id => { charts[id].destroy(); delete charts[id]; });
@@ -1301,10 +1313,10 @@ __NAVBAR_HTML__
 
     // makeChart renders a Chart.js instance onto canvas for (d, metric).
     // Returns the Chart instance. warnEl (optional) will receive a ts-warn message.
-    function makeChart(canvas, d, metric, yLow, yHigh, warnEl) {
+    function makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode) {
         const ts = d[metric.tsKey];
         if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
-        if (memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl);
+        if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl);
         // One unit for every card of the phase: chosen from the phase's scale.
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
         if (ts && ts.length > 0) {
@@ -1374,7 +1386,7 @@ __NAVBAR_HTML__
     // ── Modal ──
     let modalChart = null;
 
-    function openModal(d, metric, yLow, yHigh) {
+    function openModal(d, metric, yLow, yHigh, mode) {
         const mt = membersText(d);
         document.getElementById('modal-title').textContent = d.disk + settingTag(d, RPV) + (mt ? ' \u00b7 ' + mt : '');
         const tech = d.technology ? d.technology.toUpperCase() : '';
@@ -1399,7 +1411,7 @@ __NAVBAR_HTML__
 
         const warnEl = document.getElementById('modal-ts-warn');
         warnEl.className = 'modal-ts-warn';
-        modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl);
+        modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl, mode);
         document.getElementById('modal-overlay').classList.add('active');
     }
 
@@ -1415,7 +1427,7 @@ __NAVBAR_HTML__
         if (e.key === 'Escape') closeModal();
     });
 
-    function makeChartCard(d, metric, cid, yLow, yHigh) {
+    function makeChartCard(d, metric, cid, yLow, yHigh, mode) {
         const card = document.createElement('div');
         card.className = 'chart-card';
 
@@ -1452,9 +1464,9 @@ __NAVBAR_HTML__
             wrap.textContent = why;
             return card;
         }
-        charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl);
+        charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
 
-        card.addEventListener('click', () => openModal(d, metric, yLow, yHigh));
+        card.addEventListener('click', () => openModal(d, metric, yLow, yHigh, mode));
         return card;
     }
 
@@ -1521,7 +1533,8 @@ __NAVBAR_HTML__
                 const phaseData = byPhase[pname];
                 const diskCount = phaseData.length;
 
-                // Compute Y scale scoped to this (metric, phase) tuple.
+                const phaseScaleOf = mode => {
+                // Y scale scoped to this (metric, phase) tuple and graph mode.
                 let yMax = 0, yMin = 0;
                 phaseData.forEach(d => {
                     const ts = d[metric.tsKey];
@@ -1538,14 +1551,17 @@ __NAVBAR_HTML__
                         if (r > yMax) yMax = r;
                         if (w > 0 && -w < yMin) yMin = -w;
                     }
-                    if (memberMetric(d, metric)) {
+                    if (mode !== 'normal' && memberMetric(d, metric)) {
                         const e = memberExtent(d, metric);
                         if (e.r > yMax) yMax = e.r;
                         if (e.w > 0 && -e.w < yMin) yMin = -e.w;
                     }
                 });
-                const yHigh = yMax > 0 ? yMax * AXIS_HEADROOM : (yMin < 0 ? 0 : 1);
-                const yLow  = yMin < 0 ? yMin * AXIS_HEADROOM : 0;
+                return {
+                    yHigh: yMax > 0 ? yMax * AXIS_HEADROOM : (yMin < 0 ? 0 : 1),
+                    yLow: yMin < 0 ? yMin * AXIS_HEADROOM : 0,
+                };
+                };
 
                 const phaseHdr = document.createElement('div');
                 phaseHdr.className = 'phase-hdr';
@@ -1564,11 +1580,30 @@ __NAVBAR_HTML__
                 grid.className = 'chart-grid';
                 phaseBody.appendChild(grid);
 
-                phaseData.forEach((d, i) => {
-                    const cid = metric.key + ':' + pname + ':' + i;
-                    const card = makeChartCard(d, metric, cid, yLow, yHigh);
-                    grid.appendChild(card);
+                // (Re)draws this phase's cards in its current graph mode.
+                const fill = () => {
+                    const mode = graphMode(metric, pname), sc = phaseScaleOf(mode);
+                    Object.keys(charts).forEach(id => {
+                        if (id.indexOf(metric.key + ':' + pname + ':') === 0) { charts[id].destroy(); delete charts[id]; }
+                    });
+                    grid.innerHTML = '';
+                    phaseData.forEach((d, i) => {
+                        const cid = metric.key + ':' + pname + ':' + i;
+                        grid.appendChild(makeChartCard(d, metric, cid, sc.yLow, sc.yHigh, mode));
+                    });
+                    toggle.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+                };
+                // Only a phase with a per-member breakdown has a choice.
+                const toggle = document.createElement('span');
+                toggle.className = 'mode-toggle';
+                GRAPH_MODES.forEach(([key, label]) => {
+                    const b = document.createElement('button');
+                    b.type = 'button'; b.dataset.mode = key; b.textContent = label;
+                    b.addEventListener('click', e => { e.stopPropagation(); graphModeOf[metric.key + ':' + pname] = key; fill(); });
+                    toggle.appendChild(b);
                 });
+                if (phaseData.some(d => memberMetric(d, metric))) phaseHdr.appendChild(toggle);
+                fill();
             });
         });
     }
