@@ -106,6 +106,7 @@ func runOrchestrator(args []string) error {
 		return err
 	}
 	defer releaseOrchestratorLock()
+	cleanStaleTraces(os.Stdout)
 	defer ResetStatus() // Reset web status when done
 
 	if *mode != "parallel-sync" && *mode != "sequential" {

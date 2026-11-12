@@ -16,11 +16,28 @@ var procRoot = "/proc"
 
 // RemoveStale removes the instances a bbbench process left behind when it
 // was killed or crashed: instances/bbbench-<flush|iolat>-<pid>-<n> whose pid
-// is not running. Their events are switched off first, then the instance is
-// removed. An instance of this process or of a running process is never
-// touched, nor is anything when liveness cannot be read (no /proc). Best
-// effort: it returns the instances it removed.
+// is not running (FindStale). Their events are switched off first, then the
+// instance is removed. An instance of this process or of a running process is
+// never touched, nor is anything when liveness cannot be read (no /proc).
+// Liveness is read from /proc of this PID namespace: a bbbench in another
+// container sharing the tracefs looks dead. Best effort: it returns the
+// instances it removed.
 func RemoveStale(root string) []string {
+	var removed []string
+	for _, name := range FindStale(root) {
+		dir := filepath.Join(root, "instances", name)
+		writeExisting(filepath.Join(dir, "events", "enable"), "0")
+		writeExisting(filepath.Join(dir, "tracing_on"), "0")
+		if err := os.Remove(dir); err == nil || errors.Is(err, os.ErrNotExist) {
+			removed = append(removed, name)
+		}
+	}
+	return removed
+}
+
+// FindStale returns the instances RemoveStale would remove, changing nothing
+// (for doctor).
+func FindStale(root string) []string {
 	if _, err := os.Stat(filepath.Join(procRoot, "self")); err != nil {
 		return nil
 	}
@@ -28,20 +45,15 @@ func RemoveStale(root string) []string {
 	if err != nil {
 		return nil
 	}
-	var removed []string
+	var stale []string
 	for _, e := range entries {
 		pid, ok := instancePID(e.Name())
 		if !ok || pid == os.Getpid() || pidAlive(pid) {
 			continue
 		}
-		dir := filepath.Join(root, "instances", e.Name())
-		writeExisting(filepath.Join(dir, "events", "enable"), "0")
-		writeExisting(filepath.Join(dir, "tracing_on"), "0")
-		if err := os.Remove(dir); err == nil || errors.Is(err, os.ErrNotExist) {
-			removed = append(removed, e.Name())
-		}
+		stale = append(stale, e.Name())
 	}
-	return removed
+	return stale
 }
 
 // instancePID returns the pid of a bbbench-<kind>-<pid>-<n> instance name.

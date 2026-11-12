@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"bbbench/internal/blockdev"
+	"bbbench/internal/flushtrace"
 )
 
 func runDoctor(args []string) error {
@@ -74,6 +75,12 @@ func runDoctor(args []string) error {
 			if len(avail) > 0 && !avail[e] {
 				logger.Warn("fio lacks an I/O engine the default workloads use", "engine", e)
 			}
+		}
+	}
+
+	if root, err := findTracefs(); err == nil {
+		if m := staleTracesMessage(root, flushtrace.FindStale(root)); m != "" {
+			logger.Warn("stale trace instances", "detail", m)
 		}
 	}
 

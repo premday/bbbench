@@ -215,7 +215,7 @@ The web UI is also started automatically by `orchestrator` on `0.0.0.0:12345` du
 
 ### `bbbench doctor`
 
-Checks host readiness: Linux, root access, sysfs, block device discovery, and the external programs (`fio` is required; `smartctl`, `nvme` and `hdparm` are optional and a warning says what is lost without them).
+Checks host readiness: Linux, root access, sysfs, block device discovery, and the external programs (`fio` is required; `smartctl`, `nvme` and `hdparm` are optional and a warning says what is lost without them). It also warns about trace instances left by a killed or crashed bbbench (still enabled, they cost CPU on every I/O) and says what removes them: the next `bbbench orchestrator` start, or `rmdir` of each.
 
 ```bash
 sudo ./bbbench doctor
@@ -462,8 +462,15 @@ The kernel allocates the trace ring buffer per CPU. Concurrent sessions share a
 256 MiB budget: each CPU gets at least 1 MiB and at most 16 MiB (one drive on 16
 CPUs: 16 MiB per CPU; 12 drives on 64 CPUs: the 1 MiB floor, 768 MiB in total).
 Like Flush tracing it uses a private tracefs instance
-(`instances/bbbench-iolat-*`), removed when the phase ends; instances left by a
-crashed bbbench are removed at the next start.
+(`instances/bbbench-iolat-*`), removed when the phase ends. Instances left by a
+killed or crashed bbbench (`bbbench-iolat-*` and `bbbench-flush-*`) keep their
+events enabled and cost CPU on every I/O until they are removed: every start of
+`orchestrator` removes them, whatever its flags (also with `--no-io-trace` and
+when no phase fsyncs), and so does every trace session that opens; `doctor`
+lists those it finds. An instance is stale when its pid is not running, read
+from `/proc` of bbbench's own PID namespace: a bbbench running in another
+container that shares the tracefs looks dead, and its instance is switched off
+and removed.
 
 **Not verified on hardware.** The feature is tested against hand-written trace
 lines and a fake tracefs tree and has not been run end to end on a real kernel.

@@ -156,3 +156,20 @@ func TestInstance_CloseThenStop(t *testing.T) {
 		t.Errorf("Stop after Close = %v, want %v", e2, e1)
 	}
 }
+
+// FindStale lists the same instances RemoveStale would remove, and changes
+// nothing.
+func TestFindStale(t *testing.T) {
+	fakeProc(t, 4242)
+	root := t.TempDir()
+	in := func(n string) string { return filepath.Join(root, "instances", n) }
+	for _, n := range []string{"bbbench-iolat-4343-1", "bbbench-iolat-4242-1", "someone"} {
+		mkdir(t, in(n))
+	}
+	if got := FindStale(root); len(got) != 1 || got[0] != "bbbench-iolat-4343-1" {
+		t.Errorf("FindStale = %v", got)
+	}
+	if !exists(in("bbbench-iolat-4343-1")) {
+		t.Error("FindStale removed an instance")
+	}
+}
