@@ -934,6 +934,15 @@ assert.strictEqual(iolatNone({io_trace: {text: 'x', devices: [{name: 'md0'}]}}, 
     'ftrace saw no read or write requests on md0');
 assert.strictEqual(iolatNone(entry('nvme', 1), IOLAT), '');
 assert.strictEqual(iolatNone({io_trace_note: 'n'}, LAT), '');
+// a bio-based md0 target with traced members still shows the members
+const md0 = {io_trace: {text: 'x', devices: [{name: 'md0', note: 'no request events seen', stats: {}}]},
+    ts_iolat_members: {sdb: [pt(0, 'device', 'r', 2, 5, 6)]}};
+assert.strictEqual(iolatNone(md0, IOLAT), '');
+// the target's own note wins over the generic text
+md0.ts_iolat_members = {};
+assert.strictEqual(iolatNone(md0, IOLAT), 'no request events seen');
+assert.strictEqual(iolatNone({io_trace: {text: 'x', devices: []}}, IOLAT), 'no traced device');
+assert.strictEqual(iolatNone({io_trace: {text: 'x'}}, IOLAT), 'no traced device');
 // an entry without io_trace has no ftrace dataset on lat
 assert.deepStrictEqual(ftraceDatasets({log_avg_msec: 1000, ts_lat: [{t: 1, r: 5, w: 0}]}, LAT), []);
 assert.deepStrictEqual(ftraceDatasets({}, IOLAT), []);

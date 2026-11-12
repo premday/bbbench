@@ -655,9 +655,12 @@ __NAVBAR_HTML__
         if (metric.key !== 'iolat') return '';
         if (!d.io_trace) return d.io_trace_note || '';
         const dev = d.io_trace.devices && d.io_trace.devices[0];
-        const st = dev && dev.stats;
-        const any = st && Object.values(st).some(k => k && Object.keys(k).length > 0);
-        return any ? '' : 'ftrace saw no read or write requests on ' + (dev ? dev.name : '?');
+        if (!dev) return 'no traced device';
+        const any = dev.stats && Object.values(dev.stats).some(k => k && Object.keys(k).length > 0);
+        if (any) return '';
+        const members = d.ts_iolat_members && Object.values(d.ts_iolat_members).some(pts => pts && pts.length > 0);
+        if (members) return '';
+        return dev.note || 'ftrace saw no read or write requests on ' + dev.name;
     }
     // iolatPoints turns the points of one kind and direction into chart
     // points: x on the member window grid, y = stat in us (negative for
@@ -685,7 +688,7 @@ __NAVBAR_HTML__
                 const c = rgba(rgb[dir], a);
                 out.push(Object.assign({}, base, {
                     label: (dir === 'r' ? 'Read ' : 'Write ') + kname + sname + ' (ftrace)', data,
-                    ftrace: true, dir, borderColor: c, backgroundColor: c, borderDash: dsh,
+                    dir, borderColor: c, backgroundColor: c, borderDash: dsh,
                 }));
             });
         }));
@@ -697,7 +700,7 @@ __NAVBAR_HTML__
                 const c = rgba(colors[n], 0.9);
                 out.push(Object.assign({}, base, {
                     label: n + (dir === 'r' ? ' read' : ' write') + ' device mean (ftrace)', data,
-                    ftrace: true, dir, borderColor: c, backgroundColor: c, borderDash: dir === 'w' ? [4, 2] : [],
+                    dir, borderColor: c, backgroundColor: c, borderDash: dir === 'w' ? [4, 2] : [],
                     borderWidth: 1.2,
                 }));
             }));
