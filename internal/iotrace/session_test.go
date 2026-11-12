@@ -234,7 +234,7 @@ func TestSession_HDD(t *testing.T) {
 		t.Error("an nvme event directory was touched")
 	}
 	d := dev(t, res.Summary, "sdb")
-	if d.Source != SourceBlock || d.Pair != "dev,sector" || !d.Exact || !d.BlockLayer || d.Unpaired != 0 {
+	if d.Source != SourceBlock || d.Pair != "dev,sector" || d.Exact || !d.BlockLayer || d.Unpaired != 0 {
 		t.Errorf("device = %+v", d)
 	}
 	if want := "block_rq_issue -> block_rq_complete|block_rq_insert -> block_rq_complete"; strings.Join(d.Events, "|") != want {
@@ -244,7 +244,7 @@ func TestSession_HDD(t *testing.T) {
 	wantStat(t, d, KindBlockLayer, DirRead, 1, 7e6, 7*ms, 7*ms)
 	wantStat(t, d, KindDevice, DirWrite, 1, 900e6, 900*ms, 900*ms)
 	wantStat(t, d, KindBlockLayer, DirWrite, 1, 1e9, sec, sec)
-	want := "ftrace: block_rq_issue -> block_rq_complete, block_rq_insert -> block_rq_complete · pairing: exact (dev,sector) · lost events: 0"
+	want := "ftrace: block_rq_issue -> block_rq_complete, block_rq_insert -> block_rq_complete · pairing: first-in first-out (dev,sector) · lost events: 0"
 	if res.Summary.Text != want || strings.Contains(res.Summary.Text, "nvme") {
 		t.Errorf("text = %q\nwant   %q", res.Summary.Text, want)
 	}
@@ -466,7 +466,7 @@ func TestSession_NoInsertTracepoint(t *testing.T) {
 			t.Errorf("%s was touched", e)
 		}
 	}
-	if want := "ftrace: block_rq_issue -> block_rq_complete · pairing: exact (dev,sector) · lost events: 0"; res.Summary.Text != want {
+	if want := "ftrace: block_rq_issue -> block_rq_complete · pairing: first-in first-out (dev,sector) · lost events: 0"; res.Summary.Text != want {
 		t.Errorf("text = %q", res.Summary.Text)
 	}
 }
@@ -488,7 +488,7 @@ func TestSession_NVMeFallsBackToBlock(t *testing.T) {
 }
 
 func TestSession_ArrayMembers(t *testing.T) {
-	blockText := "block_rq_issue -> block_rq_complete, block_rq_insert -> block_rq_complete · pairing: exact (dev,sector)"
+	blockText := "block_rq_issue -> block_rq_complete, block_rq_insert -> block_rq_complete · pairing: first-in first-out (dev,sector)"
 	t.Run("hdd members", func(t *testing.T) {
 		sys := fakeSys(t, map[string]string{"md0": "9:0", "sdb": "8:16", "sdc": "8:32"}, "sdb", "sdc")
 		res, inst := run(t, []string{"md0", "sdb", "sdc"}, blockEvents, sys, Options{},
@@ -712,9 +712,9 @@ func TestSourceLine(t *testing.T) {
 	stats := map[Kind]map[Dir]Stats{KindDevice: {DirRead: {Count: 1}}}
 	nvme := DeviceSummary{Name: "nvme0n1", Source: SourceNVMe, Exact: true, BlockLayer: true, Pair: "ctrl,qid,cmdid",
 		Events: []string{"nvme_setup_cmd -> nvme_complete_rq", "block_rq_insert -> block_rq_complete"}, Stats: stats}
-	sdb := DeviceSummary{Name: "sdb", Source: SourceBlock, Exact: true, Pair: "dev,sector",
+	sdb := DeviceSummary{Name: "sdb", Source: SourceBlock, Pair: "dev,sector",
 		Events: []string{"block_rq_issue -> block_rq_complete"}, Stats: stats}
-	md := DeviceSummary{Name: "md0", Source: SourceBlock, Exact: true, Pair: "dev,sector",
+	md := DeviceSummary{Name: "md0", Source: SourceBlock, Pair: "dev,sector",
 		Events: []string{"block_rq_issue -> block_rq_complete"}}
 	sdz := DeviceSummary{Name: "sdz", Note: "no such device"}
 	lossy := sdb
@@ -726,11 +726,11 @@ func TestSourceLine(t *testing.T) {
 		{Summary{Devices: []DeviceSummary{nvme}},
 			"ftrace: nvme_setup_cmd -> nvme_complete_rq, block_rq_insert -> block_rq_complete · pairing: exact (ctrl,qid,cmdid) · lost events: 0"},
 		{Summary{Overrun: 10, Devices: []DeviceSummary{lossy}},
-			"ftrace: block_rq_issue -> block_rq_complete · pairing: exact (dev,sector) · lost events: 12 (ring buffer 10, unpaired 2)"},
+			"ftrace: block_rq_issue -> block_rq_complete · pairing: first-in first-out (dev,sector) · lost events: 12 (ring buffer 10, unpaired 2)"},
 		{Summary{Devices: []DeviceSummary{md}},
 			"ftrace: block_rq_issue -> block_rq_complete · no request events seen · lost events: 0"},
 		{Summary{Overrun: 3, Devices: []DeviceSummary{sdb, md, sdz}},
-			"ftrace: sdb: block_rq_issue -> block_rq_complete · pairing: exact (dev,sector); md0: no request events seen; sdz: not traced (no such device) · lost events: 3 (ring buffer 3, unpaired 0)"},
+			"ftrace: sdb: block_rq_issue -> block_rq_complete · pairing: first-in first-out (dev,sector); md0: no request events seen; sdz: not traced (no such device) · lost events: 3 (ring buffer 3, unpaired 0)"},
 	} {
 		if got := SourceLine(&c.s); got != c.want {
 			t.Errorf("got  %q\nwant %q", got, c.want)

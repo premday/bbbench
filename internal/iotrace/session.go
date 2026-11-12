@@ -69,7 +69,7 @@ type DeviceSummary struct {
 	Source     string   `json:"source,omitempty"` // "nvme" | "block"; "" = not traced
 	Events     []string `json:"events,omitempty"` // e.g. "nvme_setup_cmd -> nvme_complete_rq"
 	Pair       string   `json:"pair,omitempty"`   // "ctrl,qid,cmdid" | "dev,sector"
-	Exact      bool     `json:"exact"`
+	Exact      bool     `json:"exact"`            // device pairing is exact (NVMe); block is first-in first-out
 	BlockLayer bool     `json:"block_layer"`
 	// Unpaired is the number of events that found no partner: see the
 	// package doc (block: completions without a request and requests pending
@@ -165,7 +165,9 @@ func Start(devices []string, opts Options) (*Session, error) {
 			s.devices = append(s.devices, ds)
 			continue
 		}
-		ds.Exact, ds.BlockLayer = true, hasInsert
+		// NVMe commands pair exactly by (ctrl, qid, cmdid); block requests
+		// only first-in first-out per (dev, sector).
+		ds.Exact, ds.BlockLayer = ds.Source == SourceNVMe, hasInsert
 		if hasInsert {
 			ds.Events = append(ds.Events, "block_rq_insert -> block_rq_complete")
 		}

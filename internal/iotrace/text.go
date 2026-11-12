@@ -8,7 +8,10 @@ import (
 // SourceLine says which tracepoints each device was timed from, how the
 // events were paired and how many were lost, e.g.
 //
-//	ftrace: block_rq_issue -> block_rq_complete, block_rq_insert -> block_rq_complete · pairing: exact (dev,sector) · lost events: 0
+//	ftrace: block_rq_issue -> block_rq_complete, block_rq_insert -> block_rq_complete · pairing: first-in first-out (dev,sector) · lost events: 0
+//
+// NVMe commands pair exactly ("pairing: exact (ctrl,qid,cmdid)"), block
+// requests first-in first-out per sector.
 //
 // Several devices are named one by one, separated by "; ". A device without
 // any request events (an md or dm node: bio-based) says so instead of
@@ -35,7 +38,11 @@ func SourceLine(s *Summary) string {
 		case len(d.Stats) == 0:
 			b.WriteString("no request events seen")
 		default:
-			b.WriteString(strings.Join(d.Events, ", ") + " · pairing: exact (" + d.Pair + ")")
+			pairing := "first-in first-out"
+			if d.Exact {
+				pairing = "exact"
+			}
+			b.WriteString(strings.Join(d.Events, ", ") + " · pairing: " + pairing + " (" + d.Pair + ")")
 		}
 	}
 	var unpaired int64
