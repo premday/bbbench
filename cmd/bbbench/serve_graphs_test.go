@@ -338,7 +338,7 @@ func TestGraphsPageStacksMembers(t *testing.T) {
 	body := graphsPageBody(t)
 	// Read and write stack separately: Chart.js adds a 0 to every earlier
 	// value of its stack, whatever their sign.
-	for _, want := range []string{"'members'", "'members-write'", "stack = 'array'", "y: { stacked: stacked,",
+	for _, want := range []string{"'members'", "'members-write'", "stack = 'array'", "lineScales(sc, yLow, yHigh, { stacked: stacked })",
 		"mode: 'index', intersect: false", "Stack total", "'Array '", "ts_members", "fill: first ? 'origin' : '-1'"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("graphs page lacks %q", want)
@@ -602,6 +602,15 @@ assert.deepStrictEqual(mdTipLines(e, items(1)), ['md: idle, degraded 1', 'md eve
 // Sub-second windows keep their own key.
 const s = {log_avg_msec: 500, ts_md: [md(2, 'check', 10, 512, 0), md(2.5, 'check', 11, 512, 0)]};
 assert.deepStrictEqual(mdTipLines(s, items(2.5)), ['md: check 11% 0.5 MiB/s, degraded 0']);
+// The index is built once per entry and kept hidden on it: several events of
+// one window in their order, the entry's keys and JSON unchanged.
+const c = {log_avg_msec: 1000, ts_md: [md(1, 'idle', 0, 0, 0)], md_events: [{t: 1, text: 'a'}, {t: 3, text: 'x'}, {t: 0.999, text: 'b'}]};
+const before = JSON.stringify(c);
+assert.deepStrictEqual(mdTipLines(c, items(1)), ['md: idle, degraded 0', 'md event: a', 'md event: b']);
+assert.deepStrictEqual(mdTipLines(c, items(3)), ['md event: x']);
+assert.strictEqual(mdIndex(c), mdIndex(c));
+assert.deepStrictEqual(Object.keys(c), ['log_avg_msec', 'ts_md', 'md_events']);
+assert.strictEqual(JSON.stringify(c), before);
 assert.strictEqual(mdMetric(d, IOPS), true);
 assert.strictEqual(mdMetric(d, FLUSH), false);
 console.log('OK');
@@ -898,7 +907,7 @@ console.log('OK');
 
 // ftraceFuncs are the page functions of the ftrace latency overlay.
 var ftraceFuncs = []string{"windowOf", "memberStep", "memberKey", "memberColors", "rgba",
-	"iolatKind", "iolatHasKind", "iolatBlkHas", "iolatBlkNoneText",
+	"iolatKind", "iolatPtsHave", "iolatMembersHave", "iolatStatsHas", "iolatHasKind", "iolatBlkHas", "iolatBlkNoneText",
 	"iolatPoints", "iolatMean", "ftraceDatasets", "iolatNone", "siScale", "fmtScaled", "toBase",
 	"rampOf", "fioShift", "memberMetric", "isShown", "chartDatasets", "phaseExtent"}
 
@@ -1153,7 +1162,7 @@ const AXIS_HEADROOM = 1.15;
 const HIDDEN = {};
 const metric = (key, tsKey, sumR, sumW) => ({key, tsKey, sumR: sumR || (d => 0), sumW: sumW || (d => 0)});
 const LAT = metric('lat', 'ts_lat'), IOPS = metric('iops', 'ts_iops'), BW = metric('bw', 'ts_bw');
-const IOLAT = metric('iolat', 'ts_iolat', d => iolatMean(d, 'r'), d => iolatMean(d, 'w'));
+const IOLAT = metric('iolat', 'ts_iolat', d => iolatMean(d, 'r', 'device'), d => iolatMean(d, 'w', 'device'));
 const IOLATBLK = metric('iolatblk', 'ts_iolat', d => iolatMean(d, 'r', 'blocklayer'), d => iolatMean(d, 'w', 'blocklayer'));
 const FLUSH = metric('flush', 'ts_flush', d => 0, d => d.flush ? d.flush.mean_ns / 1000 : 0);
 const pt = (t, kind, dir, n, mean, p99) => ({t, kind, dir, n, mean, p50: mean, p99});

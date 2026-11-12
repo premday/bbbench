@@ -99,7 +99,7 @@ var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "siScale", "fmtScale
 	"memberNames", "memberColors", "memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "rgba",
 	"stackedMemberDatasets", "memberLatencyDatasets", "arrayDatasets", "makeMembersChart",
 	"mdMetric", "hasMD", "mdBusy", "mdActions", "mdBands", "mdIndex", "mdTipLines", "mdMarkers", "mdOptions",
-	"chartPlugins", "yAxisTitle", "makeFlushChart", "barData", "iolatKind", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart",
+	"chartPlugins", "yAxisTitle", "lineScales", "barAxis", "barChart", "windowTitle", "makeFlushChart", "barData", "iolatKind", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart",
 	"isShown", "chartDatasets"}
 
 // TestGraphsPageChartPhaseScale: a card plots its values in the base unit,
@@ -192,8 +192,12 @@ func TestChartPagesDropFixedUnit(t *testing.T) {
 			t.Errorf("%s page does not scale the unit", name)
 		}
 	}
+	// Every card's y axis comes from lineScales (line charts, and the
+	// ftrace latency bars) or barAxis (the other bars).
 	if !strings.Contains(jsFunction(t, pages["graphs"], "yAxisTitle"), "text: sc.unit") ||
-		strings.Count(pages["graphs"], "title: yAxisTitle(sc)") != 6 {
+		strings.Count(pages["graphs"], "title: yAxisTitle(sc)") != 2 ||
+		!strings.Contains(jsFunction(t, pages["graphs"], "lineScales"), "title: yAxisTitle(sc)") ||
+		!strings.Contains(jsFunction(t, pages["graphs"], "barAxis"), "title: yAxisTitle(sc)") {
 		t.Error("graphs page cards have no y axis unit title")
 	}
 	if strings.Count(pages["compare"], "text: axisTitle(metric, sc)") != 2 {
