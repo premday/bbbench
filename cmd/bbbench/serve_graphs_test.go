@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"bbbench/internal/blockdev"
+	"bbbench/internal/iotrace"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 )
@@ -370,8 +371,8 @@ func TestGraphsPageNoMembersUnchanged(t *testing.T) {
 	for _, want := range []string{
 		"const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t + shift), y:  p.r * sc.mul}));",
 		"const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));",
-		"label: 'Read',  data: readPts,",
-		"label: 'Write', data: writePts,",
+		"label: 'Read (fio)',  data: readPts,",
+		"label: 'Write (fio)', data: writePts,",
 		"if (mode !== 'normal' && memberMetric(d, metric)) return makeMembersChart(",
 	} {
 		if !strings.Contains(body, want) {
@@ -701,4 +702,123 @@ func requireNode(t *testing.T) string {
 		t.Skip("node not installed")
 	}
 	return node
+}
+
+func TestGenerateDiskPhaseData_IOTrace(t *testing.T) {
+	sum := &iotrace.Summary{Text: "ftrace: x", Lost: 1}
+	r := &BenchmarkResult{
+		ID: "x", Drives: arrayDrives(),
+		Phases: []PhaseResult{
+			{PhaseNumber: 1, PhaseName: "p", Jobs: []JobResult{
+				{Device: "md127", ReadStats: &IOStats{IOPS: 1, Bandwidth: 1}},
+				{Device: "sdd", ReadStats: &IOStats{IOPS: 1, Bandwidth: 1}},
+			},
+				IOTrace:      map[string]*iotrace.Summary{"md127": sum},
+				IOTraceNotes: map[string]string{"sdd": "no ftrace latency: no tracefs"},
+				IOTraceSeries: map[string]map[string][]IOLatPoint{"md127": {
+					"md127": {{T: 1, Kind: "device", Dir: "r", N: 3, Mean: 10}},
+					"sdb":   {{T: 1, Kind: "device", Dir: "r", N: 3, Mean: 20}},
+					"sdc":   {{T: 1, Kind: "device", Dir: "w", N: 3, Mean: 30}},
+				}}},
+		},
+	}
+	var md, sdd *DiskPhaseData
+	for _, d := range generateDiskPhaseData(r) {
+		d := d
+		switch d.Disk {
+		case "md127":
+			md = &d
+		case "sdd":
+			sdd = &d
+		}
+	}
+	if md == nil || sdd == nil {
+		t.Fatal("missing entries")
+	}
+	if len(md.TSiolat) != 1 || md.TSiolat[0].Mean != 10 || len(md.TSiolatMembers) != 2 || md.TSiolatMembers["sdb"][0].Mean != 20 || md.IOTrace != sum {
+		t.Errorf("md127 = %+v", md)
+	}
+	if sdd.IOTraceNote != "no ftrace latency: no tracefs" || sdd.TSiolat != nil {
+		t.Errorf("sdd = %+v", sdd)
+	}
+	// A phase without trace data has none of the keys.
+	plain, _ := json.Marshal(DiskPhaseData{Disk: "sda"})
+	for _, k := range []string{"ts_iolat", "io_trace", "io_trace_note", "flush_source"} {
+		if strings.Contains(string(plain), `"`+k+`"`) {
+			t.Errorf("plain entry has %s: %s", k, plain)
+		}
+	}
+}
+
+func TestGraphsPageLegendsNameSource(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{"'Read (fio)'", "'Write (fio)'", "' (kernel stat)'", "' (fio)'"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graphs page lacks %q", want)
+		}
+	}
+}
+
+// Tracepoint names come from the data (io_trace.text, flush_source), never from the page.
+func TestGraphsPageNoNVMeAssumption(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, bad := range []string{"nvme_", "block_rq", "nvme_cmd"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("graphs page hard-codes %q", bad)
+		}
+	}
+}
+
+func TestGraphsPageSourceLine(t *testing.T) {
+	runPageJS(t, []string{"sourceLine", "lossNote", "addLossNote"}, `
+const assert = require('assert');
+const M = k => ({key: k});
+const nv = {io_trace: {text: 'ftrace: nvme_setup_cmd -> nvme_complete_rq', lost: 0}, flush_source: 'ftrace: flush src'};
+const hdd = {io_trace: {text: 'ftrace: block_rq_issue -> block_rq_complete, block_rq_insert -> block_rq_complete', lost: 3}};
+const mem = {ts_members: {sdb: {}}, io_trace_note: 'no ftrace latency: no tracefs'};
+assert.strictEqual(sourceLine({}, M('iops')), 'fio');
+assert.strictEqual(sourceLine({}, M('bw')), 'fio');
+assert.strictEqual(sourceLine(mem, M('bw')), 'fio · members: kernel stat (/sys/block/<dev>/stat)');
+assert.strictEqual(sourceLine(nv, M('lat')), 'fio · ftrace: nvme_setup_cmd -> nvme_complete_rq');
+assert.strictEqual(sourceLine(mem, M('lat')), 'fio · members: kernel stat (/sys/block/<dev>/stat) · no ftrace latency: no tracefs');
+assert.strictEqual(sourceLine({}, M('lat')), 'fio');
+assert.strictEqual(sourceLine(nv, M('flush')), 'ftrace: flush src');
+assert.strictEqual(sourceLine({}, M('flush')), '');
+assert.strictEqual(sourceLine(nv, M('iolat')), 'ftrace: nvme_setup_cmd -> nvme_complete_rq');
+assert.strictEqual(sourceLine(mem, M('iolat')), 'no ftrace latency: no tracefs');
+const h = sourceLine(hdd, M('iolat'));
+assert.ok(h.includes('block_rq_issue -> block_rq_complete') && !h.includes('nvme'), h);
+assert.ok(!sourceLine(hdd, M('lat')).includes('nvme'));
+assert.strictEqual(lossNote(hdd, M('lat')), '⚠ 3 trace events lost: the ftrace series are incomplete');
+assert.strictEqual(lossNote(hdd, M('iolat')), '⚠ 3 trace events lost: the ftrace series are incomplete');
+assert.strictEqual(lossNote(hdd, M('iops')), '');
+assert.strictEqual(lossNote(hdd, M('flush')), '');
+assert.strictEqual(lossNote(nv, M('lat')), '');
+assert.strictEqual(lossNote({}, M('lat')), '');
+const el = {className: 'x', textContent: 'a'};
+addLossNote(el, hdd, M('lat'));
+assert.ok(el.textContent.startsWith('a · ⚠ 3'), el.textContent);
+console.log('OK');
+`)
+}
+
+func TestGraphsPageRampFallsBackToTrace(t *testing.T) {
+	runPageJS(t, []string{"rampOf"}, `
+const assert = require('assert');
+assert.strictEqual(rampOf({io_trace: {offset_ms: 2500}}), 2.5);
+assert.strictEqual(rampOf({flush: {offset_ms: 1000}, io_trace: {offset_ms: 2500}}), 1);
+assert.strictEqual(rampOf({ramp_sec: 4, io_trace: {offset_ms: 2500}}), 4);
+assert.strictEqual(rampOf({}), 0);
+console.log('OK');
+`)
+}
+
+func TestGraphsPageMemberLabelsNameSource(t *testing.T) {
+	runPageJS(t, []string{"memberLabel"}, `
+const assert = require('assert');
+const d = {ts_members: {sdb: {role: ''}, sdc: {role: 'spare'}}};
+assert.strictEqual(memberLabel(d, 'sdb', 'r'), 'sdb read (kernel stat)');
+assert.strictEqual(memberLabel(d, 'sdc', 'w'), 'sdc (spare) write (kernel stat)');
+console.log('OK');
+`)
 }

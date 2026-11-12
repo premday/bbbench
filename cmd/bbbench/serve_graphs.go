@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/iotrace"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 )
@@ -56,6 +57,15 @@ type DiskPhaseData struct {
 	TSmd     []MDPoint           `json:"ts_md,omitempty"`
 	MDEvents []MDEvent           `json:"md_events,omitempty"`
 	Flush    *flushtrace.Summary `json:"flush,omitempty"`
+	// FlushSource is the Flush source line (tracepoints, pairing, lost events).
+	FlushSource string `json:"flush_source,omitempty"`
+	// TSiolat is the traced device's read and write latency per window,
+	// TSiolatMembers the same for every other traced device (array members).
+	TSiolat        []IOLatPoint            `json:"ts_iolat,omitempty"`
+	TSiolatMembers map[string][]IOLatPoint `json:"ts_iolat_members,omitempty"`
+	// IOTrace is the phase's ftrace summary; IOTraceNote says why there is none.
+	IOTrace     *iotrace.Summary `json:"io_trace,omitempty"`
+	IOTraceNote string           `json:"io_trace_note,omitempty"`
 	// RampSec is the length of fio's ramp-up at the start of the phase; fio's
 	// series (t) start after it, the Flush series (t) include it.
 	RampSec int `json:"ramp_sec,omitempty"`
@@ -197,6 +207,21 @@ func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
 				dp.RampSec = phase.RampSec
 				dp.LogAvgMsec = phase.LogAvgMsec
 				dp.Flush = phase.FlushTrace[name]
+				if dp.Flush != nil {
+					dp.FlushSource = flushtrace.SourceLine(dp.Flush)
+				}
+				dp.IOTrace = phase.IOTrace[name]
+				dp.IOTraceNote = phase.IOTraceNotes[name]
+				for dev, pts := range phase.IOTraceSeries[name] {
+					if dev == name {
+						dp.TSiolat = pts
+						continue
+					}
+					if dp.TSiolatMembers == nil {
+						dp.TSiolatMembers = map[string][]IOLatPoint{}
+					}
+					dp.TSiolatMembers[dev] = pts
+				}
 				if l, ok := result.Labels[name]; ok {
 					dp.Setting = l.Setting
 					dp.SettingValue = l.Value
@@ -510,6 +535,8 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         }
         .md-badge.md-degraded { color: #be123c; border-color: #fda4af; background: #fff1f2; }
         .md-note { font-size: 10px; color: #b45309; margin-top: 2px; }
+        .src-line { font-size: 10px; color: #6d28d9; margin-top: 2px; word-break: break-word; }
+        .modal-src { font-size: 11px; color: #6d28d9; margin-top: 3px; word-break: break-word; }
         .modal-md { margin-top: 4px; }
         .modal-md .md-badge { font-size: 11px; }
         .modal-md .md-note { font-size: 12px; }
@@ -568,6 +595,7 @@ __NAVBAR_HTML__
     <div class="modal-card" id="modal-card">
         <div class="modal-card-title" id="modal-title"></div>
         <div class="modal-card-subtitle" id="modal-subtitle"></div>
+        <div class="modal-src" id="modal-src"></div>
         <div class="modal-md" id="modal-md"></div>
         <div class="modal-hint">Press Esc or click outside to close</div>
         <div id="modal-ts-warn"></div>
@@ -606,6 +634,39 @@ __NAVBAR_HTML__
         return 'ftrace saw 0 Flush commands' + (d.flush.write_cache === 'write through'
             ? ': the kernel sends no Flush to this drive (write cache: write through, i.e. its volatile write cache is disabled or absent).'
             : '.');
+    }
+    // sourceLine says where each series of a card comes from: fio, the
+    // kernel's per-disk counters of the members, the monitored ftrace
+    // tracepoints (their names come from the data, never from here).
+    function sourceLine(d, metric) {
+        const trace = d.io_trace ? (d.io_trace.text || '') : (d.io_trace_note || '');
+        const members = d.ts_members && Object.keys(d.ts_members).length > 0
+            ? ' \u00b7 members: kernel stat (/sys/block/<dev>/stat)' : '';
+        switch (metric.key) {
+        case 'iops':
+        case 'bw':
+            return 'fio' + members;
+        case 'lat':
+            return 'fio' + members + (trace ? ' \u00b7 ' + trace : '');
+        case 'flush':
+            return d.flush_source || '';
+        case 'iolat':
+            return trace;
+        }
+        return '';
+    }
+    // lossNote warns when the kernel dropped trace events of this phase.
+    function lossNote(d, metric) {
+        if (metric.key !== 'lat' && metric.key !== 'iolat') return '';
+        const n = d.io_trace ? d.io_trace.lost || 0 : 0;
+        return n > 0 ? '\u26a0 ' + n + ' trace events lost: the ftrace series are incomplete' : '';
+    }
+    // addLossNote appends the loss note to warnEl (which tsWarn may have filled).
+    function addLossNote(warnEl, d, metric) {
+        const n = lossNote(d, metric);
+        if (!n || !warnEl) return;
+        warnEl.className = warnEl.className.includes('modal') ? 'modal-ts-warn' : 'ts-warn';
+        warnEl.textContent = (warnEl.textContent ? warnEl.textContent + ' \u00b7 ' : '') + n;
     }
     function srcBadge(metric) {
         const b = document.createElement('span');
@@ -969,7 +1030,7 @@ __NAVBAR_HTML__
     }
     function memberLabel(d, n, dir) {
         const role = d.ts_members[n].role;
-        return n + (role ? ' (' + role + ')' : '') + (dir === 'r' ? ' read' : ' write');
+        return n + (role ? ' (' + role + ')' : '') + (dir === 'r' ? ' read' : ' write') + ' (kernel stat)';
     }
     function hasDir(pts, dir) {
         return Object.values(pts).some(p => (p[dir] || 0) > 0);
@@ -1024,7 +1085,7 @@ __NAVBAR_HTML__
         [['r', 'Read', 'rgba(37,99,235,0.95)'], ['w', 'Write', 'rgba(220,38,38,0.95)']].forEach(([dir, name, color]) => {
             if (!hasDir(pts, dir)) return;
             const ds = {
-                label: 'Array ' + name.toLowerCase(), array: true, dir, order: -1,
+                label: 'Array ' + name.toLowerCase() + ' (fio)', array: true, dir, order: -1,
                 data: g.xs.map(x => ({x, y: pts[x] && pts[x][dir] > 0 ? (dir === 'r' ? 1 : -1) * pts[x][dir] : null})),
                 fill: false, borderColor: color, backgroundColor: color,
                 tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 2, spanGaps: true,
@@ -1326,12 +1387,12 @@ __NAVBAR_HTML__
             const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t + shift), y: -p.w * sc.mul}));
             const datasets = [];
             if (readPts.length > 0) datasets.push({
-                label: 'Read',  data: readPts,
+                label: 'Read (fio)',  data: readPts,
                 borderColor: 'rgba(37,99,235,0.9)',  backgroundColor: 'rgba(37,99,235,0.07)',
                 fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
             });
             if (writePts.length > 0) datasets.push({
-                label: 'Write', data: writePts,
+                label: 'Write (fio)', data: writePts,
                 borderColor: 'rgba(220,38,38,0.9)', backgroundColor: 'rgba(220,38,38,0.07)',
                 fill: 'origin', tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5,
             });
@@ -1346,7 +1407,7 @@ __NAVBAR_HTML__
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
                             title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
-                            label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
+                            label: ctx => ctx.dataset.label + ': ' +
                                           fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                             afterBody: items => mdTipLines(d, items)
                         }}
@@ -1364,8 +1425,8 @@ __NAVBAR_HTML__
         } else {
             const r = metric.sumR(d), w = metric.sumW(d);
             const lbls = [], vals = [], cols = [];
-            if (r > 0) { lbls.push('Read');  vals.push(r * sc.mul);  cols.push('rgba(37,99,235,0.75)'); }
-            if (w > 0) { lbls.push('Write'); vals.push(-w * sc.mul); cols.push('rgba(220,38,38,0.75)'); }
+            if (r > 0) { lbls.push('Read (fio)');  vals.push(r * sc.mul);  cols.push('rgba(37,99,235,0.75)'); }
+            if (w > 0) { lbls.push('Write (fio)'); vals.push(-w * sc.mul); cols.push('rgba(220,38,38,0.75)'); }
             if (!lbls.length) { lbls.push('\u2014'); vals.push(0); cols.push('#e2e8f0'); }
             return new Chart(canvas, {
                 type: 'bar',
@@ -1412,6 +1473,8 @@ __NAVBAR_HTML__
         const warnEl = document.getElementById('modal-ts-warn');
         warnEl.className = 'modal-ts-warn';
         modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl, mode);
+        addLossNote(warnEl, d, metric);
+        document.getElementById('modal-src').textContent = sourceLine(d, metric);
         document.getElementById('modal-overlay').classList.add('active');
     }
 
@@ -1445,6 +1508,13 @@ __NAVBAR_HTML__
         const tech = d.technology ? d.technology.toUpperCase() : '';
         t2.textContent = [d.vendor, d.model, d.serial, tech, membersText(d)].filter(Boolean).join('  \u00b7  ');
         card.appendChild(t2);
+        const src = sourceLine(d, metric);
+        if (src) {
+            const t3 = document.createElement('div');
+            t3.className = 'src-line';
+            t3.textContent = src;
+            card.appendChild(t3);
+        }
         if (mdh && mdh.note) card.appendChild(mdh.note);
 
         const wrap = document.createElement('div');
@@ -1465,6 +1535,7 @@ __NAVBAR_HTML__
             return card;
         }
         charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
+        addLossNote(warnEl, d, metric);
 
         card.addEventListener('click', () => openModal(d, metric, yLow, yHigh, mode));
         return card;

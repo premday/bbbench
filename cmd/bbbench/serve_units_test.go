@@ -122,21 +122,21 @@ assert.strictEqual(pt(0, 1).y, 2300 * MiB);
 assert.strictEqual(tick(2e9), '2G');
 assert.strictEqual(tick(1.5e9), '1.5G');
 assert.strictEqual(tick(-1.5e9), '1.5G');
-assert.strictEqual(label(0, 1), 'Read: 2.41G bytes/s');
-assert.strictEqual(label(1, 0), 'Write: 1.57G bytes/s');
+assert.strictEqual(label(0, 1), 'Read (fio): 2.41G bytes/s');
+assert.strictEqual(label(1, 0), 'Write (fio): 1.57G bytes/s');
 // A 900 MiB/s peak with 15% headroom on the axis (1035) stays M.
 makeChart({}, {ts_bw: [{t: 1, r: 900, w: 0}]}, BW, 0, 1035);
 assert.strictEqual(tick(9e8), '900M');
-assert.strictEqual(label(0, 0), 'Read: 943.72M bytes/s');
+assert.strictEqual(label(0, 0), 'Read (fio): 943.72M bytes/s');
 // IOPS of 1.2 M, latency of 2500 us.
 makeChart({}, {ts_iops: [{t: 1, r: 1.2e6, w: 0}]}, IOPS, 0, 1.38e6);
 assert.strictEqual(yTitle(), 'IOPS');
 assert.strictEqual(tick(1e6), '1M');
-assert.strictEqual(label(0, 0), 'Read: 1.20M IOPS');
+assert.strictEqual(label(0, 0), 'Read (fio): 1.20M IOPS');
 makeChart({}, {ts_lat: [{t: 1, r: 2500, w: 0}]}, LAT, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(tick(0.002), '2m');
-assert.strictEqual(label(0, 0), 'Read: 2.50m s');
+assert.strictEqual(label(0, 0), 'Read (fio): 2.50m s');
 // Bar fallback (no series).
 makeChart({}, {r: 2300}, BW, 0, 2645);
 assert.strictEqual(yTitle(), 'bytes/s');

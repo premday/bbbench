@@ -14,7 +14,9 @@ package main
 // helpers both pages use (setting values, rounds, invalid results, the
 // members of an array target) and esc.
 const chartSharedJS = `function rampOf(d) {
-        return d.ramp_sec || (d.flush && d.flush.offset_ms ? d.flush.offset_ms / 1000 : 0);
+        if (d.ramp_sec) return d.ramp_sec;
+        if (d.flush && d.flush.offset_ms) return d.flush.offset_ms / 1000;
+        return d.io_trace && d.io_trace.offset_ms ? d.io_trace.offset_ms / 1000 : 0;
     }
     // fio stamps a log point at the END of its averaging window; moving it back
     // one window (to the window start) puts the first point right where the
