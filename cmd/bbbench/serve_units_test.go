@@ -192,7 +192,7 @@ func TestChartPagesDropFixedUnit(t *testing.T) {
 		strings.Count(pages["graphs"], "title: yAxisTitle(sc)") != 5 {
 		t.Error("graphs page cards have no y axis unit title")
 	}
-	if !strings.Contains(pages["compare"], "metric.label + ' (' + sc.unit + ')'") {
+	if strings.Count(pages["compare"], "text: axisTitle(metric, sc)") != 2 {
 		t.Error("compare page axis title does not use the scaled unit")
 	}
 }
@@ -200,7 +200,7 @@ func TestChartPagesDropFixedUnit(t *testing.T) {
 // TestComparePageScale: the compare chart takes its SI prefix from the
 // largest value it plots.
 func TestComparePageScale(t *testing.T) {
-	runJS(t, comparePageBody(t), []string{"siScale", "fmtScaled", "toBase", "chartScale"}, `
+	runJS(t, comparePageBody(t), []string{"siScale", "fmtScaled", "toBase", "chartScale", "axisTitle"}, `
 const assert = require('assert');
 const BW = {key: 'bw', unit: 'MB/s'};
 const sc = chartScale(BW, [{data: [{x: 0, y: 900}]}, {data: [{x: 0, y: 2300}]}]);
@@ -212,6 +212,9 @@ assert.strictEqual(chartScale(BW, []).prefix, '');
 const ds = [{data: [{x: 0, y: 2}, {x: 1, y: null}]}, {data: [3]}];
 toBase(ds, {mul: 10});
 assert.deepStrictEqual(ds, [{data: [{x: 0, y: 20}, {x: 1, y: null}]}, {data: [30]}]);
+// The axis title does not repeat itself.
+assert.strictEqual(axisTitle({label: 'IOPS'}, {unit: 'IOPS'}), 'IOPS');
+assert.strictEqual(axisTitle({label: 'Bandwidth'}, {unit: 'bytes/s'}), 'Bandwidth (bytes/s)');
 console.log('OK');
 `)
 }

@@ -379,6 +379,11 @@ __NAVBAR_HTML__
 
     __CHART_SHARED_JS__
 
+    function axisTitle(metric, sc) {
+        // "Bandwidth (bytes/s)", but just "IOPS" when the label is the unit.
+        return metric.label === sc.unit ? metric.label : metric.label + ' (' + sc.unit + ')';
+    }
+
     // chartScale is the SI scale of one compare chart (siScale), its prefix
     // from the largest value it plots (points {x, y} of the time series or
     // the bars' numbers, in the metric's units); the chart then plots in the
@@ -532,7 +537,7 @@ __NAVBAR_HTML__
                              ticks: { callback: tick, font: {size: 10}, color: '#64748b' },
                              grid: { color: '#f1f5f9' },
                              title: { display: true,
-                                      text: metric.label + ' (' + sc.unit + ')',
+                                      text: axisTitle(metric, sc),
                                       color: '#64748b', font: {size: 10} } }
                     }
                 }
@@ -583,7 +588,7 @@ __NAVBAR_HTML__
                         y: { min: 0,
                              ticks: { callback: tick, font: {size: 10}, color: '#64748b' },
                              title: { display: true,
-                                      text: metric.label + ' (' + sc.unit + ')',
+                                      text: axisTitle(metric, sc),
                                       color: '#64748b', font: {size: 10} } }
                     }
                 }
