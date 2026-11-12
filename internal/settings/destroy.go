@@ -163,7 +163,7 @@ func (s *layout) Destroy(ctx context.Context, e Existing) error {
 		return fmt.Errorf("%s not destroyed: %w", e.Name, err)
 	}
 	fresh := g.fresh
-	slog.Info("destroying an existing configuration", "backend", fresh.Backend, "name", fresh.Name, "id", fresh.ID, "disks", diskNames(fresh.Disks), "stack", fresh.Stack)
+	slog.Info("destroying an existing configuration", "backend", fresh.Backend, "name", fresh.Name, "id", fresh.ID, "disks", DiskNames(fresh.Disks), "stack", fresh.Stack)
 	perr := g.d.Destroy(ctx, fresh)
 	if perr != nil {
 		slog.Warn("destroying an existing configuration failed", "name", fresh.Name, "err", perr)
@@ -188,7 +188,7 @@ func (s *layout) Destroy(ctx context.Context, e Existing) error {
 		what = append(what, fmt.Sprintf("%s is not fully gone: %s", fresh.Name, strings.Join(left, "; ")))
 	}
 	if len(what) == 0 {
-		slog.Info("destroyed an existing configuration", "backend", fresh.Backend, "name", fresh.Name, "disks", diskNames(fresh.Disks))
+		slog.Info("destroyed an existing configuration", "backend", fresh.Backend, "name", fresh.Name, "disks", DiskNames(fresh.Disks))
 		return nil
 	}
 	// A provider that failed says itself what is done and what to run by
@@ -380,7 +380,7 @@ func (s *layout) destroyGate(ctx context.Context, e Existing) (*gated, []string,
 	if err != nil {
 		return nil, nil, err
 	}
-	g.names = append(diskNames(g.fresh.Disks), walked...)
+	g.names = append(DiskNames(g.fresh.Disks), walked...)
 	for _, c := range rep.Blockers(g.names, func(c inuse.Cause) bool { return isOwned(g.fresh, g.nodes, g.vg, c) }) {
 		if c.Kind == inuse.KindAll {
 			blockers = append(blockers, c.Text)
@@ -529,7 +529,8 @@ func describeDisks(ts []Target) string {
 	return strings.Join(s, ", ")
 }
 
-func diskNames(ts []Target) []string {
+// DiskNames are the kernel names of the targets.
+func DiskNames(ts []Target) []string {
 	n := make([]string, 0, len(ts))
 	for _, t := range ts {
 		n = append(n, t.Name)

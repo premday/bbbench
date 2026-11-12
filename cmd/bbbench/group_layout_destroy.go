@@ -314,14 +314,6 @@ func (m layoutModel) updateDestroyFailed(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func diskNames(ts []settings.Target) []string {
-	out := make([]string, 0, len(ts))
-	for _, t := range ts {
-		out = append(out, t.Name)
-	}
-	return out
-}
-
 // printDestroyOutcomes writes what each destroy of the layout screens did,
 // so that it stays on the terminal once the TUI is gone.
 func printDestroyOutcomes(w io.Writer, outcomes []string) {
@@ -339,10 +331,10 @@ func logDestroy(e settings.Existing, err error) {
 		return
 	}
 	if err != nil {
-		logger.Warn("destroying an existing configuration failed", "name", e.Name, "backend", e.Backend, "disks", diskNames(e.Disks), "error", err.Error())
+		logger.Warn("destroying an existing configuration failed", "name", e.Name, "backend", e.Backend, "disks", settings.DiskNames(e.Disks), "error", err.Error())
 		return
 	}
-	logger.Info("destroyed an existing configuration", "name", e.Name, "backend", e.Backend, "disks", diskNames(e.Disks))
+	logger.Info("destroyed an existing configuration", "name", e.Name, "backend", e.Backend, "disks", settings.DiskNames(e.Disks))
 }
 
 // wrapText wraps s to width, each line starting with indent. It breaks at
@@ -507,7 +499,7 @@ func (m layoutModel) destroyPickLines() []string {
 	var body []string
 	from, to := 0, 0
 	for i, e := range d.entries {
-		row := fmt.Sprintf("%s  %s  %s", e.Name, e.Summary, strings.Join(diskNames(e.Disks), ", "))
+		row := fmt.Sprintf("%s  %s  %s", e.Name, e.Summary, strings.Join(settings.DiskNames(e.Disks), ", "))
 		c := cursorMark(i == d.cursor)
 		if i == d.cursor {
 			from = len(body)
