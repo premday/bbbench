@@ -201,3 +201,28 @@ func TestWindowStartSec(t *testing.T) {
 		}
 	}
 }
+
+// A traceRun is safe on nil (tracing off) and stops its session once.
+func TestTraceRunNilAndOnce(t *testing.T) {
+	var none *flushTraceRun
+	none.MarkStart()
+	none.Close()
+	if none.Stop() != nil {
+		t.Error("nil run: Stop() != nil")
+	}
+	marks, stops, closes := 0, 0, 0
+	sum := &flushtrace.Summary{Count: 3}
+	r := &flushTraceRun{
+		markStart: func() { marks++ },
+		stop:      func() *flushtrace.Summary { stops++; return sum },
+		close:     func() error { closes++; return nil },
+	}
+	r.MarkStart()
+	if r.Stop() != sum || r.Stop() != sum || stops != 1 {
+		t.Errorf("Stop: stops = %d", stops)
+	}
+	r.Close()
+	if marks != 1 || closes != 1 {
+		t.Errorf("marks = %d, closes = %d", marks, closes)
+	}
+}

@@ -9,17 +9,43 @@ import (
 	"bbbench/internal/flushtrace"
 )
 
-// flushTraceRun is the Flush trace of one phase on one drive. Its methods
-// are no-ops on a nil run (not an fsync phase, tracing off or not started).
-type flushTraceRun struct {
-	sess      *flushtrace.Session
-	device    string
-	logPrefix string
-	avgMsec   int
-	rampMs    int
+// traceRun is one trace session of a phase on one drive (the Flush trace or
+// the I/O latency trace). Its methods are no-ops on a nil run (tracing off,
+// not needed or not started).
+type traceRun[S any] struct {
+	markStart func()
+	stop      func() *S // ends the session and stores its log
+	close     func() error
 	once      sync.Once
-	sum       *flushtrace.Summary
+	sum       *S
 }
+
+// MarkStart moves the trace's time zero to now (the start gate opened).
+func (r *traceRun[S]) MarkStart() {
+	if r != nil {
+		r.markStart()
+	}
+}
+
+// Stop ends the session, stores its log next to fio's and returns the
+// summary (nil for a nil run). Idempotent.
+func (r *traceRun[S]) Stop() *S {
+	if r == nil {
+		return nil
+	}
+	r.once.Do(func() { r.sum = r.stop() })
+	return r.sum
+}
+
+// Close ends the session quickly without storing anything (force quit).
+func (r *traceRun[S]) Close() {
+	if r != nil {
+		_ = r.close()
+	}
+}
+
+// flushTraceRun is the Flush trace of one phase on one drive.
+type flushTraceRun = traceRun[flushtrace.Summary]
 
 // startFlushTrace times the device's Flush commands from kernel trace events
 // while fio runs. Failure to trace never fails the phase: it is logged and
@@ -32,47 +58,25 @@ func startFlushTrace(device, logPrefix string, avgMsec, rampMs int, opts flushtr
 		}
 		return nil
 	}
-	return &flushTraceRun{sess: sess, device: device, logPrefix: logPrefix, avgMsec: avgMsec, rampMs: rampMs}
-}
-
-// MarkStart moves the trace's time zero to now (the start gate opened).
-func (r *flushTraceRun) MarkStart() {
-	if r != nil {
-		r.sess.MarkStart()
-	}
-}
-
-// Stop ends the session, stores the samples next to fio's logs and returns
-// the summary without the ramp (nil for a nil run). Idempotent.
-func (r *flushTraceRun) Stop() *flushtrace.Summary {
-	if r == nil {
-		return nil
-	}
-	r.once.Do(func() {
-		sum, err := r.sess.Stop()
+	// Stop returns the summary without the ramp.
+	stop := func() *flushtrace.Summary {
+		sum, err := sess.Stop()
 		if err != nil && logger != nil {
-			logger.Warn("flush tracing cleanup", "device", r.device, "err", err)
+			logger.Warn("flush tracing cleanup", "device", device, "err", err)
 		}
-		sum.AvgMsec = r.avgMsec // series follow fio's polling interval
-		sum.OffsetMs = r.rampMs // and fio's clock, which starts after its ramp
-		samples := r.sess.Samples()
+		sum.AvgMsec = avgMsec // series follow fio's polling interval
+		sum.OffsetMs = rampMs // and fio's clock, which starts after its ramp
+		samples := sess.Samples()
 		// Same statistics as a later load of the log: without the ramp.
 		final := flushtrace.Finish(sum, samples)
-		r.sum = &final
 		// Keep the samples with the fio logs, so the run can be
 		// re-summarized and graphed later.
-		if err := writeFlushLog(r.logPrefix, final, samples); err != nil && logger != nil {
-			logger.Warn("storing flush samples", "device", r.device, "err", err)
+		if err := writeFlushLog(logPrefix, final, samples); err != nil && logger != nil {
+			logger.Warn("storing flush samples", "device", device, "err", err)
 		}
-	})
-	return r.sum
-}
-
-// Close ends the session quickly without storing anything (force quit).
-func (r *flushTraceRun) Close() {
-	if r != nil {
-		_ = r.sess.Close()
+		return &final
 	}
+	return &flushTraceRun{markStart: sess.MarkStart, stop: stop, close: sess.Close}
 }
 
 // writeFlushLog stores the Flush latency of a traced phase next to fio's own
