@@ -195,7 +195,7 @@ func TestLayout_NoBackend(t *testing.T) {
 	if m.step != layoutStepList {
 		t.Fatalf("step = %v, want to stay on the list", m.step)
 	}
-	v := m.View()
+	v := flatView(m.View())
 	for _, want := range []string{"no layout provider is available: ", "mdadm is not installed", "the lvm2 tools are not installed"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("view lacks %q:\n%s", want, v)
@@ -242,7 +242,7 @@ func TestLayout_CarriesDataSelectableAndMarked(t *testing.T) {
 	rep := freeReport()
 	rep.Carries = map[string]string{"sdb": "gpt partition table, ext4 on sdb1"}
 	m := lpress(newLayoutModel(s, drives, targets, rep, nil), "a", "enter")
-	if v := m.View(); !strings.Contains(v, "sdb  V M1  1099 GB  carries data: gpt partition table, ext4 on sdb1") {
+	if v := m.View(); !strings.Contains(flatView(v), flatView("sdb  V M1  1099 GB  carries data: gpt partition table, ext4 on sdb1")) {
 		t.Fatalf("editor lacks the mark:\n%s", v)
 	}
 	m = setRole(t, m, "sdb", settings.RoleData)
@@ -256,7 +256,7 @@ func TestLayout_CarriesDataSelectableAndMarked(t *testing.T) {
 		"sdb  V M1 (S/N SN-sdb)  data  carries data: gpt partition table, ext4 on sdb1",
 		"Disks erased: sdb (carries data: gpt partition table, ext4 on sdb1), sdc",
 	} {
-		if !strings.Contains(v, want) {
+		if !strings.Contains(flatView(v), flatView(want)) {
 			t.Errorf("confirmation lacks %q:\n%s", want, v)
 		}
 	}
@@ -292,7 +292,7 @@ func TestLayout_AllReasonShownProminently(t *testing.T) {
 	drives, targets := testDrives("sdb", "sdc")
 	why := "the output directory (/run/out) could not be attributed to a disk; no disk can be offered"
 	m := newLayoutModel(s, drives, targets, &inuse.Report{Busy: map[string][]string{}, All: why}, nil)
-	if v := m.View(); !strings.Contains(v, "No disk can be used: "+why) {
+	if v := flatView(m.View()); !strings.Contains(v, "No disk can be used: "+why) {
 		t.Fatalf("list lacks the All reason:\n%s", v)
 	}
 	m = lpress(m, "a", "enter")
@@ -511,7 +511,7 @@ func TestLayout_CapacityWarning(t *testing.T) {
 	m := lpress(newLayoutModel(s, drives, targets, freeReport(), nil), "a", "enter")
 	m = toLevel(t, m, "raid1")
 	m = setRole(t, setRole(t, m, "sdb", settings.RoleData), "sdc", settings.RoleData)
-	if v := m.View(); !strings.Contains(v, "members differ in capacity (sdb 4000 GB, sdc 2000 GB): the layout uses the smallest") {
+	if v := m.View(); !strings.Contains(flatView(v), "members differ in capacity (sdb 4000 GB, sdc 2000 GB): the layout uses the smallest") {
 		t.Fatalf("view lacks the capacity warning:\n%s", v)
 	}
 	// Same capacity: no warning.
@@ -549,7 +549,7 @@ func TestLayout_ConfirmListsEveryDiskAndLayout(t *testing.T) {
 		"Each layout is torn down and its members wiped after its run, also after an error or Ctrl+C.",
 		"Nothing is built before you press y.",
 	} {
-		if !strings.Contains(v, want) {
+		if !strings.Contains(flatView(v), flatView(want)) {
 			t.Errorf("confirmation lacks %q", want)
 		}
 	}
@@ -734,5 +734,47 @@ func TestResume_LayoutGroupRebuildsVariants(t *testing.T) {
 	}
 	if c, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, layoutGroupFile(), []settings.Setting{s}, drives, free); err != nil || len(c.Variants) != 2 {
 		t.Fatalf("yes: %v %v", c, err)
+	}
+}
+
+// flatView joins the lines of a view that wraps to the terminal width, so a
+// test can look for a sentence that may have been broken at a space.
+func flatView(v string) string { return strings.Join(strings.Fields(v), " ") }
+
+// A long reason on the list screen wraps at the terminal width instead of
+// being cut at the right edge, and no word is lost.
+func TestLayout_ListWrapsLongReasons(t *testing.T) {
+	s, _ := bothBackends("mdadm", "lvm")
+	drives, targets := testDrives("sda")
+	why := "holds the root filesystem (/); mounted at /var/log (md126p3); mounted at /boot (md126p1); holds the output directory (/home/beorn/bbbench-output)"
+	m := newLayoutModel(s, drives, targets, &inuse.Report{Busy: map[string][]string{"sda": {why}}}, nil)
+	m.width = 60
+	v := m.View()
+	for _, line := range strings.Split(v, "\n") {
+		if n := len([]rune(line)); n > 60 {
+			t.Fatalf("line of %d columns on a 60-column screen: %q", n, line)
+		}
+	}
+	if !strings.Contains(flatView(v), "holds the output directory (/home/beorn/bbbench-output)") {
+		t.Fatalf("the end of the reason was lost:\n%s", v)
+	}
+}
+
+// No screen of the layout flow writes a line wider than the terminal.
+func TestLayout_NoScreenIsWiderThanTheTerminal(t *testing.T) {
+	s, _ := bothBackends("mdadm", "lvm")
+	drives, targets := testDrives("sdb", "sdc")
+	long := strings.Repeat("a very long reason ", 12)
+	busy := &inuse.Report{Busy: map[string][]string{}, Warnings: []string{long}}
+	m := newLayoutModel(s, drives, targets, busy, nil)
+	m.width = 50
+	m.msg = long
+	for _, step := range []layoutStep{layoutStepList, layoutStepBackend, layoutStepEditor, layoutStepConfirm} {
+		m.step = step
+		for _, line := range strings.Split(m.View(), "\n") {
+			if n := len([]rune(line)); n > 50 {
+				t.Fatalf("step %v: line of %d columns on a 50-column screen: %q", step, n, line)
+			}
+		}
 	}
 }

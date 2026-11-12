@@ -349,10 +349,20 @@ func logDestroy(e settings.Existing, err error) {
 // spaces, starts a new line after each "; " (the parts of an error), keeps
 // the line breaks of s and cuts a word longer than the line.
 func wrapText(s string, width int, indent string) []string {
+	return wrapTextOpt(s, width, indent, true)
+}
+
+// wrapTextOpt is wrapText; with parts false a "; " does not start a new line
+// (plain prose: a screen message, a list of reasons).
+func wrapTextOpt(s string, width int, indent string, parts bool) []string {
 	w := max(1, width-utf8.RuneCountInString(indent))
 	var out []string
 	for _, para := range strings.Split(s, "\n") {
-		for _, seg := range strings.SplitAfter(para, "; ") {
+		segs := []string{para}
+		if parts {
+			segs = strings.SplitAfter(para, "; ")
+		}
+		for _, seg := range segs {
 			words := strings.Fields(seg)
 			if len(words) == 0 {
 				if seg == para {

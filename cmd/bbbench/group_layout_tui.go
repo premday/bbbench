@@ -649,9 +649,10 @@ func (m layoutModel) View() string {
 		return m.destroyView()
 	}
 	if m.msg != "" {
-		b.WriteString("\n  " + m.msg + "\n")
+		b.WriteString("\n")
+		m.put(&b, m.msg, "  ", "  ")
 	}
-	return b.String()
+	return m.wrapView(b.String())
 }
 
 func cursorMark(on bool) string {
@@ -666,9 +667,12 @@ func (m layoutModel) listView(b *strings.Builder) {
 	if m.canDestroy() {
 		help += ", x destroy an existing RAID configuration"
 	}
-	b.WriteString("\n  Layouts to compare (" + help + ")\n\n")
+	b.WriteString("\n")
+	m.put(b, "Layouts to compare ("+help+")", "  ", "    ")
+	b.WriteString("\n")
 	if m.all != "" {
-		fmt.Fprintf(b, "  No disk can be used: %s\n\n", m.all)
+		m.put(b, "No disk can be used: "+m.all, "  ", "    ")
+		b.WriteString("\n")
 	}
 	if len(m.layouts) == 0 {
 		b.WriteString("    (no layout yet)\n")
@@ -678,25 +682,46 @@ func (m layoutModel) listView(b *strings.Builder) {
 		for _, d := range e.disks {
 			names = append(names, d.Name)
 		}
-		fmt.Fprintf(b, "  %s%d. %s: %s\n", cursorMark(i == m.cursor), i+1, e.value.Label, strings.Join(names, ", "))
+		m.put(b, fmt.Sprintf("%d. %s: %s", i+1, e.value.Label, strings.Join(names, ", ")), "  "+cursorMark(i == m.cursor), "      ")
 		if name, why := m.busyLayout(e); name != "" {
-			fmt.Fprintf(b, "        disk %s is now in use: %s\n", name, why)
+			m.put(b, fmt.Sprintf("disk %s is now in use: %s", name, why), "        ", "          ")
 		}
 	}
 	if m.all == "" {
 		var gray []string
 		for _, d := range m.drives {
 			if why, ok := m.grayed[d.Device.Name]; ok {
-				gray = append(gray, fmt.Sprintf("    %s: %s", d.Device.Name, why))
+				gray = append(gray, d.Device.Name+": "+why)
 			}
 		}
 		if len(gray) > 0 {
-			b.WriteString("\n  Not offered:\n" + strings.Join(gray, "\n") + "\n")
+			b.WriteString("\n  Not offered:\n")
+			for _, g := range gray {
+				m.put(b, g, "    ", "        ")
+			}
 		}
 	}
 	for _, w := range m.warnings {
-		b.WriteString("\n  Warning: " + w + "\n")
+		b.WriteString("\n")
+		m.put(b, "Warning: "+w, "  ", "    ")
 	}
+}
+
+// put writes text wrapped to the terminal width: the first line starts with
+// first, the others with rest (first and rest have the same display width,
+// so a cursor mark in first does not shift the text). Without a size message
+// the width is the default; nothing is cut at the right edge.
+func (m layoutModel) put(b *strings.Builder, text, first, rest string) {
+	w := m.width
+	if w <= 0 {
+		w = defaultWidth
+	}
+	lines := wrapTextOpt(text, w, rest, false)
+	if len(lines) == 0 {
+		return
+	}
+	lines[0] = first + strings.TrimPrefix(lines[0], rest)
+	b.WriteString(strings.Join(lines, "\n") + "\n")
 }
 
 func (m layoutModel) backendView(b *strings.Builder) {
@@ -856,4 +881,34 @@ func runLayoutModel(m layoutModel, run func(tea.Model) (tea.Model, error), out i
 	lm := final.(layoutModel)
 	printDestroyOutcomes(out, lm.destroyOutcomes)
 	return lm.outcome()
+}
+
+// wrapView wraps every line wider than the terminal at its spaces, the
+// continuation lines indented two columns deeper than the line: the screens
+// write long sentences (reasons, warnings, help) that the renderer would cut
+// at the right edge. A line with styling codes is left alone (its width is
+// not its length).
+func (m layoutModel) wrapView(v string) string {
+	w := m.width
+	if w <= 0 {
+		w = defaultWidth
+	}
+	lines := strings.Split(v, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if len([]rune(line)) <= w || strings.Contains(line, "\x1b") {
+			out = append(out, line)
+			continue
+		}
+		body := strings.TrimLeft(line, " ")
+		lead := line[:len(line)-len(body)]
+		wrapped := wrapTextOpt(body, w, lead+"  ", false)
+		if len(wrapped) == 0 {
+			out = append(out, line)
+			continue
+		}
+		wrapped[0] = lead + strings.TrimPrefix(wrapped[0], lead+"  ")
+		out = append(out, wrapped...)
+	}
+	return strings.Join(out, "\n")
 }
