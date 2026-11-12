@@ -181,20 +181,21 @@ var tracingWarned struct{ flush, io sync.Once }
 // warnTracing says once per process that Flush or I/O latency cannot be
 // traced (tracefs missing): the phases still run.
 func (ec *ExecutionCoordinator) warnTracing(available func() error, w io.Writer) {
-	if ec.flushTrace && ec.hasFsyncPhase() {
-		if err := available(); err != nil {
-			tracingWarned.flush.Do(func() {
-				fmt.Fprintf(w, "  warning: Flush latency cannot be traced: %v\n"+
-					"           mount it with `mount -t tracefs nodev /sys/kernel/tracing`; the fsync phases still run and report fio's fsync latency only\n", err)
-			})
+	for _, t := range []struct {
+		on     bool
+		once   *sync.Once
+		format string // %v is the tracefs error
+	}{
+		{ec.flushTrace && ec.hasFsyncPhase(), &tracingWarned.flush, "  warning: Flush latency cannot be traced: %v\n" +
+			"           mount it with `mount -t tracefs nodev /sys/kernel/tracing`; the fsync phases still run and report fio's fsync latency only\n"},
+		{ec.ioTrace, &tracingWarned.io, "  warning: I/O latency cannot be traced: %v\n" +
+			"           the phases still run and report fio's latency only\n"},
+	} {
+		if !t.on {
+			continue
 		}
-	}
-	if ec.ioTrace {
 		if err := available(); err != nil {
-			tracingWarned.io.Do(func() {
-				fmt.Fprintf(w, "  warning: I/O latency cannot be traced: %v\n"+
-					"           the phases still run and report fio's latency only\n", err)
-			})
+			t.once.Do(func() { fmt.Fprintf(w, t.format, err) })
 		}
 	}
 }

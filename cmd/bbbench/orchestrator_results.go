@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -106,14 +105,9 @@ func displayResults(coordinator *ExecutionCoordinator) error {
 	fmt.Println(repeatString("=", 80))
 	fmt.Println()
 
-	// Sort drives by name for consistent output
-	sortedDrives := make([]DriveInfo, len(coordinator.drives))
-	copy(sortedDrives, coordinator.drives)
-	sort.Slice(sortedDrives, func(i, j int) bool {
-		return sortedDrives[i].Device.Name < sortedDrives[j].Device.Name
-	})
-
-	for _, drive := range sortedDrives {
+	// Drives in natural device-name order (nvme2n1 before nvme10n1), like
+	// the setup screens.
+	for _, drive := range sortedDrives(coordinator.drives) {
 		results := coordinator.results[drive.Device.Name]
 		if len(results) == 0 {
 			continue
