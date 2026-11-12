@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"time"
@@ -178,10 +179,12 @@ func (m layoutModel) updateDestroyMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.destroy.err, m.destroy.scroll = msg.err.Error(), 0
 			m.step = layoutStepDestroyFailed
+			m.destroyOutcomes = append(slices.Clip(m.destroyOutcomes), "destroying "+msg.entry.Name+" failed: "+msg.err.Error())
 			return m, nil
 		}
 		m.step = layoutStepList
 		m.msg = m.destroyedMessage(msg.entry)
+		m.destroyOutcomes = append(slices.Clip(m.destroyOutcomes), m.msg)
 	}
 	return m, nil
 }
@@ -317,6 +320,18 @@ func diskNames(ts []settings.Target) []string {
 		out = append(out, t.Name)
 	}
 	return out
+}
+
+// printDestroyOutcomes writes what each destroy of the layout screens did,
+// so that it stays on the terminal once the TUI is gone.
+func printDestroyOutcomes(w io.Writer, outcomes []string) {
+	if len(outcomes) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Existing configurations destroyed from the layout screen:")
+	for _, o := range outcomes {
+		fmt.Fprintln(w, "  - "+o)
+	}
 }
 
 func logDestroy(e settings.Existing, err error) {

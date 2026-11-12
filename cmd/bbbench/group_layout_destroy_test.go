@@ -587,3 +587,64 @@ func TestDestroy_AddedLayoutRecheckedAfterRescan(t *testing.T) {
 		}
 	}
 }
+
+// Each destroy's outcome is kept, in order, for the summary printed after
+// the TUI: a success with its disks, a failure with its full text.
+func TestDestroy_OutcomesKeptInOrder(t *testing.T) {
+	m, f, cur := destroyFixture(t)
+	f.onDestroy = func() { *cur = freeReport() }
+	m = lkey(t, toConfirm(t, m), "y")
+	f.destroyErr = errors.New("superblocks left on sdc; rest by hand, tool --zero-superblock /dev/sdc")
+	m = lkey(t, toConfirm(t, m), "y")
+	m = lkey(t, m, "n")
+	want := []string{
+		"data destroyed; sdb, sdc are free",
+		"destroying data failed: superblocks left on sdc; rest by hand, tool --zero-superblock /dev/sdc",
+	}
+	if len(m.destroyOutcomes) != len(want) {
+		t.Fatalf("outcomes %q, want %q", m.destroyOutcomes, want)
+	}
+	for i := range want {
+		if m.destroyOutcomes[i] != want[i] {
+			t.Errorf("outcome %d = %q, want %q", i, m.destroyOutcomes[i], want[i])
+		}
+	}
+}
+
+// The outcomes are printed once the TUI has returned (it has left the
+// alternate screen), also when the layout screens were quit.
+func TestRunLayoutModel_PrintsOutcomesAfterTheTUI(t *testing.T) {
+	m, _, _ := destroyFixture(t)
+	var out strings.Builder
+	ran := false
+	run := func(tm tea.Model) (tea.Model, error) {
+		ran = true
+		if out.Len() != 0 {
+			t.Errorf("printed while the TUI runs: %q", out.String())
+		}
+		lm := tm.(layoutModel)
+		lm.destroyOutcomes = []string{"data destroyed; sdb, sdc are free", "destroying vg1 failed: it is open; nothing done"}
+		lm.cancelled = true
+		return lm, nil
+	}
+	_, err := runLayoutModel(m, run, &out)
+	if !ran || err == nil || err.Error() != "cancelled" {
+		t.Fatalf("ran %v err %v", ran, err)
+	}
+	got := out.String()
+	a := strings.Index(got, "data destroyed; sdb, sdc are free")
+	b := strings.Index(got, "destroying vg1 failed: it is open; nothing done")
+	if a < 0 || b < a {
+		t.Errorf("summary:\n%s", got)
+	}
+	// Nothing destroyed: nothing printed.
+	out.Reset()
+	_, _ = runLayoutModel(m, func(tm tea.Model) (tea.Model, error) {
+		lm := tm.(layoutModel)
+		lm.cancelled = true
+		return lm, nil
+	}, &out)
+	if out.Len() != 0 {
+		t.Errorf("printed without a destroy: %q", out.String())
+	}
+}

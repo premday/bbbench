@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -577,8 +578,11 @@ func runGroupSetupTUI(setting settings.Setting, selected []DriveInfo, targets ma
 }
 
 // runTea runs a model on the alternate screen and returns the final model.
+// The logs written meanwhile are held and written to stderr afterwards.
 func runTea(m tea.Model) (tea.Model, error) {
+	release := holdLogs(os.Stderr)
 	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	release()
 	if err != nil {
 		return nil, fmt.Errorf("tui error: %w", err)
 	}

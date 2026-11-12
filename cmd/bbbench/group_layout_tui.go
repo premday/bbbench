@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -107,6 +109,9 @@ type layoutModel struct {
 	// rescan re-runs the in-use scan after a destroy; nil disables x.
 	rescan  func() (*inuse.Report, error)
 	destroy destroyState
+	// destroyOutcomes is what each destroy did, in order: printed after
+	// the TUI, which the alternate screen would otherwise take with it.
+	destroyOutcomes []string
 	// tick schedules the next update of the destroy run's elapsed time.
 	tick          func() tea.Cmd
 	width, height int // the terminal; 0 until the first size message
@@ -838,9 +843,17 @@ func (m layoutModel) confirmView(b *strings.Builder) {
 func runLayoutSetupTUI(s settings.LayoutSetting, drives []DriveInfo, targets map[string]settings.Target, busy *inuse.Report, busyErr error, rescan func() (*inuse.Report, error)) (*groupChoice, error) {
 	m := newLayoutModel(s, drives, targets, busy, busyErr)
 	m.rescan = rescan
-	final, err := runTea(m)
+	return runLayoutModel(m, runTea, os.Stdout)
+}
+
+// runLayoutModel runs m with run, then writes the outcome of every destroy
+// to out, after run has returned (and left the alternate screen).
+func runLayoutModel(m layoutModel, run func(tea.Model) (tea.Model, error), out io.Writer) (*groupChoice, error) {
+	final, err := run(m)
 	if err != nil {
 		return nil, err
 	}
-	return final.(layoutModel).outcome()
+	lm := final.(layoutModel)
+	printDestroyOutcomes(out, lm.destroyOutcomes)
+	return lm.outcome()
 }
