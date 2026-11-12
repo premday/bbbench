@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -249,29 +250,71 @@ func formatFlushSummary(s *flushtrace.Summary) string {
 }
 
 // formatIOTraceSummary renders the kernel-measured device latency of the
-// target (the first traced device) for the run summary; an array's members
-// are on the pages. A target without request events (an md or dm node is
-// bio-based) says so.
+// target (the first traced device) for the run summary, naming the sources
+// (nvme, block). A target without request events of its own whose members
+// were traced (an md or dm node is bio-based) says so and gives the members'
+// device mean over all their requests; per-member figures are on the pages.
 func formatIOTraceSummary(s *iotrace.Summary) string {
-	var dev map[iotrace.Dir]iotrace.Stats
-	if len(s.Devices) > 0 {
-		dev = s.Devices[0].Stats[iotrace.KindDevice]
-	}
-	var dirs []string
-	for _, d := range []struct {
-		dir  iotrace.Dir
-		name string
-	}{{iotrace.DirRead, "read"}, {iotrace.DirWrite, "write"}} {
-		if st, ok := dev[d.dir]; ok && st.Count > 0 {
-			dirs = append(dirs, fmt.Sprintf("%s avg %.1f us p99 %.1f us", d.name, st.MeanNs/1000, float64(st.P99Ns)/1000))
-		}
-	}
-	if len(dirs) == 0 {
+	if len(s.Devices) == 0 {
 		return "ftrace: no request events seen"
 	}
-	out := "ftrace device: " + strings.Join(dirs, ", ")
-	if s.Lost > 0 {
-		out += fmt.Sprintf(" (%d events lost)", s.Lost)
+	var sources []string
+	for _, d := range s.Devices {
+		if d.Source != "" && !slices.Contains(sources, d.Source) {
+			sources = append(sources, d.Source)
+		}
 	}
-	return out
+	slices.Sort(sources)
+	head := "ftrace (" + strings.Join(sources, ", ") + ")"
+	lost := ""
+	if s.Lost > 0 {
+		lost = fmt.Sprintf(" (%d events lost)", s.Lost)
+	}
+	dirs := []struct {
+		dir  iotrace.Dir
+		name string
+	}{{iotrace.DirRead, "read"}, {iotrace.DirWrite, "write"}}
+
+	target := s.Devices[0]
+	var parts []string
+	for _, d := range dirs {
+		if st, ok := target.Stats[iotrace.KindDevice][d.dir]; ok && st.Count > 0 {
+			parts = append(parts, fmt.Sprintf("%s avg %.1f us p99 %.1f us", d.name, st.MeanNs/1000, float64(st.P99Ns)/1000))
+		}
+	}
+	if len(parts) > 0 {
+		return "ftrace device (" + target.Source + "): " + strings.Join(parts, ", ") + lost
+	}
+
+	members := 0
+	for _, m := range s.Devices[1:] {
+		if m.Source != "" {
+			members++
+		}
+	}
+	if members == 0 {
+		return head + ": no request events seen" + lost
+	}
+	plural := "s"
+	if members == 1 {
+		plural = ""
+	}
+	out := fmt.Sprintf("%s: target bio-based, %d member%s traced", head, members, plural)
+	for _, d := range dirs {
+		var n int64
+		var sum float64
+		for _, m := range s.Devices[1:] {
+			if st, ok := m.Stats[iotrace.KindDevice][d.dir]; ok {
+				n += st.Count
+				sum += st.MeanNs * float64(st.Count)
+			}
+		}
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("%s avg %.1f us", d.name, sum/float64(n)/1000))
+		}
+	}
+	if len(parts) == 0 {
+		return out + ", no request events seen" + lost
+	}
+	return out + ", members' device " + strings.Join(parts, ", ") + lost
 }

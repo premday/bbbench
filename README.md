@@ -418,7 +418,7 @@ the time spent before it. It is **on by default** and needs root and a mounted
 tracefs; if tracing is unavailable the phase still runs, a warning is printed
 once and the phase carries a note saying why. Use `--no-io-trace` to turn it
 off. The terminal prints a line such as
-`ftrace device: read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only; the rest is in the log and the web UI).
+`ftrace device (nvme): read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only, with its source, `nvme` or `block`; the rest is in the log and the web UI). For an md or dm target, which has no request events of its own, it says so and gives the members' device mean over all their requests, e.g. `ftrace (block): target bio-based, 4 members traced, members' device read avg 95.2 us, write avg 130.4 us`.
 
 **What is measured** (reads and writes only; Flush, discard and admin commands
 are left out, Flush has its own tracing above):

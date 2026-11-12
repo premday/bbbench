@@ -238,7 +238,7 @@ func TestFormatIOTraceSummary(t *testing.T) {
 		{Name: "sdb", Source: "block", Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
 			iotrace.KindDevice: {iotrace.DirRead: {Count: 1, MeanNs: 9e6, P99Ns: 9e6}}}},
 	}}
-	want := "ftrace device: read avg 85.0 us p99 120.0 us, write avg 30.1 us p99 41.0 us"
+	want := "ftrace device (block): read avg 85.0 us p99 120.0 us, write avg 30.1 us p99 41.0 us"
 	if got := formatIOTraceSummary(s); got != want {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
@@ -246,14 +246,26 @@ func TestFormatIOTraceSummary(t *testing.T) {
 	if got := formatIOTraceSummary(s); got != want+" (12 events lost)" {
 		t.Errorf("with loss: %q", got)
 	}
-	readOnly := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "sda", Source: "block", Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
+	readOnly := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "nvme0n1", Source: "nvme", Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
 		iotrace.KindDevice: {iotrace.DirRead: {Count: 3, MeanNs: 4.5e6, P99Ns: 9e6}}}}}}
-	if got := formatIOTraceSummary(readOnly); got != "ftrace device: read avg 4500.0 us p99 9000.0 us" {
+	if got := formatIOTraceSummary(readOnly); got != "ftrace device (nvme): read avg 4500.0 us p99 9000.0 us" {
 		t.Errorf("read only: %q", got)
 	}
-	// An md node is bio-based: no request events of its own.
-	none := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "md0", Source: "block"}, {Name: "sdb", Source: "block", Stats: rw}}}
-	if got := formatIOTraceSummary(none); got != "ftrace: no request events seen" {
+	// An md node is bio-based: no request events of its own; its members
+	// were traced, and their device latency is summed up (mean over all
+	// their requests).
+	sdc := map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
+		iotrace.KindDevice: {iotrace.DirRead: {Count: 30, MeanNs: 125_000, P99Ns: 1e6}}}
+	md := &iotrace.Summary{Lost: 2, Devices: []iotrace.DeviceSummary{{Name: "md0", Source: "block"},
+		{Name: "sdb", Source: "block", Stats: rw}, {Name: "nvme1n1", Source: "nvme", Stats: sdc}, {Name: "sdz", Note: "unknown device"}}}
+	if got, want := formatIOTraceSummary(md), "ftrace (block, nvme): target bio-based, 2 members traced, members' device read avg 115.0 us, write avg 30.1 us (2 events lost)"; got != want {
+		t.Errorf("md:\ngot  %q\nwant %q", got, want)
+	}
+	quiet := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "md0", Source: "block"}, {Name: "sdb", Source: "block"}}}
+	if got, want := formatIOTraceSummary(quiet), "ftrace (block): target bio-based, 1 member traced, no request events seen"; got != want {
+		t.Errorf("md, no member events: %q", got)
+	}
+	if got := formatIOTraceSummary(&iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "sda", Source: "block"}}}); got != "ftrace (block): no request events seen" {
 		t.Errorf("no events: %q", got)
 	}
 	if got := formatIOTraceSummary(&iotrace.Summary{}); got != "ftrace: no request events seen" {
