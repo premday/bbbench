@@ -151,3 +151,22 @@ func TestInstanceName(t *testing.T) {
 		t.Errorf("names %q %q", a, b)
 	}
 }
+
+func TestInstance_FeedSeesStartNs(t *testing.T) {
+	pipe := "fio-1 [001] ..... 0.500000: block_rq_issue: 8,16 R 4096 () 0 + 8 [fio]\n" +
+		"bbbench-1 [000] ..... 1.000000: tracing_mark_write: bbbench-start\n" +
+		"fio-1 [001] ..... 2.000000: block_rq_issue: 8,16 R 4096 () 8 + 8 [fio]\n"
+	root, _ := fakeTracefs(t, []string{"block/block_rq_issue"}, pipe)
+	var starts []int64
+	i, err := OpenInstanceStart(root, "test", 0, []string{"events/block/block_rq_issue"}, nil,
+		func(_ Event, startNs int64) { starts = append(starts, startNs) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = i.Stop()
+	var got []int64
+	i.Locked(func() { got = append(got, starts...) })
+	if len(got) != 2 || got[0] != 0 || got[1] != 1_000_000_000 {
+		t.Errorf("start times seen by feed = %v, want [0 1000000000]", got)
+	}
+}

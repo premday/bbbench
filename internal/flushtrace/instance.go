@@ -91,7 +91,7 @@ type Instance struct {
 	dir      string
 	pipe     *os.File
 	events   []string // enable files switched on, to switch off again
-	feed     func(Event)
+	feed     func(ev Event, startNs int64)
 	mu       sync.Mutex
 	done     chan struct{}
 	stopSeen chan struct{} // closed when the stop marker was read
@@ -106,6 +106,14 @@ type Instance struct {
 // event goes to feed, called with the instance mutex held. On failure the
 // instance is cleaned up.
 func OpenInstance(root, name string, bufferKB int, enable []string, filters map[string]string, feed func(Event)) (*Instance, error) {
+	return OpenInstanceStart(root, name, bufferKB, enable, filters, func(ev Event, _ int64) { feed(ev) })
+}
+
+// OpenInstanceStart is OpenInstance with feed also given the trace-clock time
+// of the start marker (0 = not seen yet), so a collector can tell events
+// before the start from events after it while streaming: StartNs cannot be
+// called from inside feed (the mutex is held).
+func OpenInstanceStart(root, name string, bufferKB int, enable []string, filters map[string]string, feed func(ev Event, startNs int64)) (*Instance, error) {
 	dir := filepath.Join(root, "instances", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create trace instance: %w", err)
@@ -176,7 +184,7 @@ func (i *Instance) read() {
 					close(i.stopSeen)
 				}
 			default:
-				i.feed(ev)
+				i.feed(ev, i.startNs)
 			}
 			i.mu.Unlock()
 		} else if n := lostEvents(line); n > 0 {
