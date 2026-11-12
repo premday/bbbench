@@ -105,6 +105,9 @@ func (h *Hist) quantile(p float64) int64 {
 		cum += c
 		if cum >= rank {
 			v := upperEdge(i)
+			if i == numBuckets-1 {
+				v = h.max // the last bucket is open-ended
+			}
 			if v < h.min {
 				v = h.min
 			}

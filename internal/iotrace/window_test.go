@@ -74,3 +74,13 @@ func TestAggregatorOrder(t *testing.T) {
 		t.Errorf("missing second window")
 	}
 }
+
+func TestAggregatorSkipsEmptyWindows(t *testing.T) {
+	a := newAggregator(1000, 0)
+	a.add("sda", KindDevice, DirRead, 100*ms, 1)
+	a.add("sda", KindDevice, DirRead, 3500*ms, 1)
+	ws, _ := a.finish()
+	if len(ws) != 2 || ws[0].EndMs != 1000 || ws[1].EndMs != 4000 {
+		t.Errorf("windows %+v", ws)
+	}
+}

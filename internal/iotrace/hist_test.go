@@ -30,7 +30,7 @@ func logUniform(r *rand.Rand, n int, lo, hi float64) []int64 {
 	return vals
 }
 
-func checkAgainstExact(t *testing.T, vals []int64) {
+func checkAgainstExact(t *testing.T, vals []int64) Stats {
 	t.Helper()
 	var h Hist
 	for _, v := range vals {
@@ -44,6 +44,7 @@ func checkAgainstExact(t *testing.T, vals []int64) {
 	}
 	within(t, "p50", s.P50Ns, exactRank(sorted, 0.5), 0.03)
 	within(t, "p99", s.P99Ns, exactRank(sorted, 0.99), 0.03)
+	return s
 }
 
 func TestHistExactSmall(t *testing.T) {
@@ -97,7 +98,8 @@ func TestHistHuge(t *testing.T) {
 	h.Add(big)
 	h.Add(1000)
 	s := h.Stats()
-	if s.MaxNs != big || s.P99Ns > s.MaxNs || s.P99Ns < s.MinNs {
+	// 1000 sits in a bucket of width 8: the p50 is that bucket's upper edge.
+	if s.MaxNs != big || s.P99Ns != big || s.P50Ns < 1000 || s.P50Ns > 1000+1000/64 {
 		t.Errorf("stats %+v", s)
 	}
 }
@@ -113,13 +115,44 @@ func TestHistHDDRange(t *testing.T) {
 	for i := 0; i < 50000; i++ {
 		vals = append(vals, 8_000_000+r.Int64N(7_000_001))
 	}
-	checkAgainstExact(t, vals)
-	var h Hist
-	for _, v := range vals {
-		h.Add(v)
-	}
-	s := h.Stats()
+	s := checkAgainstExact(t, vals)
 	if s.P50Ns > 200000 || s.P99Ns < 8_000_000 {
 		t.Errorf("modes lost: %+v", s)
+	}
+}
+
+func TestBucketBoundaries(t *testing.T) {
+	for _, c := range []struct {
+		v    int64
+		want int
+	}{
+		{0, 0}, {127, 127}, {128, 128}, {129, 128}, {255, 128 + 63}, {256, 128 + 64},
+		{1<<40 - 1, numBuckets - 1}, {1 << 40, numBuckets - 1}, {1 << 42, numBuckets - 1},
+	} {
+		if got := bucketOf(c.v); got != c.want {
+			t.Errorf("bucketOf(%d) = %d, want %d", c.v, got, c.want)
+		}
+	}
+}
+
+func TestBucketSweep(t *testing.T) {
+	prev := 0
+	for v := int64(0); v < 1<<40; v += 1 + v/97 {
+		b := bucketOf(v)
+		if b < prev {
+			t.Fatalf("bucketOf not monotonic at %d", v)
+		}
+		prev = b
+		if v > upperEdge(b) {
+			t.Fatalf("v %d above upperEdge %d", v, upperEdge(b))
+		}
+		if v >= 128 && upperEdge(b)-v >= v/64 {
+			t.Fatalf("v %d too far from edge %d", v, upperEdge(b))
+		}
+	}
+	for i := 0; i < numBuckets-1; i++ {
+		if got := bucketOf(upperEdge(i) + 1); got != i+1 {
+			t.Fatalf("bucket %d edge+1 maps to %d", i, got)
+		}
 	}
 }
