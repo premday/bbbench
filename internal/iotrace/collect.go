@@ -10,6 +10,7 @@ import (
 const (
 	SourceNVMe  = "nvme"  // nvme_setup_cmd -> nvme_complete_rq
 	SourceBlock = "block" // block_rq_issue -> block_rq_complete
+	SourceBio   = "bio"   // block_bio_queue -> block_bio_complete (a bio-based node)
 )
 
 // blockRq is the part of a block_rq_* payload the collectors use.
@@ -58,6 +59,41 @@ func parseBlockRq(p string, withBytes bool) (blockRq, bool) {
 		return r, false
 	}
 	p = p[k+2:]
+	var sector uint64
+	if sector, p, ok = atou(p); !ok || !strings.HasPrefix(p, " + ") {
+		return r, false
+	}
+	nr, _, ok := atou(p[3:])
+	if !ok || nr > 1<<32-1 {
+		return r, false
+	}
+	r.Sector, r.Nr = sector, uint32(nr)
+	return r, true
+}
+
+// parseBlockBio parses a block_bio_queue or block_bio_complete payload
+// (TP_printk "%d,%d %s %llu + %u [%s]", the last field the comm of a queue,
+// the error of a completion):
+//
+//	9,127 WS 2048 + 16 [fio]     (queue)
+//	9,127 WS 2048 + 16 [0]       (complete)
+//
+// RWBS, Sector and Nr are filled; anything after nr_sector is ignored.
+func parseBlockBio(p string) (blockRq, bool) {
+	var r blockRq
+	var ok bool
+	if r.Maj, p, ok = atoi(p); !ok || p == "" || p[0] != ',' {
+		return r, false
+	}
+	if r.Min, p, ok = atoi(p[1:]); !ok || p == "" || p[0] != ' ' {
+		return r, false
+	}
+	p = p[1:]
+	sp := strings.IndexByte(p, ' ')
+	if sp <= 0 {
+		return r, false
+	}
+	r.RWBS, p = p[:sp], p[sp+1:]
 	var sector uint64
 	if sector, p, ok = atou(p); !ok || !strings.HasPrefix(p, " + ") {
 		return r, false
@@ -179,7 +215,7 @@ func atou(p string) (uint64, string, bool) {
 // device is one traced block device.
 type device struct {
 	name       string
-	source     string // SourceNVMe or SourceBlock
+	source     string // SourceNVMe, SourceBlock or SourceBio
 	maj, min   int
 	blockLayer bool     // block_rq_insert is traced: block-layer latency
 	ctrls      []string // nvme controllers of a namespace ("nvme1"), from sysfs
@@ -205,6 +241,21 @@ type blockEntry struct {
 	dir               Dir
 }
 
+// bioKey is where a pending bio of a bio-based node ends: a bio the node
+// splits completes its remainder last, with an advanced sector and the same
+// end, so the pairing looks bios up by (dev, end sector).
+type bioKey struct {
+	maj, min int
+	end      uint64
+}
+
+// bioEntry is a bio queued on a node and not completed yet.
+type bioEntry struct {
+	start   uint64
+	queueNs int64
+	dir     Dir
+}
+
 type nvmeKey struct {
 	ctrl       string
 	qid, cmdid int
@@ -226,6 +277,8 @@ type collector struct {
 	byDisk   map[string]*device // nvme namespaces by name
 	byCtrl   map[string]*device // nvme controller -> its only traced namespace (nil = ambiguous)
 	block    map[blockKey][]blockEntry
+	bioDevs  map[devNum]*device // bio-based nodes (SourceBio)
+	bio      map[bioKey][]bioEntry
 	nvme     map[nvmeKey]nvmeEntry
 	startNs  int64 // start marker of the counted completions (0 = none yet)
 	finished bool
@@ -233,12 +286,14 @@ type collector struct {
 
 func newCollector(windowMs, offsetMs int) *collector {
 	return &collector{
-		agg:    newAggregator(windowMs, offsetMs),
-		byNum:  map[devNum]*device{},
-		byDisk: map[string]*device{},
-		byCtrl: map[string]*device{},
-		block:  map[blockKey][]blockEntry{},
-		nvme:   map[nvmeKey]nvmeEntry{},
+		agg:     newAggregator(windowMs, offsetMs),
+		byNum:   map[devNum]*device{},
+		byDisk:  map[string]*device{},
+		byCtrl:  map[string]*device{},
+		block:   map[blockKey][]blockEntry{},
+		bioDevs: map[devNum]*device{},
+		bio:     map[bioKey][]bioEntry{},
+		nvme:    map[nvmeKey]nvmeEntry{},
 	}
 }
 
@@ -246,6 +301,9 @@ func (c *collector) addDevice(d *device) {
 	c.devs = append(c.devs, d)
 	if d.usesBlock() {
 		c.byNum[devNum{d.maj, d.min}] = d
+	}
+	if d.source == SourceBio {
+		c.bioDevs[devNum{d.maj, d.min}] = d
 	}
 	if d.source == SourceNVMe {
 		c.byDisk[d.name] = d
@@ -283,6 +341,10 @@ func (c *collector) feed(ev flushtrace.Event, startNs int64) {
 		c.blockQueued(ev)
 	case "block_rq_complete":
 		c.blockComplete(ev, startNs)
+	case "block_bio_queue":
+		c.bioQueued(ev)
+	case "block_bio_complete":
+		c.bioComplete(ev, startNs)
 	case "nvme_setup_cmd":
 		c.nvmeSetup(ev)
 	case "nvme_complete_rq":
@@ -387,6 +449,69 @@ func (c *collector) blockComplete(ev flushtrace.Event, startNs int64) {
 	}
 }
 
+// bioQueued records a read or write bio submitted to a bio-based node.
+func (c *collector) bioQueued(ev flushtrace.Event) {
+	r, ok := parseBlockBio(ev.Payload)
+	if !ok || c.bioDevs[devNum{r.Maj, r.Min}] == nil {
+		return
+	}
+	dir, ok := dirOf(r.RWBS, r.Nr)
+	if !ok {
+		return
+	}
+	key := bioKey{r.Maj, r.Min, r.Sector + uint64(r.Nr)}
+	c.bio[key] = append(c.bio[key], bioEntry{start: r.Sector, queueNs: ev.TimeNs, dir: dir})
+}
+
+// bioComplete pairs a completed bio with the oldest pending bio of the same
+// node and end sector that starts at or before it (the same bio, or the
+// remainder of a split one). A completion lying inside a pending bio is a
+// part the node split off (bio_split + bio_chain): it is not counted, the
+// whole bio is when its remainder completes. Anything else is unpaired.
+func (c *collector) bioComplete(ev flushtrace.Event, startNs int64) {
+	r, ok := parseBlockBio(ev.Payload)
+	if !ok {
+		return
+	}
+	d := c.bioDevs[devNum{r.Maj, r.Min}]
+	if d == nil {
+		return
+	}
+	if _, ok := dirOf(r.RWBS, r.Nr); !ok {
+		return
+	}
+	end := r.Sector + uint64(r.Nr)
+	key := bioKey{r.Maj, r.Min, end}
+	q := c.bio[key]
+	for i, e := range q {
+		if e.start > r.Sector {
+			continue
+		}
+		if len(q) == 1 {
+			delete(c.bio, key)
+		} else {
+			c.bio[key] = append(q[:i:i], q[i+1:]...)
+		}
+		if startNs != 0 && ev.TimeNs >= startNs {
+			c.agg.add(d.name, KindBio, e.dir, ev.TimeNs-startNs, ev.TimeNs-e.queueNs)
+		}
+		return
+	}
+	for k, q := range c.bio {
+		if k.maj != r.Maj || k.min != r.Min || k.end < end {
+			continue
+		}
+		for _, e := range q {
+			if e.start <= r.Sector {
+				return // a split part of a pending bio
+			}
+		}
+	}
+	if startNs != 0 && ev.TimeNs >= startNs {
+		d.unpaired++
+	}
+}
+
 func (c *collector) nvmeSetup(ev flushtrace.Event) {
 	ctrl, disk, qid, cmdid, op, ok := parseNVMeSetup(ev.Payload)
 	if !ok || qid == 0 {
@@ -472,10 +597,15 @@ func (c *collector) finish() ([]Window, map[string]map[Kind]map[Dir]Stats) {
 				d.unpaired += int64(len(q))
 			}
 		}
+		for key, q := range c.bio {
+			if d := c.bioDevs[devNum{key.maj, key.min}]; d != nil {
+				d.unpaired += int64(len(q))
+			}
+		}
 		for _, e := range c.nvme {
 			e.dev.unpaired++
 		}
-		c.block, c.nvme = map[blockKey][]blockEntry{}, map[nvmeKey]nvmeEntry{}
+		c.block, c.bio, c.nvme = map[blockKey][]blockEntry{}, map[bioKey][]bioEntry{}, map[nvmeKey]nvmeEntry{}
 	}
 	return c.agg.finish()
 }

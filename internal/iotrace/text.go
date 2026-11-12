@@ -34,9 +34,9 @@ func SourceLine(s *Summary) string {
 		case d.Source == "":
 			b.WriteString("not traced (" + d.Note + ")")
 		case len(d.Stats) == 0 && one:
-			b.WriteString(strings.Join(d.Events, ", ") + " · no request events seen")
+			b.WriteString(strings.Join(d.Events, ", ") + " · " + noneSeen(d, KindDevice))
 		case len(d.Stats) == 0:
-			b.WriteString("no request events seen")
+			b.WriteString(noneSeen(d, KindDevice))
 		default:
 			pairing := "first-in first-out"
 			if d.Exact {
@@ -52,14 +52,36 @@ func SourceLine(s *Summary) string {
 // PairBlock is the pairing key of block requests, first-in first-out.
 const PairBlock = "dev,sector"
 
+// PairBio is the pairing key of the bios of a bio-based node, first-in
+// first-out (through the end sector, see the package doc).
+const PairBio = "dev,sector,nr_sectors"
+
+// bioEventsText is the tracepoint pair of a bio-based node.
+var bioEventsText = strings.TrimPrefix(evBioQueue, "block/") + " -> " + strings.TrimPrefix(evBioDone, "block/")
+
 // insertTracepoint names the block-layer start event in the texts.
 var insertTracepoint = strings.TrimPrefix(evBlockIns, "block/")
+
+// noneSeen is the text of a traced device without events of a kind.
+func noneSeen(d DeviceSummary, kind Kind) string {
+	switch {
+	case kind == KindBlockLayer:
+		return "no block-layer events seen"
+	case d.Source == SourceBio:
+		return "no bio events seen"
+	}
+	return "no request events seen"
+}
 
 // SourceLineOf is SourceLine for one kind of latency: for KindDevice the
 // device tracepoints and their pairing, for KindBlockLayer the block-layer
 // ones, which pair block requests first-in first-out by (dev, sector) for
 // every source (NVMe included). A device without that kind's events says
-// so; one without block-layer tracepoint says that instead.
+// so; one without block-layer tracepoint says that instead. A bio-based
+// node's bio series is drawn on the Device latency card, so KindDevice names
+// its bio tracepoints; KindBlockLayer says it has no block layer; KindBio
+// names the bio tracepoints of the nodes and calls the other devices
+// request-based.
 func SourceLineOf(s *Summary, kind Kind) string {
 	var b strings.Builder
 	b.WriteString("ftrace: ")
@@ -67,10 +89,6 @@ func SourceLineOf(s *Summary, kind Kind) string {
 		b.WriteString("no device traced")
 	}
 	one := len(s.Devices) == 1
-	none := "no request events seen"
-	if kind == KindBlockLayer {
-		none = "no block-layer events seen"
-	}
 	for i, d := range s.Devices {
 		if i > 0 {
 			b.WriteString("; ")
@@ -85,15 +103,27 @@ func SourceLineOf(s *Summary, kind Kind) string {
 		if kind == KindBlockLayer {
 			events, pairing, pair = blockLayerEvents(d), "first-in first-out", PairBlock
 		}
+		k := kind
+		if d.Source == SourceBio && kind == KindDevice {
+			k = KindBio // the node's series on the Device latency card
+		}
 		switch {
 		case d.Source == "":
 			b.WriteString("not traced (" + d.Note + ")")
+		case kind == KindBlockLayer && d.Source == SourceBio:
+			b.WriteString("bio-based, no block layer (bio-level latency on the Device latency card)")
+		case kind == KindBlockLayer && d.BioBased && d.Source == SourceBlock:
+			b.WriteString("bio-based, no block layer")
+		case kind == KindBio && d.BioBased && d.Source != SourceBio:
+			b.WriteString("bio-based, no bio tracepoints")
+		case kind == KindBio && d.Source != SourceBio:
+			b.WriteString("request-based (no bio series)")
 		case kind == KindBlockLayer && !d.BlockLayer:
 			b.WriteString("no " + insertTracepoint + " tracepoint")
-		case len(d.Stats[kind]) == 0 && one:
-			b.WriteString(strings.Join(events, ", ") + " · " + none)
-		case len(d.Stats[kind]) == 0:
-			b.WriteString(none)
+		case len(d.Stats[k]) == 0 && one:
+			b.WriteString(strings.Join(events, ", ") + " · " + noneSeen(d, kind))
+		case len(d.Stats[k]) == 0:
+			b.WriteString(noneSeen(d, kind))
 		default:
 			b.WriteString(strings.Join(events, ", ") + " · pairing: " + pairing + " (" + pair + ")")
 		}
@@ -125,6 +155,10 @@ func blockLayerNote(d DeviceSummary) string {
 	switch {
 	case d.Source == "":
 		return "not traced (" + d.Note + ")"
+	case d.Source == SourceBio:
+		return "bio-based (no request queue): no block-layer series; bio-level latency (" + bioEventsText + ") on the Device latency card"
+	case d.BioBased && d.Source == SourceBlock:
+		return "bio-based (no request queue): no block-layer series; the kernel has no " + strings.Join([]string{strings.TrimPrefix(evBioQueue, "block/"), strings.TrimPrefix(evBioDone, "block/")}, "/") + " tracepoints"
 	case !d.BlockLayer:
 		return "the kernel has no " + insertTracepoint + " tracepoint"
 	case len(d.Stats[KindBlockLayer]) > 0:

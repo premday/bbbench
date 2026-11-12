@@ -168,3 +168,24 @@ func TestHeadName(t *testing.T) {
 		}
 	}
 }
+
+func TestParseBlockBio(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want blockRq
+		ok   bool
+	}{
+		{"9,127 WS 2048 + 16 [fio]", blockRq{Maj: 9, Min: 127, RWBS: "WS", Sector: 2048, Nr: 16}, true},
+		{"253,3 R 0 + 8 [0]", blockRq{Maj: 253, Min: 3, RWBS: "R", Sector: 0, Nr: 8}, true},
+		{"9,0 FWS 0 + 0 [kworker/u8:2]", blockRq{Maj: 9, Min: 0, RWBS: "FWS", Sector: 0, Nr: 0}, true},
+		{"9,0 R 18446744073709551615 + 8 [-5]", blockRq{Maj: 9, Min: 0, RWBS: "R", Sector: 1<<64 - 1, Nr: 8}, true},
+		{"9,0 R 10 8 [fio]", blockRq{}, false},
+		{"9 R 10 + 8 [fio]", blockRq{}, false},
+		{"", blockRq{}, false},
+	} {
+		got, ok := parseBlockBio(c.in)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("parseBlockBio(%q) = %+v, %v; want %+v, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}

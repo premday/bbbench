@@ -22,6 +22,18 @@
 // discards and admin commands, whose setups the kernel filter drops, look the
 // same.
 //
+// Bio-based nodes (md, most dm, LVM: a queue/ without mq/ in sysfs) see no
+// request events at all. Their latency is timed at the bio level instead
+// (SourceBio, KindBio): block_bio_queue -> block_bio_complete of the bios
+// submitted to the node itself, paired first-in first-out by (dev, sector,
+// nr_sectors) through their end sector, so the remainder of a bio the node
+// splits pairs with the bio as queued and the parts split off it are not
+// counted; bios remapped to lower devices carry the lower dev and are
+// filtered out. A request-based device never gets bio events enabled, so
+// nothing is counted twice. Not verified on hardware: whether
+// block_bio_complete fires for the node's own bios on md, dm and LVM
+// (BIO_TRACE_COMPLETION) and with which sector after a dm remap.
+//
 // Known limitations, all of the block path:
 //   - requeues (block_rq_requeue) are not handled: a requeued request is
 //     issued twice and its first issue time is kept;
@@ -71,6 +83,9 @@ type DeviceSummary struct {
 	Pair       string   `json:"pair,omitempty"`   // "ctrl,qid,cmdid" | "dev,sector"
 	Exact      bool     `json:"exact"`            // device pairing is exact (NVMe); block is first-in first-out
 	BlockLayer bool     `json:"block_layer"`
+	// BioBased: the device has no blk-mq request queue (an md or dm node),
+	// so it has no request events; Source "bio" times its bios instead.
+	BioBased bool `json:"bio_based,omitempty"`
 	// Unpaired is the number of events that found no partner: see the
 	// package doc (block: completions without a request and requests pending
 	// at Stop; NVMe: commands pending at Stop or whose cmdid was reused).
@@ -93,10 +108,12 @@ type Summary struct {
 	Devices      []DeviceSummary `json:"devices"`
 	Lost         int64           `json:"lost"` // Overrun + every Unpaired
 	Text         string          `json:"text"` // SourceLine
-	// TextDevice and TextBlockLayer are SourceLineOf for each kind: the
-	// source lines of the Device and the Block-layer latency cards.
+	// TextDevice, TextBlockLayer and TextBio are SourceLineOf for each kind:
+	// the source lines of the Device and the Block-layer latency cards, and
+	// of the bio-level series of a bio-based node.
 	TextDevice     string `json:"text_device"`
 	TextBlockLayer string `json:"text_blocklayer"`
+	TextBio        string `json:"text_bio,omitempty"`
 }
 
 // Fill sets Lost, the texts and each device's BlockLayerNote from the rest.
@@ -109,6 +126,13 @@ func (s *Summary) Fill() {
 	s.Text = SourceLine(s)
 	s.TextDevice = SourceLineOf(s, KindDevice)
 	s.TextBlockLayer = SourceLineOf(s, KindBlockLayer)
+	s.TextBio = ""
+	for _, d := range s.Devices {
+		if d.BioBased {
+			s.TextBio = SourceLineOf(s, KindBio)
+			break
+		}
+	}
 }
 
 // Result is a finished session: the summary and the windows.
@@ -133,12 +157,15 @@ const (
 	evBlockDone  = "block/block_rq_complete"
 	evBlockIns   = "block/block_rq_insert"
 	evBlockMerge = "block/block_rq_merge"
+	evBioQueue   = "block/block_bio_queue"
+	evBioDone    = "block/block_bio_complete"
 )
 
 // Start begins tracing the reads and writes of the named block devices (the
 // target first, then its members). Each device gets its own source: NVMe
-// tracepoints for an NVMe namespace when the kernel has them, else the
-// block_rq_* tracepoints. A device that cannot be traced is listed with a
+// tracepoints for an NVMe namespace when the kernel has them, the bio
+// tracepoints for a bio-based node (no request events by construction), else
+// the block_rq_* tracepoints. A device that cannot be traced is listed with a
 // Note; when none can, the error wraps ErrUnsupported with the reasons.
 func Start(devices []string, opts Options) (*Session, error) {
 	root, err := flushtrace.FindTracefs(flushtrace.Options{TracefsRoot: opts.TracefsRoot})
@@ -149,21 +176,28 @@ func Start(devices []string, opts Options) (*Session, error) {
 	hasBlock := flushtrace.HasEvents(root, evBlockIssue, evBlockDone)
 	hasInsert := hasBlock && flushtrace.HasEvents(root, evBlockIns)
 	hasMerge := hasInsert && flushtrace.HasEvents(root, evBlockMerge)
+	hasBio := flushtrace.HasEvents(root, evBioQueue, evBioDone)
 
 	s := &Session{traced: map[string]*device{}}
 	col := newCollector(opts.AvgMsec, opts.OffsetMs)
 	var reasons []string
 	var anyNVMe, anyBlock bool
-	var devFilter, ctrls []string
+	var devFilter, bioFilter, ctrls []string
 	for _, name := range devices {
 		ds := DeviceSummary{Name: name}
 		maj, min, err := flushtrace.DevNumbers(opts.SysBlock, name)
+		ds.BioBased = err == nil && flushtrace.BioBased(opts.SysBlock, name)
 		switch {
 		case err != nil:
 			ds.Note = "unknown device: " + err.Error()
 		case strings.HasPrefix(name, "nvme") && hasNVMe:
+			// A native multipath head is bio-based, but its commands are
+			// traced on its controllers.
 			ds.Source, ds.Pair = SourceNVMe, "ctrl,qid,cmdid"
 			ds.Events = []string{"nvme_setup_cmd -> nvme_complete_rq"}
+		case ds.BioBased && hasBio:
+			ds.Source, ds.Pair = SourceBio, PairBio
+			ds.Events = []string{bioEventsText}
 		case hasBlock:
 			ds.Source, ds.Pair = SourceBlock, PairBlock
 			ds.Events = []string{"block_rq_issue -> block_rq_complete"}
@@ -177,8 +211,8 @@ func Start(devices []string, opts Options) (*Session, error) {
 		}
 		// NVMe commands pair exactly by (ctrl, qid, cmdid); block requests
 		// only first-in first-out per (dev, sector).
-		ds.Exact, ds.BlockLayer = ds.Source == SourceNVMe, hasInsert
-		if hasInsert {
+		ds.Exact, ds.BlockLayer = ds.Source == SourceNVMe, hasInsert && ds.Source != SourceBio
+		if ds.BlockLayer {
 			ds.Events = append(ds.Events, "block_rq_insert -> block_rq_complete")
 		}
 		if _, dup := s.traced[name]; dup {
@@ -199,6 +233,9 @@ func Start(devices []string, opts Options) (*Session, error) {
 		if d.usesBlock() {
 			anyBlock = true
 			devFilter = append(devFilter, "dev == "+strconv.Itoa(maj<<20|min))
+		}
+		if d.source == SourceBio {
+			bioFilter = append(bioFilter, "dev == "+strconv.Itoa(maj<<20|min))
 		}
 		s.devices = append(s.devices, ds)
 	}
@@ -238,6 +275,15 @@ func Start(devices []string, opts Options) (*Session, error) {
 		}
 		f := strings.Join(devFilter, " || ")
 		for _, e := range blk {
+			enable = append(enable, "events/"+e)
+			filters["events/"+e] = f
+		}
+	}
+	if len(bioFilter) > 0 {
+		// Only the bio-based nodes: every bio of every device would
+		// otherwise reach the reader.
+		f := strings.Join(bioFilter, " || ")
+		for _, e := range []string{evBioQueue, evBioDone} {
 			enable = append(enable, "events/"+e)
 			filters["events/"+e] = f
 		}

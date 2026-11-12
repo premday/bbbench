@@ -170,3 +170,17 @@ func TestInstance_FeedSeesStartNs(t *testing.T) {
 		t.Errorf("start times seen by feed = %v, want [0 1000000000]", got)
 	}
 }
+
+func TestBioBased(t *testing.T) {
+	sys := t.TempDir()
+	for _, d := range []string{"md0/queue", "sdb/queue", "sdb/mq/0", "nvme9n1"} {
+		if err := os.MkdirAll(filepath.Join(sys, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]bool{"md0": true, "sdb": false, "nvme9n1": false, "nope": false} {
+		if got := BioBased(sys, name); got != want {
+			t.Errorf("BioBased(%s) = %v, want %v", name, got, want)
+		}
+	}
+}

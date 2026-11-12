@@ -21,6 +21,7 @@ const (
 var (
 	nvmeEvents  = []string{"nvme/nvme_setup_cmd", "nvme/nvme_complete_rq"}
 	blockEvents = []string{"block/block_rq_issue", "block/block_rq_complete", "block/block_rq_insert", "block/block_rq_merge"}
+	bioEvents   = []string{"block/block_bio_queue", "block/block_bio_complete"}
 	issueOnly   = []string{"block/block_rq_issue", "block/block_rq_complete"}
 )
 
@@ -51,12 +52,14 @@ func fakeTracefs(t *testing.T, events []string, lines []string) (root, inst stri
 }
 
 // fakeSys builds /sys/block with the given devices: name -> "maj:min" and
-// whether it is rotational.
+// whether it is rotational. Every device is request-based (blk-mq: an mq/
+// directory); bioNode makes one bio-based.
 func fakeSys(t *testing.T, devs map[string]string, rotational ...string) string {
 	t.Helper()
 	sys := t.TempDir()
 	for name, dev := range devs {
 		must(t, os.MkdirAll(filepath.Join(sys, name, "queue"), 0o755))
+		must(t, os.MkdirAll(filepath.Join(sys, name, "mq", "0"), 0o755))
 		must(t, os.WriteFile(filepath.Join(sys, name, "dev"), []byte(dev+"\n"), 0o644))
 		must(t, os.WriteFile(filepath.Join(sys, name, "queue", "rotational"), []byte("0\n"), 0o644))
 	}
@@ -64,6 +67,24 @@ func fakeSys(t *testing.T, devs map[string]string, rotational ...string) string 
 		must(t, os.WriteFile(filepath.Join(sys, name, "queue", "rotational"), []byte("1\n"), 0o644))
 	}
 	return sys
+}
+
+// bioNode makes a device of fakeSys bio-based, like an md or dm node: a
+// queue/ directory without mq/.
+func bioNode(t *testing.T, sys string, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		must(t, os.RemoveAll(filepath.Join(sys, n, "mq")))
+	}
+}
+
+// bio returns a block_bio_queue line ([comm]) or a block_bio_complete line
+// ([error]), in the kernel's TP_printk shape "%d,%d %s %llu + %u [...]".
+func bio(ns int64, ev, dev, rwbs string, sector uint64, nr uint32) string {
+	if ev == "block_bio_complete" {
+		return fmt.Sprintf("<idle>-0 [002] d.h1. %s: block_bio_complete: %s %s %d + %d [0]", secs(ns), dev, rwbs, sector, nr)
+	}
+	return fmt.Sprintf("fio-1 [002] ..... %s: block_bio_queue: %s %s %d + %d [fio]", secs(ns), dev, rwbs, sector, nr)
 }
 
 func readFile(t *testing.T, p string) string {
@@ -825,5 +846,189 @@ func TestSession_LastStartMarkerIsTimeZero(t *testing.T) {
 	)
 	if len(res.Windows) != 1 || res.Windows[0].EndMs != 1000 {
 		t.Errorf("windows = %+v, want one ending at 1000 ms after the last marker", res.Windows)
+	}
+}
+
+// An md node is bio-based: it has no request events, so its latency is
+// timed at the bio level (block_bio_queue -> block_bio_complete), while its
+// request-based members keep their device and block-layer series.
+func TestSession_BioNode(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"md0": "9:0", "sdb": "8:16", "sdc": "8:32"}, "sdb", "sdc")
+	bioNode(t, sys, "md0")
+	t0 := 10 * sec
+	events := append(append([]string{}, blockEvents...), bioEvents...)
+	res, inst := run(t, []string{"md0", "sdb", "sdc"}, events, sys, Options{AvgMsec: 1000},
+		marker(start, "bbbench-start"),
+		// a write to md0, mirrored on sdb and sdc
+		bio(t0, "block_bio_queue", "9,0", "WS", 2048, 16),
+		bio(t0+usec, "block_bio_queue", "8,16", "WS", 4096, 16), // a member's bio: not the node
+		blk(t0+2*usec, "block_rq_issue", "8,16", "WS", 4096, 16),
+		blk(t0+3*usec, "block_rq_issue", "8,32", "WS", 4096, 16),
+		blk(t0+8003*usec, "block_rq_complete", "8,32", "WS", 4096, 16),
+		blk(t0+9002*usec, "block_rq_complete", "8,16", "WS", 4096, 16),
+		bio(t0+9003*usec, "block_bio_complete", "8,16", "WS", 4096, 16),
+		bio(t0+9500*usec, "block_bio_complete", "9,0", "WS", 2048, 16),
+		// a read
+		bio(t0+100_000*usec, "block_bio_queue", "9,0", "R", 64, 8),
+		bio(t0+100_200*usec, "block_bio_complete", "9,0", "R", 64, 8),
+		// a read the node splits: the front part completes first (inside
+		// the pending bio: not counted), the remainder last with the end
+		// sector of the bio as queued
+		bio(t0+200_000*usec, "block_bio_queue", "9,0", "R", 8192, 256),
+		bio(t0+200_100*usec, "block_bio_complete", "9,0", "R", 8192, 128),
+		bio(t0+200_300*usec, "block_bio_complete", "9,0", "R", 8320, 128),
+		// a pure Flush and a discard: not reads or writes
+		bio(t0+300_000*usec, "block_bio_queue", "9,0", "FWS", 0, 0),
+		bio(t0+300_500*usec, "block_bio_complete", "9,0", "FWS", 0, 0),
+		bio(t0+310_000*usec, "block_bio_queue", "9,0", "DS", 0, 2048),
+		bio(t0+310_500*usec, "block_bio_complete", "9,0", "DS", 0, 2048),
+		// a completion without its queue event
+		bio(t0+400_000*usec, "block_bio_complete", "9,0", "W", 99999, 8),
+		marker(t0+sec, "bbbench-stop"),
+	)
+	md := dev(t, res.Summary, "md0")
+	if md.Source != SourceBio || !md.BioBased || md.BlockLayer || md.Exact || md.Pair != PairBio || md.Note != "" {
+		t.Errorf("md0 = %+v", md)
+	}
+	if strings.Join(md.Events, "|") != "block_bio_queue -> block_bio_complete" {
+		t.Errorf("md0 events = %q", md.Events)
+	}
+	wantStat(t, md, KindBio, DirWrite, 1, 9.5e6, 9.5e6, 9.5e6)
+	wantStat(t, md, KindBio, DirRead, 2, 250_000, 200_000, 300_000)
+	if _, ok := md.Stats[KindDevice]; ok {
+		t.Errorf("md0 has device stats: %+v", md.Stats)
+	}
+	if md.Unpaired != 1 {
+		t.Errorf("md0 unpaired = %d, want 1 (the completion without a queue event)", md.Unpaired)
+	}
+	sdb := dev(t, res.Summary, "sdb")
+	if sdb.Source != SourceBlock || sdb.BioBased {
+		t.Errorf("sdb = %+v", sdb)
+	}
+	wantStat(t, sdb, KindDevice, DirWrite, 1, 9e6, 9e6, 9e6)
+	if _, ok := sdb.Stats[KindBio]; ok {
+		t.Error("a request-based member got a bio series")
+	}
+	// The bio events are enabled for the node only; the request events for the members only.
+	for _, e := range []string{"block_bio_queue", "block_bio_complete"} {
+		if f := readFile(t, filepath.Join(inst, "events/block", e, "filter")); f != fmt.Sprint("dev == ", 9<<20) {
+			t.Errorf("%s filter = %q", e, f)
+		}
+	}
+	if f := readFile(t, filepath.Join(inst, "events/block/block_rq_issue/filter")); f != fmt.Sprintf("dev == %d || dev == %d", 8<<20|16, 8<<20|32) {
+		t.Errorf("request filter = %q", f)
+	}
+	wantText := "ftrace: md0: block_bio_queue -> block_bio_complete · pairing: first-in first-out (dev,sector,nr_sectors); sdb: "
+	if !strings.HasPrefix(res.Summary.TextDevice, wantText) {
+		t.Errorf("device text = %q\nwant prefix %q", res.Summary.TextDevice, wantText)
+	}
+	if !strings.HasPrefix(res.Summary.TextBio, "ftrace: md0: block_bio_queue -> block_bio_complete · pairing: first-in first-out (dev,sector,nr_sectors); sdb: request-based (no bio series); sdc: request-based (no bio series) · lost events: 1") {
+		t.Errorf("bio text = %q", res.Summary.TextBio)
+	}
+	if !strings.HasPrefix(res.Summary.TextBlockLayer, "ftrace: md0: bio-based, no block layer (bio-level latency on the Device latency card); sdb: block_rq_insert") {
+		t.Errorf("block-layer text = %q", res.Summary.TextBlockLayer)
+	}
+	if want := "bio-based (no request queue): no block-layer series; bio-level latency (block_bio_queue -> block_bio_complete) on the Device latency card"; md.BlockLayerNote != want {
+		t.Errorf("md0 block-layer note = %q", md.BlockLayerNote)
+	}
+	if res.Summary.Lost != 1 {
+		t.Errorf("lost = %d", res.Summary.Lost)
+	}
+	var kinds []string
+	for _, w := range res.Windows {
+		if w.Dev == "md0" {
+			kinds = append(kinds, string(w.Kind)+"/"+string(w.Dir))
+		}
+	}
+	if strings.Join(kinds, ",") != "bio/r,bio/w" {
+		t.Errorf("md0 windows = %v", kinds)
+	}
+}
+
+// A request-based device never gets a bio series, even when the kernel has
+// the bio tracepoints: the bio events are not enabled at all.
+func TestSession_RequestBasedHasNoBioSeries(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"sdb": "8:16"}, "sdb")
+	res, inst := run(t, []string{"sdb"}, append(append([]string{}, blockEvents...), bioEvents...), sys, Options{},
+		marker(start, "bbbench-start"),
+		bio(10*sec, "block_bio_queue", "8,16", "R", 0, 8),
+		blk(10*sec+usec, "block_rq_issue", "8,16", "R", 0, 8),
+		blk(10*sec+100*usec, "block_rq_complete", "8,16", "R", 0, 8),
+		bio(10*sec+101*usec, "block_bio_complete", "8,16", "R", 0, 8),
+	)
+	d := dev(t, res.Summary, "sdb")
+	if d.Source != SourceBlock || d.BioBased || len(d.Stats[KindBio]) != 0 || d.Unpaired != 0 {
+		t.Errorf("sdb = %+v", d)
+	}
+	for _, e := range []string{"block_bio_queue", "block_bio_complete"} {
+		if _, err := os.Stat(filepath.Join(inst, "events/block", e, "filter")); err == nil {
+			t.Errorf("%s has a filter: it must not be enabled", e)
+		}
+		if _, err := os.Stat(filepath.Join(inst, "events/block", e, "enable")); err == nil {
+			t.Errorf("%s was enabled", e)
+		}
+	}
+}
+
+// A native NVMe multipath head is bio-based, but its commands are traced on
+// the controller: it keeps the NVMe source.
+func TestSession_BioBasedNVMeHeadKeepsNVMe(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"nvme0n1": "259:0"})
+	bioNode(t, sys, "nvme0n1")
+	res, _ := run(t, []string{"nvme0n1"}, append(append(append([]string{}, nvmeEvents...), blockEvents...), bioEvents...), sys, Options{},
+		marker(start, "bbbench-start"))
+	if d := dev(t, res.Summary, "nvme0n1"); d.Source != SourceNVMe || !d.BioBased {
+		t.Errorf("nvme0n1 = %+v", d)
+	}
+}
+
+// A bio-based node on a kernel without the bio tracepoints is traced as
+// before (the request path, which sees nothing) and says why.
+func TestSession_BioNodeWithoutBioTracepoints(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"md0": "9:0"})
+	bioNode(t, sys, "md0")
+	res, _ := run(t, []string{"md0"}, blockEvents, sys, Options{}, marker(start, "bbbench-start"))
+	d := dev(t, res.Summary, "md0")
+	if d.Source != SourceBlock || !d.BioBased || len(d.Stats) != 0 {
+		t.Errorf("md0 = %+v", d)
+	}
+	if want := "bio-based (no request queue): no block-layer series; the kernel has no block_bio_queue/block_bio_complete tracepoints"; d.BlockLayerNote != want {
+		t.Errorf("note = %q", d.BlockLayerNote)
+	}
+}
+
+// A dm node pairs the same way; several bios of the same range complete
+// first-in first-out.
+func TestSession_BioNodeFIFO(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"dm-3": "253:3"})
+	bioNode(t, sys, "dm-3")
+	res, _ := run(t, []string{"dm-3"}, bioEvents, sys, Options{},
+		marker(start, "bbbench-start"),
+		bio(10*sec, "block_bio_queue", "253,3", "W", 100, 8),
+		bio(10*sec+10*usec, "block_bio_queue", "253,3", "W", 100, 8),
+		bio(10*sec+100*usec, "block_bio_complete", "253,3", "W", 100, 8),
+		bio(10*sec+300*usec, "block_bio_complete", "253,3", "W", 100, 8),
+		bio(10*sec+400*usec, "block_bio_queue", "253,3", "R", 500, 8), // pending at Stop
+	)
+	d := dev(t, res.Summary, "dm-3")
+	if d.Source != SourceBio {
+		t.Fatalf("dm-3 = %+v", d)
+	}
+	wantStat(t, d, KindBio, DirWrite, 2, 195_000, 100_000, 290_000)
+	if d.Unpaired != 1 {
+		t.Errorf("unpaired = %d, want 1 (pending at Stop)", d.Unpaired)
+	}
+}
+
+func TestSourceLineOf_BioBasedWithoutBioTracepoints(t *testing.T) {
+	md := DeviceSummary{Name: "md0", Source: SourceBlock, BioBased: true, BlockLayer: true, Pair: PairBlock,
+		Events: []string{"block_rq_issue -> block_rq_complete", "block_rq_insert -> block_rq_complete"}}
+	s := Summary{Devices: []DeviceSummary{md}}
+	if got, want := SourceLineOf(&s, KindBlockLayer), "ftrace: bio-based, no block layer · lost events: 0"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	s.Fill()
+	if s.TextBio != "ftrace: bio-based, no bio tracepoints · lost events: 0" {
+		t.Errorf("text_bio = %q", s.TextBio)
 	}
 }

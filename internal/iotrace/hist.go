@@ -9,6 +9,9 @@ type Kind string
 const (
 	KindDevice     Kind = "device"
 	KindBlockLayer Kind = "blocklayer"
+	// KindBio is the latency of the bios submitted to a bio-based node (md,
+	// most dm): block_bio_queue -> block_bio_complete on the node itself.
+	KindBio Kind = "bio"
 )
 
 // Dir is the direction of a request.

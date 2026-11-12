@@ -84,6 +84,23 @@ func DevNumbers(sysBlock, name string) (maj, min int, err error) {
 	return maj, min, err
 }
 
+// BioBased reports whether a block device is bio-based: it has a request
+// queue directory (<sysBlock>/<name>/queue) but no blk-mq one (no mq/), like
+// md and most dm nodes. Such a device sees no block_rq_* events at all; its
+// I/O is traced at the bio level (block_bio_queue -> block_bio_complete).
+// A device sysfs says nothing about (no queue/) is not bio-based. This is the
+// notion of the queue dump (internal/diskinfo). sysBlock "" means /sys/block.
+func BioBased(sysBlock, name string) bool {
+	if sysBlock == "" {
+		sysBlock = "/sys/block"
+	}
+	if st, err := os.Stat(filepath.Join(sysBlock, name, "queue")); err != nil || !st.IsDir() {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(sysBlock, name, "mq"))
+	return os.IsNotExist(err)
+}
+
 // InstanceName returns a unique private instance name, bbbench-<kind>-<pid>-<seq>.
 func InstanceName(kind string) string {
 	return fmt.Sprintf("bbbench-%s-%d-%d", kind, os.Getpid(), instanceSeq.Add(1))
