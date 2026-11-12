@@ -127,6 +127,14 @@ type scanner struct {
 	o      Options
 	r      *Report
 	mounts []mount
+	devs   map[string][]devEntry // disks(), read once per Scan
+	cache  map[string]resolved   // resolve by "M:m", once per Scan
+}
+
+type resolved struct {
+	name   string
+	leaves []string
+	ok     bool
 }
 
 // add records a reason once per cause: the same text from two nodes (an md
@@ -158,6 +166,18 @@ func (s *scanner) warn(msg string) { s.r.Warnings = append(s.r.Warnings, msg) }
 // resolve maps "M:m" to the kernel name of that device and to the whole
 // disks (leaves) under it. ok is false when sysfs does not know the device.
 func (s *scanner) resolve(mm string) (name string, leaves []string, ok bool) {
+	if r, hit := s.cache[mm]; hit {
+		return r.name, r.leaves, r.ok
+	}
+	name, leaves, ok = s.resolveUncached(mm)
+	if s.cache == nil {
+		s.cache = map[string]resolved{}
+	}
+	s.cache[mm] = resolved{name, leaves, ok}
+	return name, leaves, ok
+}
+
+func (s *scanner) resolveUncached(mm string) (name string, leaves []string, ok bool) {
 	dir, err := filepath.EvalSymlinks(filepath.Join(s.o.Sys, "dev/block", mm))
 	if err != nil {
 		return "", nil, false
@@ -378,6 +398,13 @@ func (s *scanner) scanPaths() {
 type devEntry struct{ dir, mm string }
 
 func (s *scanner) disks() map[string][]devEntry {
+	if s.devs == nil {
+		s.devs = s.readDisks()
+	}
+	return s.devs
+}
+
+func (s *scanner) readDisks() map[string][]devEntry {
 	out := map[string][]devEntry{}
 	entries, _ := os.ReadDir(filepath.Join(s.o.Sys, "block"))
 	for _, e := range entries {
