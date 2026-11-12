@@ -142,6 +142,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--log-avg-msec` — fio's polling interval in ms (default 1000): one point per interval on every graph, and the first point of a series appears one interval after the ramp-up ends. It overrides the `log_avg_msec` of the generated job files
 - `--dmi-path`, `--sys-block` — override `/sys/class/dmi/id` and `/sys/block` (for tests)
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
+- `--no-io-trace` — do not trace read and write latency from kernel trace events (see [I/O latency tracing](#io-latency-tracing))
 - `--config` — path to config file
 - `--dist` — override dist path
 
@@ -167,9 +168,10 @@ sudo ./bbbench orchestrator --filter-vendor samsung --filter-min-capacity 1000
 | `<device>_phase<N>_<ts>.json` | fio's JSON output for the phase |
 | `<device>_phase<N>_<ts>_log_{iops,bw,lat,clat,slat}.1.log` | fio's time-series logs, one point per `--log-avg-msec` |
 | `<device>_phase<N>_<ts>_log_flush.1.log` | the device Flush latency, for phases that fsync (see [Flush tracing](#flush-tracing)) |
+| `<device>_phase<N>_<ts>_log_iolat.1.log` | the read and write latency from kernel trace events, at the device and in the block layer, for every phase (see [I/O latency tracing](#io-latency-tracing)); an array target also has its members in it |
 | `<device>_phase<N>_<ts>_log_members.1.log` | an array target (md or LVM layout) only: the kernel's I/O counters of each member disk, one line per member and `--log-avg-msec` window (see [Layout setting test](#layout-setting-test-mdadm-lvm)) |
 | `<device>_diskinfo_<start>.txt` | the drive's configuration (interface, link, power, write cache, SMART) and the raw reports it is drawn from, one per run |
-| `run_<unix time>_summary.json` | the run's summary, which `bbbench serve` lists and graphs; for an array phase it also holds the members' series (`member_series`) and the md state (`md_series`), N members x 3 series, like `flush_series` |
+| `run_<unix time>_summary.json` | the run's summary, which `bbbench serve` lists and graphs; for an array phase it also holds the members' series (`member_series`) and the md state (`md_series`), N members x 3 series, like `flush_series`; with I/O latency tracing each phase also has `io_trace` (summary per traced device), `io_trace_series` and `io_trace_notes` (why a device was not traced) |
 | `group_<id>_group.json` | a setting test: its runs, the value each drive had, the readings before and after each run, and the restore result |
 | `<host>/{host}_md_{level}_{uuid}_md_config.fio` and `<host>/{host}_lvm_{type}_{lv uuid}_lvm_config.fio` | a layout setting test: the generated fio file of an md array or of an LV (under `fio.generated.path`, like the files of `generate`), named after the array's level and uuid |
 | `.bbbench-orchestrator-state.json` | what is done, for `--resume`; removed when the run completes |
@@ -405,6 +407,89 @@ cache is enabled.
 - This has been tested against hand-written sample trace lines and a fake tracefs, not yet
   on a live kernel; kernels differ in tracepoint fields, so check the first real
   run.
+
+---
+
+## I/O latency tracing
+
+Besides fio's own latency, every phase also times each read and write from
+kernel trace events, so that the time spent in the drive can be told apart from
+the time spent before it. It is **on by default** and needs root and a mounted
+tracefs; if tracing is unavailable the phase still runs, a warning is printed
+once and the phase carries a note saying why. Use `--no-io-trace` to turn it
+off. The terminal prints a line such as
+`ftrace device: read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only; the rest is in the log and the web UI).
+
+**What is measured** (reads and writes only; Flush, discard and admin commands
+are left out, Flush has its own tracing above):
+- *Device latency*: for an NVMe namespace `nvme_setup_cmd` to
+  `nvme_complete_rq` (paired exactly by controller, queue and command id); for
+  every other device (HDDs on SATA or SAS, SSDs, virtio) and NVMe on kernels
+  without those tracepoints, `block_rq_issue` to `block_rq_complete`.
+- *Block layer latency*: `block_rq_insert` (or the issue, for a request issued
+  directly) to `block_rq_complete`. It adds the time in the I/O scheduler and the
+  software queues to the device latency.
+
+Block events carry no request id, so they are paired by device and start sector,
+first in first out; `block_rq_merge` drops the absorbed request. HDDs use this
+block path for both metrics: the device latency is issue to complete, the block
+layer latency insert to complete. For an array target (md or LVM layout) the
+members are traced too, in the same session: they appear as their own device
+latency series. md and dm nodes themselves are bio-based and issue no requests,
+so the target usually shows `no request events seen` while its members are
+traced.
+
+**How it is stored.** The latencies go into histograms inside bbbench (relative
+error under 2 %), nothing is kept per I/O. Like Flush tracing, they are saved
+next to the fio logs as `<output>/<device>_phase<N>_<ts>_log_iolat.1.log`: one
+line per `--log-avg-msec` window (end time, kind, direction, count, mean, min,
+max, p50, p99, device), stamped at the window end, plus header lines with the
+metadata (window, ramp offset, ring buffer overruns, per-device tracepoints and
+pairing) and the phase summary (count, mean, min, max, p50, p99 per kind and
+direction, computed after the ramp-up). It is a few hundred lines per phase. The
+summary and the series (`io_trace`, `io_trace_series`, `io_trace_notes` in the
+run summary; `ts_iolat`, `ts_iolat_members`, `io_trace` in the graph data) are
+read back from this file when a run is loaded.
+
+**Lost events.** Every figure carries a `lost events` count: ring buffer
+overruns (the reader fell behind) plus events that found no partner (requests
+still pending when the phase ended, a command id reused, completions with no
+request). It is shown on the cards and the Details page and is never hidden.
+
+**Cost and opt-out.** Tracing every read and write costs CPU, and at very high
+IOPS it can disturb the numbers it measures; this is why `--no-io-trace` exists.
+The kernel allocates the trace ring buffer per CPU. Concurrent sessions share a
+256 MiB budget: each CPU gets at least 1 MiB and at most 16 MiB (one drive on 16
+CPUs: 16 MiB per CPU; 12 drives on 64 CPUs: the 1 MiB floor, 768 MiB in total).
+Like Flush tracing it uses a private tracefs instance
+(`instances/bbbench-iolat-*`), removed when the phase ends; instances left by a
+crashed bbbench are removed at the next start.
+
+**Not verified on hardware.** The feature is tested against hand-written trace
+lines and a fake tracefs tree and has not been run end to end on a real kernel.
+Unverified: the payload formats of the tracepoints beyond the Flush lines
+already tested (`block_rq_insert`, `block_rq_merge`, the read opcode names, a
+`block_rq_complete` line with the I/O priority field); the `ctrl_id` filter field
+of `nvme_setup_cmd` and `nvme_complete_rq` (if the kernel rejects it the filter
+is lost and bbbench filters in user space: correct but a higher event rate); the
+NVMe native multipath sysfs layout (`<head>/multipath/nvme<s>c<c>n<n>`: without
+it the controller filter is left out); how requeues, front merges that move the
+start sector and partial completions are paired (they are counted as unpaired or
+understate the block layer latency, see the package comment in
+`internal/iotrace/session.go`); the cost of the per-CPU ring buffers and the
+256 MiB budget with its 1-16 MiB per-CPU range; and the effect of tracing on the
+measured I/O. Run it first on a test machine, and use `--no-io-trace` if it
+disturbs a measurement.
+
+**In the web UI.** The Latency chart draws the traced mean latency as dashed
+lines next to fio's (device and block layer, reads and writes), a card says
+which tracepoints each series comes from, and the graph type **Device latency
+(ftrace)** shows the device and block layer mean and p99, and the members of an
+array. The members' ftrace series appear only on that graph, not on the Latency
+chart. Every series has a checkbox to show or hide it; the y scale follows the
+shown series, and the choice is kept in the page only until it is reloaded. The
+compare page does not draw this data. See
+[documentation/web-ui.md](documentation/web-ui.md).
 
 ---
 

@@ -57,7 +57,7 @@ The left sidebar provides filters that update the displayed graphs in real time:
 
 | Filter | Description |
 |--------|-------------|
-| **Graph Type** | Toggle IOPS, Bandwidth, Latency and Flush latency charts independently. |
+| **Graph Type** | Toggle IOPS, Bandwidth, Latency, Flush latency and Device latency (ftrace) charts independently. |
 | **Drive Type** | Narrow down to HDD or SSD results. |
 | **Vendor / Model / Serial** | Select specific hardware identities. |
 | **Disk** | Choose which drives to include. |
@@ -79,10 +79,18 @@ Each matching combination of disk × phase is rendered as its own graph card. Cl
 
 **Flush latency** is not measured by fio. It carries a different tag (`ftrace`) and has its own clock from the start of the phase: the mean over each window, with no points during the ramp-up. A drive that never received a Flush shows why instead of an empty chart (see [flush-latency.md](flush-latency.md)).
 
+**I/O latency (ftrace)** is measured from kernel trace events (see README, "I/O latency tracing"), not by fio. Two places show it:
+- The **Latency** chart adds the traced mean latency as dashed lines next to fio's: device latency (long dashes) and block layer latency (short dashes), read in blue and write in red. The members' ftrace series are not drawn there (an array card shows the kernel-stat member lines and the target's own ftrace lines).
+- The **Device latency (ftrace)** graph type has its own card per disk and phase: device and block layer mean (dashed) and p99 (dash-dot) for reads and writes, and, for an array target, one dashed line per member with its device mean (reads solid, writes dashed). It carries the `ftrace` tag and its own clock from the start of the phase, like Flush latency. For a device the kernel does not trace (an md or dm node issues no requests) the card says why (`no request events seen`, or the note of the failed start) instead of an empty chart. The members' ftrace series appear only on this graph. HDDs and other non-NVMe devices use the block tracepoints: device latency is issue to complete, block layer latency insert to complete. The compare page does not draw ftrace latency.
+
+**Legends and source line.** Series are named after what measured them: `Read (fio)`, `Write (fio)`, `Array read (fio)`, `sdb read (kernel stat)`, `Read device mean (ftrace)`, `sdb read device mean (ftrace)`. Under each card (and in the enlarged chart) a source line says which tracepoints each device was timed from, how the events were paired and how many were lost, for example `ftrace: block_rq_issue -> block_rq_complete, block_rq_insert -> block_rq_complete · pairing: exact (dev,sector) · lost events: 0`. A loss count above 0 is added to the card's warning as `(ring buffer N, unpaired M)`; the Details page lists the same line and the reason when a device could not be traced.
+
+**Showing and hiding series.** Each card and the enlarged chart have a row of checkboxes, one per series (a dashed swatch for dashed lines). Unchecking one removes it from the chart, from the stack of a stacked array chart (the members left are restacked) and from the y scale, which is recomputed from the shown series of the phase so cards stay comparable. Hiding every line does not turn a card into bars. The choice is page memory only: it is kept while the page is open (and across Normal | Stacked) and lost on reload. `Read (fio)` and `Write (fio)` also cover an array's own fio lines.
+
 ## Comparing Disks on the Same Graph
 
 The **Compare** view overlays multiple disks on a single chart, making it easy to spot performance differences.
 
-Select two or more drives in the sidebar, choose a phase, then click **Compare**. Each drive is drawn in a distinct color with a legend. Metric, phase, and time axis are shared so curves are directly comparable. Flush latency is a metric there too; it has no read and write sides, so the direction checkboxes do not apply to it.
+Select two or more drives in the sidebar, choose a phase, then click **Compare**. Each drive is drawn in a distinct color with a legend. Metric, phase, and time axis are shared so curves are directly comparable. Flush latency is a metric there too; it has no read and write sides, so the direction checkboxes do not apply to it. Device latency (ftrace), the members' series and the series checkboxes are not on the compare page.
 
 For a run group (`/compare?group=<group id>`, linked from the group page and the results list), and for a member run of a group by its own `/compare?id=`, the sidebar adds a **Setting value** list and the **Hide invalid results** toggle (on by default; invalid series are labelled `(invalid)` when shown). Each (drive, run) is its own series, named `disk · value`, or `disk · value · round N` when a value was measured in several runs (with the phase after the disk when several phases are selected). An array target's entry in the disk list names its members.

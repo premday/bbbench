@@ -88,6 +88,7 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
 - **Other devices:** non-NVMe devices use `block_rq_issue` / `block_rq_complete`
   for requests that are Flushes. Pairing is first-in first-out, so only the mean
   is exact and no percentiles are reported.
+- **Reads and writes:** the same private tracefs instance mechanism (`flushtrace.Instance`) carries a sibling session that times every read and write, at the device and in the block layer, in every phase (`<fio log prefix>_iolat.1.log`, `bbbench-iolat-*` instances, `--no-io-trace` to turn it off). It is documented in the README, "I/O latency tracing"; this page covers only the Flush.
 
 ## What is included in the number
 
