@@ -952,7 +952,8 @@ __NAVBAR_HTML__
 
     function makeFlushChart(canvas, d, metric, yHigh) {
         const sc = phaseScale(metric, 0, yHigh), tick = v => fmtScaled(v, sc);
-        const cd = chartDatasets(d, metric);
+        // Flush has no member breakdown: always the normal datasets.
+        const cd = chartDatasets(d, metric, 'normal');
         const datasets = toBase(cd.datasets, sc);
         if (!cd.bars) {
             return new Chart(canvas, {
@@ -1476,7 +1477,7 @@ __NAVBAR_HTML__
                         mdTrack: mdOptions(d, metric),
                         legend: { display: false },
                         tooltip: { callbacks: {
-                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '–' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
+                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => ctx.dataset.label + ': ' +
                                           fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                             afterBody: items => mdTipLines(d, items)
@@ -1512,7 +1513,8 @@ __NAVBAR_HTML__
     // (bars of the summary means when the phase has no series).
     function makeIOLatChart(canvas, d, metric, yLow, yHigh) {
         const sc = phaseScale(metric, yLow, yHigh), tick = v => fmtScaled(v, sc);
-        const cd = chartDatasets(d, metric);
+        // Device latency has no member stack: always the normal datasets.
+        const cd = chartDatasets(d, metric, 'normal');
         const datasets = toBase(cd.datasets, sc);
         const yAxis = { min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
             ticks: { callback: tick, font: {size: 9}, color: '#64748b' },
@@ -1526,7 +1528,7 @@ __NAVBAR_HTML__
                         rampZone: { sec: rampOf(d) },
                         legend: { display: false },
                         tooltip: { callbacks: {
-                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '–' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
+                            title: items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s',
                             label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                         }}
                     },
@@ -1670,11 +1672,16 @@ __NAVBAR_HTML__
     // REFILL maps a metric key to the fill() of each of its phases (renderAll
     // resets it): a toggle redraws the cards of that metric only.
     let REFILL = {};
+    // ROW_BOXES maps '<where>|<skey>' to the checkbox of the series row now
+    // shown there (where = a card's chart id or 'modal:<metric>'), so a
+    // toggle gives the focus back to the rebuilt checkbox; reset in renderAll.
+    let ROW_BOXES = {};
     // seriesRow is the row of checkboxes above a card's chart (and in the
     // modal): one per series with its colour; a change applies to every
     // card of the metric. Its clicks do not reach the card, which opens the
-    // modal.
-    function seriesRow(d, metric, mode) {
+    // modal. where names the row's place (the card's chart id, or
+    // 'modal:<metric>') so the focus follows a toggle across the redraw.
+    function seriesRow(d, metric, mode, where) {
         const row = document.createElement('div');
         row.className = 'series-row';
         row.addEventListener('click', e => e.stopPropagation());
@@ -1686,9 +1693,14 @@ __NAVBAR_HTML__
             const cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.checked = on;
+            cb.dataset.skey = s.skey;
+            const at = where + '|' + s.skey;
+            ROW_BOXES[at] = cb;
             cb.addEventListener('change', () => {
                 setShown(metric.key, s.skey, cb.checked);
                 applyShown(metric);
+                const nb = ROW_BOXES[at];
+                if (nb && nb !== cb && nb.focus) nb.focus();
             });
             const sw = document.createElement('span');
             sw.className = 'swatch' + (s.dash ? ' dash' : '');
@@ -1747,7 +1759,7 @@ __NAVBAR_HTML__
         addLossNote(warnEl, d, metric);
         const seriesEl = document.getElementById('modal-series');
         seriesEl.innerHTML = '';
-        seriesEl.appendChild(seriesRow(d, metric, mode));
+        seriesEl.appendChild(seriesRow(d, metric, mode, 'modal:' + metric.key));
         document.getElementById('modal-src').textContent = sourceLine(d, metric);
         document.getElementById('modal-overlay').classList.add('active');
     }
@@ -1792,7 +1804,7 @@ __NAVBAR_HTML__
         }
         if (mdh && mdh.note) card.appendChild(mdh.note);
         const why = d.skipped ? 'Skipped: ' + d.skipped : flushNone(d, metric) || iolatNone(d, metric);
-        if (!why) card.appendChild(seriesRow(d, metric, mode));
+        if (!why) card.appendChild(seriesRow(d, metric, mode, cid));
 
         const wrap = document.createElement('div');
         wrap.className = 'chart-wrap';
@@ -1820,6 +1832,7 @@ __NAVBAR_HTML__
     function renderAll() {
         destroyAllCharts();
         REFILL = {};
+        ROW_BOXES = {};
         const main = document.getElementById('main');
         main.innerHTML = '';
 

@@ -417,6 +417,7 @@ console.log('OK');
 // memberGridJS is the node script TestGraphsPageMemberGrid runs over the page's
 // own member chart functions.
 const memberGridJS = `
+const HIDDEN = {}, AXIS_HEADROOM = 1.15, MEMBER_PALETTE = [[1,2,3],[4,5,6]];
 function series(n, t0, step, jitter, f) {
     const out = [];
     for (let k = 0; k < n; k++) out.push({t: t0 + k * step + jitter(k), r: f(k), w: f(k) / 2});
@@ -446,6 +447,20 @@ function check(name, d) {
         if (Math.abs(t.r - r) > 1e-9 || Math.abs(t.w - w) > 1e-9) fail('total at ' + x + ' = ' + JSON.stringify(t) + ', drawn ' + r + '/' + w);
         topR = Math.max(topR, r); topW = Math.max(topW, w);
     });
+    // The phase extent is the drawn top (of the member stack and the
+    // array's own line, its own stack) with the headroom.
+    const close = (a, b, m) => { if (Math.abs(a - b) > 1e-9) fail(m + ' ' + a + ' != ' + b); };
+    const arrR = Math.max(0, ...arr.filter(a => a.dir === 'r').flatMap(a => a.data.map(p => p.y || 0)));
+    const arrW = Math.max(0, ...arr.filter(a => a.dir === 'w').flatMap(a => a.data.map(p => -(p.y || 0))));
+    let e = phaseExtent([d], metric, 'stacked');
+    close(e.yHigh, Math.max(topR, arrR) * AXIS_HEADROOM, 'yHigh');
+    close(e.yLow, -Math.max(topW, arrW) * AXIS_HEADROOM, 'yLow');
+    // Without the array line: the member stack top alone.
+    setShown('iops', 'fio.r', false); setShown('iops', 'fio.w', false);
+    e = phaseExtent([d], metric, 'stacked');
+    close(e.yHigh, topR * AXIS_HEADROOM, 'stack yHigh');
+    close(e.yLow, -topW * AXIS_HEADROOM, 'stack yLow');
+    setShown('iops', 'fio.r', true); setShown('iops', 'fio.w', true);
     return g;
 }
 const jit = k => [0.001, 0.003, 0.002, 0.004][k % 4];
@@ -475,7 +490,8 @@ func TestGraphsPageMemberGrid(t *testing.T) {
 	var js strings.Builder
 	for _, f := range []string{"rampOf", "windowOf", "fioShift", "memberNames", "memberStep", "memberKey",
 		"memberGrid", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets",
-		"iolatPoints", "ftraceDatasets", "memberColors"} {
+		"iolatPoints", "ftraceDatasets", "memberColors", "memberMetric", "memberLatencyDatasets", "ftraceOnGrid",
+		"isShown", "setShown", "chartDatasets", "phaseExtent"} {
 		js.WriteString(jsFunction(t, body, f))
 		js.WriteString("\n")
 	}
@@ -1176,7 +1192,7 @@ func TestGraphsPageSeriesRowStopsPropagation(t *testing.T) {
 			t.Errorf("seriesRow lacks %q:\n%s", want, row)
 		}
 	}
-	for fn, want := range map[string]string{"makeChartCard": "seriesRow(d, metric, mode)", "openModal": "seriesRow(d, metric, mode)",
+	for fn, want := range map[string]string{"makeChartCard": "seriesRow(d, metric, mode, cid)", "openModal": "seriesRow(d, metric, mode, 'modal:' + metric.key)",
 		"renderAll": "REFILL = {};", "applyShown": "REFILL[metric.key]"} {
 		if !strings.Contains(jsFunction(t, body, fn), want) {
 			t.Errorf("%s lacks %q", fn, want)
@@ -1191,10 +1207,10 @@ func TestGraphsPageSeriesRowStopsPropagation(t *testing.T) {
 	runPageJS(t, []string{"seriesRow", "applyShown", "isShown", "setShown"}, `
 const assert = require('assert');
 const HIDDEN = {};
-let REFILL = {}, modalCtx = null, opened = [];
+let REFILL = {}, modalCtx = null, opened = [], ROW_BOXES = {}, focused = null;
 const made = [];
 const document = {createElement: tag => { const e = {tag, children: [], style: {}, dataset: {}, className: '', handlers: {},
-    appendChild(c) { this.children.push(c); }, addEventListener(k, f) { this.handlers[k] = f; }}; made.push(e); return e; },
+    appendChild(c) { this.children.push(c); }, addEventListener(k, f) { this.handlers[k] = f; }, focus() { focused = this; }}; made.push(e); return e; },
     createTextNode: t => ({textContent: t})};
 const cardSeries = () => [{skey: 'fio.r', label: 'Read (fio)', color: 'red'}, {skey: 'ftrace.device.mean.r', label: 'Read device (ftrace)', color: 'blue', dash: [6, 3]}];
 const phaseExtent = () => ({yLow: -2, yHigh: 3});
@@ -1203,7 +1219,7 @@ const M = {key: 'lat'};
 let fills = 0;
 REFILL.lat = [() => fills++, () => fills++];
 REFILL.iops = [() => { throw new Error('iops refilled'); }];
-const row = seriesRow({disk: 'sda'}, M, 'normal');
+const row = seriesRow({disk: 'sda'}, M, 'normal', 'lat:p:0');
 assert.strictEqual(row.className, 'series-row');
 let stopped = 0;
 row.handlers.click({stopPropagation: () => stopped++});
@@ -1216,17 +1232,28 @@ boxes[0].handlers.change();
 assert.strictEqual(isShown('lat', 'fio.r'), false);
 assert.strictEqual(fills, 2);
 assert.strictEqual(opened.length, 0);
-// With the modal on this metric, it is opened again on the phase's new scale.
-modalCtx = {d: {disk: 'sda'}, metric: M, pname: 'p', mode: 'normal', phaseData: []};
+assert.strictEqual(boxes[0].dataset.skey, 'fio.r');
+// The redraw rebuilds the row: focus moves to the new checkbox of the same
+// card and series, so the keyboard keeps its place.
+REFILL.lat = [() => seriesRow({disk: 'sda'}, M, 'normal', 'lat:p:0'), () => seriesRow({disk: 'sdb'}, M, 'normal', 'lat:p:1')];
+made.length = 0;
 boxes[0].checked = true;
 boxes[0].handlers.change();
-assert.strictEqual(isShown('lat', 'fio.r'), true);
+const rebuilt = made.filter(e => e.tag === 'input');
+assert.strictEqual(focused, rebuilt[0], 'focus not on the rebuilt checkbox of the same card');
+REFILL.lat = [() => fills++, () => fills++];
+// With the modal on this metric, it is opened again on the phase's new scale.
+modalCtx = {d: {disk: 'sda'}, metric: M, pname: 'p', mode: 'normal', phaseData: []};
+boxes[0].checked = false;
+boxes[0].handlers.change();
+assert.strictEqual(isShown('lat', 'fio.r'), false);
+setShown('lat', 'fio.r', true);
 assert.strictEqual(opened.length, 1);
 assert.deepStrictEqual(opened[0].slice(2, 5), [-2, 3, 'normal']);
 // A row built while a series is hidden shows it unchecked.
 setShown('lat', 'ftrace.device.mean.r', false);
 made.length = 0;
-seriesRow({disk: 'sda'}, M, 'normal');
+seriesRow({disk: 'sda'}, M, 'normal', 'lat:p:0');
 assert.deepStrictEqual(made.filter(e => e.tag === 'input').map(b => b.checked), [true, false]);
 console.log('OK');
 `)
