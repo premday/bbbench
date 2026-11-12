@@ -54,7 +54,7 @@ func TestIOLatLog_DropsRamp(t *testing.T) {
 		t.Errorf("Lost = %d, want 5", sum.Lost)
 	}
 	hdd := series["sdb"]
-	if len(hdd) != 1 || hdd[0].T != 2 || hdd[0].Mean != 3.5e6 || hdd[0].P50 != 3e6 || hdd[0].P99 != 6e6 || hdd[0].Dir != "w" {
+	if len(hdd) != 1 || hdd[0].T != 2 || hdd[0].Mean != 3.5e6 || hdd[0].P99 != 6e6 || hdd[0].Dir != "w" {
 		t.Errorf("sdb points = %+v", hdd)
 	}
 	pts := series["nvme0n1"]
@@ -209,7 +209,7 @@ func TestStartIOTraceWritesLog(t *testing.T) {
 
 // A bio-based md node gets its bio-level series next to its members'
 // device series: stored in the log, reloaded as kind "bio" points of the
-// target, carried to the graphs API as ts_iolat with text_bio.
+// target, carried to the graphs API as ts_iolat with its bio pair in text_device.
 func TestStartIOTraceBioNode(t *testing.T) {
 	quietLogger(t)
 	root := t.TempDir()
@@ -276,7 +276,7 @@ func TestStartIOTraceBioNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"kind":"bio"`, `"bio_based":true`, `"text_bio":"ftrace: md0: block_bio_queue -\u003e block_bio_complete`,
+	for _, want := range []string{`"kind":"bio"`, `"bio_based":true`, `"text_device":"ftrace: md0: block_bio_queue -\u003e block_bio_complete`,
 		`"block_layer_note":"bio-based (no request queue): no block-layer series; bio-level latency`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("graph JSON lacks %s:\n%s", want, b)
@@ -285,30 +285,35 @@ func TestStartIOTraceBioNode(t *testing.T) {
 }
 
 // The live phase carries the note of an untraced drive and the summary and
-// series of a traced one (from its stored log, like a reload).
+// series of a traced one (from its stored log, like a reload; the in-memory
+// summary when the log could not be stored).
 func TestUpdateLivePhaseCarriesIOTrace(t *testing.T) {
 	quietLogger(t)
 	dir := t.TempDir()
 	phase := []FioJob{{Name: "randread", Section: "[randread]\nrw=randread\n"}}
 	nv := DriveInfo{Device: blockdev.Device{Name: "nvme0n1"}}
 	sd := DriveInfo{Device: blockdev.Device{Name: "sda"}}
+	sc := DriveInfo{Device: blockdev.Device{Name: "sdc"}}
+	inMemory := testIOLatResult(0).Summary
 	sdPrefix := filepath.Join(dir, "sda_phase0_1_log")
 	if err := writeIOLatLog(sdPrefix, testIOLatResult(0)); err != nil {
 		t.Fatal(err)
 	}
 	stored := testIOLatResult(0).Summary
 	ec := &ExecutionCoordinator{
-		drives: []DriveInfo{nv, sd},
+		drives: []DriveInfo{nv, sd, sc},
 		workloads: map[string]*FioWorkload{
 			"nvme0n1": {Phases: [][]FioJob{phase}},
 			"sda":     {Phases: [][]FioJob{phase}},
+			"sdc":     {Phases: [][]FioJob{phase}},
 		},
 		results: map[string][]*FioResult{
 			"nvme0n1": {{DeviceName: "nvme0n1", Phase: 0, LogPrefix: filepath.Join(dir, "nvme0n1_phase0_1_log"),
 				IOTraceNote: "no ftrace latency: no tracefs"}},
 			"sda": {{DeviceName: "sda", Phase: 0, LogPrefix: sdPrefix, IOTrace: &stored}},
+			"sdc": {{DeviceName: "sdc", Phase: 0, LogPrefix: filepath.Join(dir, "sdc_phase0_1_log"), IOTrace: &inMemory}},
 		},
-		liveResult: &BenchmarkResult{ID: "live-iotrace", Drives: []DriveInfo{nv, sd}},
+		liveResult: &BenchmarkResult{ID: "live-iotrace", Drives: []DriveInfo{nv, sd, sc}},
 	}
 	ec.updateLivePhase(0)
 	t.Cleanup(globalResultsStore.Clear)
@@ -316,8 +321,11 @@ func TestUpdateLivePhaseCarriesIOTrace(t *testing.T) {
 	if p.IOTraceNotes["nvme0n1"] != "no ftrace latency: no tracefs" || len(p.IOTraceNotes) != 1 {
 		t.Errorf("IOTraceNotes = %+v", p.IOTraceNotes)
 	}
-	if p.IOTrace["sda"] == nil || p.IOTrace["nvme0n1"] != nil {
+	if p.IOTrace["sda"] == nil || p.IOTrace["sda"] == &stored || p.IOTrace["nvme0n1"] != nil {
 		t.Errorf("IOTrace = %+v", p.IOTrace)
+	}
+	if p.IOTrace["sdc"] != &inMemory || p.IOTraceSeries["sdc"] != nil {
+		t.Errorf("sdc without a stored log: IOTrace = %p, series %+v", p.IOTrace["sdc"], p.IOTraceSeries["sdc"])
 	}
 	if len(p.IOTraceSeries["sda"]["nvme0n1"]) == 0 || len(p.IOTraceSeries["sda"]["sdb"]) == 0 {
 		t.Errorf("IOTraceSeries = %+v", p.IOTraceSeries)

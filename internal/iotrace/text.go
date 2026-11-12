@@ -79,9 +79,7 @@ func noneSeen(d DeviceSummary, kind Kind) string {
 // every source (NVMe included). A device without that kind's events says
 // so; one without block-layer tracepoint says that instead. A bio-based
 // node's bio series is drawn on the Device latency card, so KindDevice names
-// its bio tracepoints; KindBlockLayer says it has no block layer; KindBio
-// names the bio tracepoints of the nodes and calls the other devices
-// request-based.
+// its bio tracepoints; KindBlockLayer says it has no block layer.
 func SourceLineOf(s *Summary, kind Kind) string {
 	var b strings.Builder
 	b.WriteString("ftrace: ")
@@ -114,10 +112,6 @@ func SourceLineOf(s *Summary, kind Kind) string {
 			b.WriteString("bio-based, no block layer (bio-level latency on the Device latency card)")
 		case kind == KindBlockLayer && d.BioBased && d.Source == SourceBlock:
 			b.WriteString("bio-based, no block layer")
-		case kind == KindBio && d.BioBased && d.Source != SourceBio:
-			b.WriteString("bio-based, no bio tracepoints")
-		case kind == KindBio && d.Source != SourceBio:
-			b.WriteString("request-based (no bio series)")
 		case kind == KindBlockLayer && !d.BlockLayer:
 			b.WriteString("no " + insertTracepoint + " tracepoint")
 		case len(d.Stats[k]) == 0 && one:

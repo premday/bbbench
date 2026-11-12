@@ -644,7 +644,10 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 					applyFlushLog(&phaseResult, deviceName, result.LogPrefix)
 					applyMembersLog(&phaseResult, deviceName, result.LogPrefix)
 				}
-				if result.IOTrace != nil {
+				// From the stored log when there is one (like a reload),
+				// else the in-memory summary.
+				fromLog := result.LogPrefix != "" && applyIOLatLog(&phaseResult, deviceName, result.LogPrefix)
+				if result.IOTrace != nil && !fromLog {
 					if phaseResult.IOTrace == nil {
 						phaseResult.IOTrace = make(map[string]*iotrace.Summary)
 					}
@@ -655,9 +658,6 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 						phaseResult.IOTraceNotes = make(map[string]string)
 					}
 					phaseResult.IOTraceNotes[deviceName] = result.IOTraceNote
-				}
-				if result.LogPrefix != "" {
-					applyIOLatLog(&phaseResult, deviceName, result.LogPrefix)
 				}
 				if len(result.JsonOutput) > 0 {
 					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)

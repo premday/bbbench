@@ -922,9 +922,6 @@ func TestSession_BioNode(t *testing.T) {
 	if !strings.HasPrefix(res.Summary.TextDevice, wantText) {
 		t.Errorf("device text = %q\nwant prefix %q", res.Summary.TextDevice, wantText)
 	}
-	if !strings.HasPrefix(res.Summary.TextBio, "ftrace: md0: block_bio_queue -> block_bio_complete · pairing: first-in first-out (dev,sector,nr_sectors); sdb: request-based (no bio series); sdc: request-based (no bio series) · lost events: 1") {
-		t.Errorf("bio text = %q", res.Summary.TextBio)
-	}
 	if !strings.HasPrefix(res.Summary.TextBlockLayer, "ftrace: md0: bio-based, no block layer (bio-level latency on the Device latency card); sdb: block_rq_insert") {
 		t.Errorf("block-layer text = %q", res.Summary.TextBlockLayer)
 	}
@@ -1026,9 +1023,5 @@ func TestSourceLineOf_BioBasedWithoutBioTracepoints(t *testing.T) {
 	s := Summary{Devices: []DeviceSummary{md}}
 	if got, want := SourceLineOf(&s, KindBlockLayer), "ftrace: bio-based, no block layer · lost events: 0"; got != want {
 		t.Errorf("got %q, want %q", got, want)
-	}
-	s.Fill()
-	if s.TextBio != "ftrace: bio-based, no bio tracepoints · lost events: 0" {
-		t.Errorf("text_bio = %q", s.TextBio)
 	}
 }

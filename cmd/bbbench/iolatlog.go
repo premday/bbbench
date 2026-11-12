@@ -124,7 +124,6 @@ type IOLatPoint struct {
 	Dir  string  `json:"dir"`
 	N    int64   `json:"n"`
 	Mean float64 `json:"mean"`
-	P50  float64 `json:"p50"`
 	P99  float64 `json:"p99"`
 }
 
@@ -169,18 +168,19 @@ func loadIOLatLog(logPrefix string) (*iotrace.Summary, map[string][]IOLatPoint, 
 		}
 		series[w.Dev] = append(series[w.Dev], IOLatPoint{
 			T: float64(w.EndMs-int64(avg)) / 1000, Kind: string(w.Kind), Dir: string(w.Dir), N: w.Count,
-			Mean: w.MeanNs / 1000, P50: float64(w.P50Ns) / 1000, P99: float64(w.P99Ns) / 1000,
+			Mean: w.MeanNs / 1000, P99: float64(w.P99Ns) / 1000,
 		})
 	}
 	return &sum, series, true
 }
 
 // applyIOLatLog fills the phase's I/O latency summary and series for one
-// drive from the stored log. IOTraceNotes is never touched.
-func applyIOLatLog(phase *PhaseResult, device, logPrefix string) {
+// drive from the stored log and reports whether there was one.
+// IOTraceNotes is never touched.
+func applyIOLatLog(phase *PhaseResult, device, logPrefix string) bool {
 	sum, series, ok := loadIOLatLog(logPrefix)
 	if !ok {
-		return
+		return false
 	}
 	if phase.IOTrace == nil {
 		phase.IOTrace = make(map[string]*iotrace.Summary)
@@ -192,6 +192,7 @@ func applyIOLatLog(phase *PhaseResult, device, logPrefix string) {
 		}
 		phase.IOTraceSeries[device] = series
 	}
+	return true
 }
 
 // possibleCPUsPath lists the CPUs the kernel allocates a ring buffer for

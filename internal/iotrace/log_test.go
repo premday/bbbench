@@ -59,8 +59,8 @@ func TestLogRoundTrip(t *testing.T) {
 		!strings.Contains(b.String(), "11000, bio, r, 20, 300000,") || !strings.Contains(b.String(), "# summary md1 bio w count=4") {
 		t.Fatalf("bio lines missing:\n%s", b.String())
 	}
-	if got.Summary.TextBio == "" {
-		t.Fatalf("TextBio not filled: %+v", got.Summary)
+	if !strings.Contains(got.Summary.TextDevice, "; md1: block_bio_queue -> block_bio_complete · pairing: first-in first-out (dev,sector,nr_sectors)") {
+		t.Fatalf("TextDevice not filled: %+v", got.Summary)
 	}
 	if got.Summary.Lost != 6 || got.Summary.Text == "" {
 		t.Fatalf("Lost/Text not filled: %+v", got.Summary)
@@ -117,7 +117,7 @@ func TestReadLogBeforeBio(t *testing.T) {
 		t.Fatal(err)
 	}
 	md := got.Summary.Devices[0]
-	if md.BioBased || md.Source != SourceBlock || got.Summary.TextBio != "" || len(got.Windows) != 1 {
+	if md.BioBased || md.Source != SourceBlock || len(got.Windows) != 1 {
 		t.Errorf("old log = %+v", got)
 	}
 	if md.BlockLayerNote != "ftrace saw no block-layer requests on md0" {

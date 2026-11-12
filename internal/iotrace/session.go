@@ -108,12 +108,11 @@ type Summary struct {
 	Devices      []DeviceSummary `json:"devices"`
 	Lost         int64           `json:"lost"` // Overrun + every Unpaired
 	Text         string          `json:"text"` // SourceLine
-	// TextDevice, TextBlockLayer and TextBio are SourceLineOf for each kind:
-	// the source lines of the Device and the Block-layer latency cards, and
-	// of the bio-level series of a bio-based node.
+	// TextDevice and TextBlockLayer are SourceLineOf for each kind: the
+	// source lines of the Device and the Block-layer latency cards (a
+	// bio-based node's bio series is on the Device latency card).
 	TextDevice     string `json:"text_device"`
 	TextBlockLayer string `json:"text_blocklayer"`
-	TextBio        string `json:"text_bio,omitempty"`
 }
 
 // Fill sets Lost, the texts and each device's BlockLayerNote from the rest.
@@ -126,13 +125,6 @@ func (s *Summary) Fill() {
 	s.Text = SourceLine(s)
 	s.TextDevice = SourceLineOf(s, KindDevice)
 	s.TextBlockLayer = SourceLineOf(s, KindBlockLayer)
-	s.TextBio = ""
-	for _, d := range s.Devices {
-		if d.BioBased {
-			s.TextBio = SourceLineOf(s, KindBio)
-			break
-		}
-	}
 }
 
 // Result is a finished session: the summary and the windows.
