@@ -757,15 +757,18 @@ func TestSourceLine(t *testing.T) {
 		{Summary{Overrun: 3, Devices: []DeviceSummary{sdb, md, sdz}},
 			"ftrace: sdb: block_rq_issue -> block_rq_complete · pairing: first-in first-out (dev,sector); md0: no request events seen; sdz: not traced (no such device) · lost events: 3 (ring buffer 3, unpaired 0)"},
 	} {
+		c.s.Fill() // Lost
 		if got := SourceLine(&c.s); got != c.want {
 			t.Errorf("got  %q\nwant %q", got, c.want)
 		}
 	}
 	missing := Summary{Overrun: 2, StartMissing: true, Devices: []DeviceSummary{md}}
+	missing.Fill()
 	if got, want := SourceLine(&missing), "ftrace: block_rq_issue -> block_rq_complete · no request events seen · lost events: 2 (ring buffer 2, unpaired 0; start marker not seen)"; got != want {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 	missing.Overrun = 0
+	missing.Fill()
 	if got := SourceLine(&missing); strings.Contains(got, "start marker") {
 		t.Errorf("note without loss: %q", got)
 	}
@@ -814,6 +817,7 @@ func TestSourceLineOf(t *testing.T) {
 			"ftrace: md0: no request events seen; sdb: block_rq_issue -> block_rq_complete · pairing: first-in first-out (dev,sector); sdz: not traced (no such device) · lost events: 0",
 			"ftrace: md0: no block-layer events seen; sdb: block_rq_insert -> block_rq_complete · pairing: first-in first-out (dev,sector); sdz: not traced (no such device) · lost events: 0"},
 	} {
+		c.s.Fill() // Lost
 		if got := SourceLineOf(&c.s, KindDevice); got != c.dev {
 			t.Errorf("device:\ngot  %q\nwant %q", got, c.dev)
 		}

@@ -16,38 +16,7 @@ import (
 // Several devices are named one by one, separated by "; ". A device without
 // any request events (an md or dm node: bio-based) says so instead of
 // showing a series; a device that could not be traced gives the reason.
-func SourceLine(s *Summary) string {
-	var b strings.Builder
-	b.WriteString("ftrace: ")
-	if len(s.Devices) == 0 {
-		b.WriteString("no device traced")
-	}
-	one := len(s.Devices) == 1
-	for i, d := range s.Devices {
-		if i > 0 {
-			b.WriteString("; ")
-		}
-		if !one {
-			b.WriteString(d.Name + ": ")
-		}
-		switch {
-		case d.Source == "":
-			b.WriteString("not traced (" + d.Note + ")")
-		case len(d.Stats) == 0 && one:
-			b.WriteString(strings.Join(d.Events, ", ") + " · " + noneSeen(d, KindDevice))
-		case len(d.Stats) == 0:
-			b.WriteString(noneSeen(d, KindDevice))
-		default:
-			pairing := "first-in first-out"
-			if d.Exact {
-				pairing = "exact"
-			}
-			b.WriteString(strings.Join(d.Events, ", ") + " · pairing: " + pairing + " (" + d.Pair + ")")
-		}
-	}
-	lostTail(&b, s)
-	return b.String()
-}
+func SourceLine(s *Summary) string { return sourceLine(s, "") }
 
 // PairBlock is the pairing key of block requests, first-in first-out.
 const PairBlock = "dev,sector"
@@ -80,7 +49,11 @@ func noneSeen(d DeviceSummary, kind Kind) string {
 // so; one without block-layer tracepoint says that instead. A bio-based
 // node's bio series is drawn on the Device latency card, so KindDevice names
 // its bio tracepoints; KindBlockLayer says it has no block layer.
-func SourceLineOf(s *Summary, kind Kind) string {
+func SourceLineOf(s *Summary, kind Kind) string { return sourceLine(s, kind) }
+
+// sourceLine builds SourceLine (kind "": every event of a device, any kind
+// of series counts as seen) and SourceLineOf (one kind).
+func sourceLine(s *Summary, kind Kind) string {
 	var b strings.Builder
 	b.WriteString("ftrace: ")
 	if len(s.Devices) == 0 {
@@ -94,36 +67,46 @@ func SourceLineOf(s *Summary, kind Kind) string {
 		if !one {
 			b.WriteString(d.Name + ": ")
 		}
-		events, pairing, pair := deviceEvents(d), "first-in first-out", d.Pair
-		if d.Exact {
-			pairing = "exact"
-		}
-		if kind == KindBlockLayer {
-			events, pairing, pair = blockLayerEvents(d), "first-in first-out", PairBlock
-		}
-		k := kind
-		if d.Source == SourceBio && kind == KindDevice {
-			k = KindBio // the node's series on the Device latency card
-		}
-		switch {
-		case d.Source == "":
-			b.WriteString("not traced (" + d.Note + ")")
-		case kind == KindBlockLayer && d.Source == SourceBio:
-			b.WriteString("bio-based, no block layer (bio-level latency on the Device latency card)")
-		case kind == KindBlockLayer && d.BioBased && d.Source == SourceBlock:
-			b.WriteString("bio-based, no block layer")
-		case kind == KindBlockLayer && !d.BlockLayer:
-			b.WriteString("no " + insertTracepoint + " tracepoint")
-		case len(d.Stats[k]) == 0 && one:
-			b.WriteString(strings.Join(events, ", ") + " · " + noneSeen(d, kind))
-		case len(d.Stats[k]) == 0:
-			b.WriteString(noneSeen(d, kind))
-		default:
-			b.WriteString(strings.Join(events, ", ") + " · pairing: " + pairing + " (" + pair + ")")
-		}
+		b.WriteString(deviceSource(d, kind, one))
 	}
 	lostTail(&b, s)
 	return b.String()
+}
+
+// deviceSource is one device's part of sourceLine.
+func deviceSource(d DeviceSummary, kind Kind, one bool) string {
+	events, pairing, pair := deviceEvents(d), "first-in first-out", d.Pair
+	if d.Exact {
+		pairing = "exact"
+	}
+	none := kind
+	var seen bool
+	switch {
+	case kind == "":
+		events, none, seen = d.Events, KindDevice, len(d.Stats) > 0
+	case kind == KindBlockLayer:
+		events, pairing, pair = blockLayerEvents(d), "first-in first-out", PairBlock
+		seen = len(d.Stats[kind]) > 0
+	case d.Source == SourceBio && kind == KindDevice:
+		seen = len(d.Stats[KindBio]) > 0 // the node's series on the Device latency card
+	default:
+		seen = len(d.Stats[kind]) > 0
+	}
+	switch {
+	case d.Source == "":
+		return "not traced (" + d.Note + ")"
+	case kind == KindBlockLayer && d.Source == SourceBio:
+		return "bio-based, no block layer (bio-level latency on the Device latency card)"
+	case kind == KindBlockLayer && d.BioBased && d.Source == SourceBlock:
+		return "bio-based, no block layer"
+	case kind == KindBlockLayer && !d.BlockLayer:
+		return "no " + insertTracepoint + " tracepoint"
+	case !seen && one:
+		return strings.Join(events, ", ") + " · " + noneSeen(d, none)
+	case !seen:
+		return noneSeen(d, none)
+	}
+	return strings.Join(events, ", ") + " · pairing: " + pairing + " (" + pair + ")"
 }
 
 // deviceEvents and blockLayerEvents split a device's Events: Start appends
@@ -163,16 +146,12 @@ func blockLayerNote(d DeviceSummary) string {
 	return "ftrace saw no block-layer requests on " + d.Name
 }
 
-// lostTail appends the lost-events part of a source line.
+// lostTail appends the lost-events part of a source line, from s.Lost
+// (set by Fill).
 func lostTail(b *strings.Builder, s *Summary) {
-	var unpaired int64
-	for _, d := range s.Devices {
-		unpaired += d.Unpaired
-	}
-	lost := s.Overrun + unpaired
-	b.WriteString(" · lost events: " + strconv.FormatInt(lost, 10))
-	if lost > 0 {
-		b.WriteString(" (ring buffer " + strconv.FormatInt(s.Overrun, 10) + ", unpaired " + strconv.FormatInt(unpaired, 10))
+	b.WriteString(" · lost events: " + strconv.FormatInt(s.Lost, 10))
+	if s.Lost > 0 {
+		b.WriteString(" (ring buffer " + strconv.FormatInt(s.Overrun, 10) + ", unpaired " + strconv.FormatInt(s.Lost-s.Overrun, 10))
 		if s.StartMissing {
 			b.WriteString("; start marker not seen")
 		}
