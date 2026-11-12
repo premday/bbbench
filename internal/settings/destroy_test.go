@@ -686,3 +686,46 @@ func TestLayout_DestroyComparesTheWholeExtra(t *testing.T) {
 		t.Errorf("the provider was called: %+v", r.d.destroyed)
 	}
 }
+
+// A node the kernel keeps after a stop (no members, nothing on it) is gone;
+// one that still has members or something on it is left over.
+func TestLayout_DestroyLingeringNode(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		slaves, holders []string
+		want            string
+	}{
+		"empty":        {},
+		"with members": {slaves: []string{"sdb"}, want: "md127 still exists"},
+		"held":         {holders: []string{"dm-3"}, want: "md127 still exists"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sys := sysHolders(t, map[string][]string{"md127": nil})
+			r := newDestroyRig(t, sys, md127())
+			r.reports = []*inuse.Report{reportOf(heldBy()), reportOf(nil)}
+			r.d.onDestroy = func() {
+				for dir, names := range map[string][]string{"slaves": tc.slaves, "holders": tc.holders} {
+					d := filepath.Join(sys, "block", "md127", dir)
+					if err := os.MkdirAll(d, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					for _, n := range names {
+						if err := os.WriteFile(filepath.Join(d, n), nil, 0o644); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			err := r.s.Destroy(ctx, md127())
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %v, want %q", err, tc.want)
+			}
+		})
+	}
+}

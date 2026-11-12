@@ -250,7 +250,7 @@ func disksWithin(a, b []Target) bool {
 
 // leftOver re-scans and lists what the configuration owned that is still
 // there: holders that are its nodes, its md superblocks, its PV labels, and
-// its nodes in sysfs.
+// its nodes in sysfs that still have members or holders (nodeLeft).
 func (s *layout) leftOver(g *gated) ([]string, error) {
 	rep, err := s.env.InUse()
 	if err != nil {
@@ -266,12 +266,48 @@ func (s *layout) leftOver(g *gated) ([]string, error) {
 	}
 	if e.Extra[ExtraOrphanPV] != "yes" {
 		for _, n := range slices.Sorted(maps.Keys(g.nodes)) {
-			if _, err := os.Stat(filepath.Join(s.env.Sys, "block", n)); !errors.Is(err, os.ErrNotExist) {
-				left = append(left, n+" still exists")
+			if why := s.nodeLeft(n); why != "" {
+				left = append(left, why)
 			}
 		}
 	}
 	return left, nil
+}
+
+// nodeLeft says how owned node n is still there after a destroy, "" when it
+// is gone. The kernel may keep the node of a stopped device for a while: a
+// node with no member under slaves/ and nothing under holders/ is gone. One
+// whose slaves/ cannot be read is counted as left.
+func (s *layout) nodeLeft(n string) string {
+	dir := filepath.Join(s.env.Sys, "block", n)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	slaves, err := os.ReadDir(filepath.Join(dir, "slaves"))
+	if err != nil {
+		return n + " still exists"
+	}
+	holders, err := os.ReadDir(filepath.Join(dir, "holders"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return n + " still exists"
+	}
+	var on []string
+	for _, e := range slaves {
+		on = append(on, e.Name())
+	}
+	var held []string
+	for _, e := range holders {
+		held = append(held, e.Name())
+	}
+	switch {
+	case len(on) > 0 && len(held) > 0:
+		return fmt.Sprintf("%s still exists (on %s; %s sits on it)", n, strings.Join(on, ", "), strings.Join(held, ", "))
+	case len(on) > 0:
+		return fmt.Sprintf("%s still exists (on %s)", n, strings.Join(on, ", "))
+	case len(held) > 0:
+		return fmt.Sprintf("%s still exists (%s sits on it)", n, strings.Join(held, ", "))
+	}
+	return ""
 }
 
 // destroyGate is steps (1) and (2) of the safety gate: re-list e and prove it
