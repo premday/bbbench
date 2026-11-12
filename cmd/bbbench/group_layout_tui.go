@@ -253,15 +253,6 @@ func (m layoutModel) rows() []editorRow {
 	return rows
 }
 
-// cursorDisk is the disk under the editor cursor, "" on another row.
-func (m layoutModel) cursorDisk() string {
-	rows := m.rows()
-	if m.step != layoutStepEditor || m.ecursor >= len(rows) || rows[m.ecursor].kind != rowDisk {
-		return ""
-	}
-	return rows[m.ecursor].disk.Device.Name
-}
-
 func (m layoutModel) freeDrives() []DriveInfo {
 	var out []DriveInfo
 	for _, d := range m.drives {
@@ -712,11 +703,8 @@ func (m layoutModel) listView(b *strings.Builder) {
 // so a cursor mark in first does not shift the text). Without a size message
 // the width is the default; nothing is cut at the right edge.
 func (m layoutModel) put(b *strings.Builder, text, first, rest string) {
-	w := m.width
-	if w <= 0 {
-		w = defaultWidth
-	}
-	lines := wrapTextOpt(text, w, rest, false)
+	w, _ := m.dims()
+	lines := wrapProse(text, w, rest)
 	if len(lines) == 0 {
 		return
 	}
@@ -889,10 +877,7 @@ func runLayoutModel(m layoutModel, run func(tea.Model) (tea.Model, error), out i
 // at the right edge. A line with styling codes is left alone (its width is
 // not its length).
 func (m layoutModel) wrapView(v string) string {
-	w := m.width
-	if w <= 0 {
-		w = defaultWidth
-	}
+	w, _ := m.dims()
 	lines := strings.Split(v, "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -902,7 +887,7 @@ func (m layoutModel) wrapView(v string) string {
 		}
 		body := strings.TrimLeft(line, " ")
 		lead := line[:len(line)-len(body)]
-		wrapped := wrapTextOpt(body, w, lead+"  ", false)
+		wrapped := wrapProse(body, w, lead+"  ")
 		if len(wrapped) == 0 {
 			out = append(out, line)
 			continue

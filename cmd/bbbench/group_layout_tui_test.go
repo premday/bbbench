@@ -778,3 +778,12 @@ func TestLayout_NoScreenIsWiderThanTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+// cursorDisk is the disk under the editor cursor, "" on another row.
+func (m layoutModel) cursorDisk() string {
+	rows := m.rows()
+	if m.step != layoutStepEditor || m.ecursor >= len(rows) || rows[m.ecursor].kind != rowDisk {
+		return ""
+	}
+	return rows[m.ecursor].disk.Device.Name
+}

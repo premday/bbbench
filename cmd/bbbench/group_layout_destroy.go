@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -241,21 +240,6 @@ func (m layoutModel) updateDestroyPick(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// scrollKey moves off for a scroll key; ok is false for any other key.
-func scrollKey(key string, off, win int) (int, bool) {
-	switch key {
-	case "up":
-		return off - 1, true
-	case "down":
-		return off + 1, true
-	case "pgup":
-		return off - max(1, win), true
-	case "pgdown":
-		return off + max(1, win), true
-	}
-	return off, false
-}
-
 func (m layoutModel) updateDestroyConfirm(key string) (tea.Model, tea.Cmd) {
 	if off, ok := scrollKey(key, m.destroy.scroll, m.confirmLayout().win); ok {
 		m.destroy.scroll = off
@@ -337,107 +321,18 @@ func logDestroy(e settings.Existing, err error) {
 	logger.Info("destroyed an existing configuration", "name", e.Name, "backend", e.Backend, "disks", settings.DiskNames(e.Disks))
 }
 
-// wrapText wraps s to width, each line starting with indent. It breaks at
-// spaces, starts a new line after each "; " (the parts of an error), keeps
-// the line breaks of s and cuts a word longer than the line.
-func wrapText(s string, width int, indent string) []string {
-	return wrapTextOpt(s, width, indent, true)
-}
-
-// wrapTextOpt is wrapText; with parts false a "; " does not start a new line
-// (plain prose: a screen message, a list of reasons).
-func wrapTextOpt(s string, width int, indent string, parts bool) []string {
-	w := max(1, width-utf8.RuneCountInString(indent))
-	var out []string
-	for _, para := range strings.Split(s, "\n") {
-		segs := []string{para}
-		if parts {
-			segs = strings.SplitAfter(para, "; ")
-		}
-		for _, seg := range segs {
-			words := strings.Fields(seg)
-			if len(words) == 0 {
-				if seg == para {
-					out = append(out, "")
-				}
-				continue
-			}
-			line := ""
-			for _, word := range words {
-				for utf8.RuneCountInString(word) > w {
-					if line != "" {
-						out = append(out, indent+line)
-						line = ""
-					}
-					r := []rune(word)
-					out = append(out, indent+string(r[:w]))
-					word = string(r[w:])
-				}
-				switch {
-				case line == "":
-					line = word
-				case utf8.RuneCountInString(line)+1+utf8.RuneCountInString(word) <= w:
-					line += " " + word
-				default:
-					out = append(out, indent+line)
-					line = word
-				}
-			}
-			if line != "" {
-				out = append(out, indent+line)
-			}
-		}
-	}
-	return out
-}
-
-// clip cuts s to width, marking the cut with "...".
-func clip(s string, width int) string {
-	r := []rune(s)
-	if len(r) <= width {
-		return s
-	}
-	if width <= 3 {
-		return string(r[:max(0, width)])
-	}
-	return string(r[:width-3]) + "..."
-}
-
-// window is a scrolled part of a list: the indicator line, then the
-// visible lines from off.
-type window struct {
-	lines    []string
-	win, off int
-}
-
-// scrollWindow shows body in room lines (one of them the indicator "<what>
-// a-b of n"), from off, clamped.
-func scrollWindow(body []string, room, off int, what string, width int) window {
-	win := max(1, room-1)
-	if win >= len(body) {
-		win, off = len(body), 0
-	}
-	off = max(0, min(off, len(body)-win))
-	ind := fmt.Sprintf("  %s %d-%d of %d", what, off+1, off+win, len(body))
-	if win < len(body) {
-		ind += ", up/down to scroll"
-	}
-	lines := append([]string{clip(ind, width)}, body[off:off+win]...)
-	return window{lines: lines, win: win, off: off}
-}
-
 // confirmLayout is the confirmation screen fitted to the terminal.
 func (m layoutModel) confirmLayout() window {
 	w, h := m.dims()
 	e := m.destroy.sel
 	head := []string{"  " + destroyHeaderStyle.Render(clip("THIS DESTROYS DATA", w-2))}
-	head = append(head, wrapText(e.Name+": "+e.Summary, w, "  ")...)
+	head = append(head, wrapParts(e.Name+": "+e.Summary, w, "  ")...)
 	var stack []string
 	for _, s := range e.Stack {
 		stack = append(stack, clip("    "+s, w))
 	}
-	prompt := wrapText("Press y to destroy, any other key to cancel", w, "  ")
-	sentence := wrapText("The data on these disks is not kept. Destroy checks again that nothing of it is in use and refuses if something is.", w, "  ")
+	prompt := wrapParts("Press y to destroy, any other key to cancel", w, "  ")
+	sentence := wrapParts("The data on these disks is not kept. Destroy checks again that nothing of it is in use and refuses if something is.", w, "  ")
 	stackHead := 0
 	if len(stack) > 0 {
 		stackHead = 1
@@ -474,9 +369,9 @@ func (m layoutModel) confirmLayout() window {
 // scrolled window, the way back on the last line.
 func (m layoutModel) failedLayout() window {
 	w, h := m.dims()
-	head := wrapText("Destroying "+m.destroy.sel.Name+" failed:", w, "  ")
-	foot := wrapText("up/down to scroll, any other key returns to the list", w, "  ")
-	body := wrapText(m.destroy.err, w, "    ")
+	head := wrapParts("Destroying "+m.destroy.sel.Name+" failed:", w, "  ")
+	foot := wrapParts("up/down to scroll, any other key returns to the list", w, "  ")
+	body := wrapParts(m.destroy.err, w, "    ")
 	win := scrollWindow(body, h-len(head)-len(foot), m.destroy.scroll, "lines", w)
 	win.lines = append(append(head, win.lines...), foot...)
 	return win
@@ -485,14 +380,14 @@ func (m layoutModel) failedLayout() window {
 func (m layoutModel) destroyPickLines() []string {
 	w, h := m.dims()
 	d := m.destroy
-	head := wrapText("Destroy an existing RAID configuration (up/down, Enter to select, Esc to go back)", w, "  ")
+	head := wrapParts("Destroy an existing RAID configuration (up/down, Enter to select, Esc to go back)", w, "  ")
 	switch {
 	case d.loading:
 		head = append(head, "  looking for existing configurations...")
 	case len(d.entries) == 0 && len(d.notes) >= m.destroyers():
-		head = append(head, wrapText("no provider could list existing configurations", w, "  ")...)
+		head = append(head, wrapParts("no provider could list existing configurations", w, "  ")...)
 	case len(d.entries) == 0:
-		head = append(head, wrapText("no existing RAID configuration found", w, "  ")...)
+		head = append(head, wrapParts("no existing RAID configuration found", w, "  ")...)
 	}
 	// Each entry is one line; the highlighted one is followed by all its
 	// reasons. The window keeps it in view.
@@ -511,7 +406,7 @@ func (m layoutModel) destroyPickLines() []string {
 			body = append(body, "  "+c+"- "+destroyGrayStyle.Render(clip(row+"  ("+d.reasons[i][0]+")", w-6)))
 			if i == d.cursor {
 				for _, r := range d.reasons[i] {
-					body = append(body, wrapText("not possible: "+r, w, "        ")...)
+					body = append(body, wrapParts("not possible: "+r, w, "        ")...)
 				}
 			}
 		default:
@@ -525,7 +420,7 @@ func (m layoutModel) destroyPickLines() []string {
 	if len(d.notes) > 0 {
 		foot = append(foot, "  Notes:")
 		for _, n := range d.notes {
-			foot = append(foot, wrapText(n, w, "    ")...)
+			foot = append(foot, wrapParts(n, w, "    ")...)
 		}
 		if limit := max(2, h/3); len(foot) > limit {
 			more := len(foot) - (limit - 1)
@@ -533,7 +428,7 @@ func (m layoutModel) destroyPickLines() []string {
 		}
 	}
 	if m.msg != "" {
-		foot = append(foot, wrapText(m.msg, w, "  ")...)
+		foot = append(foot, wrapParts(m.msg, w, "  ")...)
 	}
 	room := h - len(head) - len(foot)
 	if len(body) <= room {
@@ -548,9 +443,9 @@ func (m layoutModel) destroyPickLines() []string {
 
 func (m layoutModel) destroyRunLines() []string {
 	w, _ := m.dims()
-	lines := wrapText(fmt.Sprintf("destroying %s ... %d s, do not interrupt", m.destroy.sel.Name, int(m.destroy.elapsed.Seconds())), w, "  ")
+	lines := wrapParts(fmt.Sprintf("destroying %s ... %d s, do not interrupt", m.destroy.sel.Name, int(m.destroy.elapsed.Seconds())), w, "  ")
 	if m.destroy.stopping {
-		lines = append(lines, wrapText("stopping after the step in flight finishes; nothing new is started", w, "  ")...)
+		lines = append(lines, wrapParts("stopping after the step in flight finishes; nothing new is started", w, "  ")...)
 	}
 	return lines
 }
