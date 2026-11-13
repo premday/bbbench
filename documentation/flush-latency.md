@@ -62,9 +62,17 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
   drives can be traced in parallel. It enables those two events with the
   kernel-side filter `opcode == 0 && qid > 0` (Flush commands only, no admin
   queue).
-- **Reading:** it reads `trace_pipe` while the phase runs. A start marker and a
-  stop marker written to `trace_marker` bracket the phase (a live `trace_pipe`
-  never reports end of file, so the stop marker ends the reader).
+- **Reading:** it reads the instance's binary per-CPU pipes
+  (`per_cpu/cpuN/trace_pipe_raw`, one reader per CPU, fields at the offsets of
+  the kernel's format files, merged back into time order) while the phase runs,
+  on the instance's `mono` trace clock (`global` when `mono` is missing). A
+  start marker written to `trace_marker` sets time zero. At the end tracing is
+  switched off and each CPU's pipe is read until it is empty, which proves
+  every recorded Flush was delivered. Without the raw pipes, or when a format
+  file cannot be used, it reads the text `trace_pipe` as before, where a stop
+  marker ends the reader (a live `trace_pipe` never reports end of file). The
+  raw reader is verified only against pages built by the tests, not on a real
+  kernel (see the README, "I/O latency tracing").
 - **Pairing:** each `nvme_setup_cmd` is matched to its `nvme_complete_rq` by
   controller, queue and command id, so the pairing is exact even with many
   Flushes in flight. Latency = completion time - setup time, per Flush.

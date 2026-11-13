@@ -143,6 +143,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--dmi-path`, `--sys-block` — override `/sys/class/dmi/id` and `/sys/block` (for tests)
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--no-io-trace` — do not trace read and write latency from kernel trace events (see [I/O latency tracing](#io-latency-tracing))
+- `--trace-buffer-mb N` — MiB of kernel ring buffer shared by the concurrent trace sessions (default 256; see [I/O latency tracing](#io-latency-tracing), "Cost and opt-out"); raise it when the trace reports events lost in the ring buffer
 - `--config` — path to config file
 - `--dist` — override dist path
 
@@ -492,6 +493,22 @@ direction, computed after the ramp-up). It has up to four lines per window
 when a run is loaded; the run summary JSON (`<id>_summary.json`) stores
 `io_trace_series` again, so it grows with the log.
 
+**How the events are read.** Each session has a private tracefs instance and
+reads its binary per-CPU pipes (`per_cpu/cpuN/trace_pipe_raw`): one reader
+per CPU decodes the kernel's ring-buffer pages, with every field at the offset
+the kernel's own `events/<system>/<event>/format` file gives (no text is
+formatted by the kernel or parsed by bbbench), and a merger puts the CPUs back
+into time order before the events are paired. The instance uses the `mono`
+trace clock (`global` when `mono` is not offered), so that an I/O issued on one
+CPU and completed on another compares. When the raw pipes are missing, or a
+format file is missing or lacks a field bbbench needs, the session reads the
+text `trace_pipe` instead, as before, and says why: the log header carries
+`reader=raw` or `reader=text` with `reader_note=`, and the summary JSON
+`reader`, `reader_note` and `clock`. An event the merger receives after a newer
+one was already paired (a CPU's reader more than 100 ms behind, or more than a
+million events queued) is fed anyway and counted as `late` (log header and
+summary); a pair it broke shows up as unpaired.
+
 **Lost events.** Every figure carries a `lost events` count: ring buffer
 overruns (the reader fell behind) plus events that found no partner (requests
 still pending when the phase ended, a command id reused, completions with no
@@ -503,19 +520,26 @@ unpaired part names each device with a series on that card and those series,
 with the share of the events lost when the counts allow it. Large ring buffer
 counts are expected on fast drives: an SSD phase runs 3600 s by default, and at
 100,000 IOPS with two to four events per request that is about a billion trace
-events, which a single reader may not keep up with; `--no-io-trace` turns the
+events. When the ring buffer drops events, the terminal and the graphs page
+say `raise --trace-buffer-mb or lower the IOPS`; `--no-io-trace` turns the
 tracing off.
 
 **Cost and opt-out.** Tracing every read and write costs CPU, and at very high
 IOPS it can disturb the numbers it measures; this is why `--no-io-trace` exists.
 The kernel allocates the trace ring buffer per CPU. Concurrent sessions share a
-256 MiB budget: every drive running a phase at the same time has one I/O latency
-session and, in a phase that fsyncs, one Flush session, each counting as one
-session. Each CPU of an I/O session gets at least 1 MiB and at most 16 MiB, of a
-Flush session at least 1 MiB and at most 8 MiB (one drive on 16 CPUs: 16 MiB per
-CPU; 12 drives on 64 CPUs: the 1 MiB floor, 768 MiB in total, twice that in an
-fsync phase). Above the floor the budget holds; at the floor it is exceeded
-rather than buffers shrunk further.
+budget, `--trace-buffer-mb` (default 256 MiB): every drive running a phase at
+the same time has one I/O latency session and, in a phase that fsyncs, one
+Flush session, each counting as one session. Each CPU of an I/O session gets
+budget / (sessions x CPUs), at least 1 MiB and at most 64 MiB; of a Flush
+session the same, at most 8 MiB. The kernel memory taken is sessions x CPUs x
+the per-CPU size: at most the budget, except at the 1 MiB floor, where it is
+exceeded rather than buffers shrunk further (one drive on 16 CPUs: 16 MiB per
+CPU, 256 MiB; one drive on 2 CPUs: 64 MiB per CPU, 128 MiB; 12 drives on 64
+CPUs: the floor, 768 MiB in total, twice that in an fsync phase;
+`--trace-buffer-mb 4096` with one drive on 64 CPUs: 64 MiB per CPU, 4 GiB).
+The run prints the size it uses, e.g. `ftrace buffers: 256 MiB budget
+(--trace-buffer-mb), 16 MiB per CPU for up to 2 concurrent sessions on 8
+CPUs: 256 MiB of kernel memory`.
 Like Flush tracing it uses a private tracefs instance
 (`instances/bbbench-iolat-*`), removed when the phase ends. Instances left by a
 killed or crashed bbbench (`bbbench-iolat-*` and `bbbench-flush-*`) keep their
@@ -528,12 +552,26 @@ container that shares the tracefs looks dead, and its instance is switched off
 and removed.
 
 **Not verified on hardware.** The feature is tested against hand-written trace
-lines and a fake tracefs tree and has not been run end to end on a real kernel.
-Unverified: the payload formats of the tracepoints beyond the Flush lines
-already tested (`block_rq_insert`, `block_rq_merge`, the read opcode names, a
-`block_rq_complete` line with the I/O priority field, `block_bio_queue` and
-`block_bio_complete`, taken from the kernel's `TP_printk` as
-`maj,min rwbs sector + nr [comm|error]`); whether `block_bio_complete` fires
+lines, hand-built ring-buffer pages and a fake tracefs tree and has not been
+run end to end on a real kernel. Nothing of the raw reader has run on a real
+kernel: it is verified only against pages and format files the tests build
+from the kernel sources (`internal/tracefake`). Unverified there: the page and
+record encoding (page header, commit word and its missed-events flags, the
+record types, absolute time stamps, whether a discarded event's time delta
+counts, as in libtraceevent), the format files of a real kernel (the NVMe
+layout in the fixtures is remembered, not copied), that the Go netpoller can
+park on `trace_pipe_raw` (its poll with `buffer_percent` 0) and that a read
+deadline wakes it, that a pipe reads empty once tracing is off and drained,
+the `mono` clock in the instance, and the 100 ms hold of the merge against a
+reader's real wake-up delay. The fixture layouts cannot make the decoder right
+by accident: it reads every offset from the format files, and refuses a format
+it cannot use (the text pipe is then read). With the raw reader the payload
+grammar of the text lines is not involved; it still matters on the text
+fallback. Unverified on the text path: the payload formats of the tracepoints
+beyond the Flush lines already tested (`block_rq_insert`, `block_rq_merge`, the
+read opcode names, a `block_rq_complete` line with the I/O priority field,
+`block_bio_queue` and `block_bio_complete`, taken from the kernel's `TP_printk`
+as `maj,min rwbs sector + nr [comm|error]`). Unverified on both: whether `block_bio_complete` fires
 for the node's own bios on md, dm and LVM nodes (`BIO_TRACE_COMPLETION`) and
 with which sector after a split or a dm remap, and the queue and complete event
 counts on real arrays; the `ctrl_id` filter field
@@ -544,8 +582,8 @@ it the controller filter is left out); how requeues, front merges that move the
 start sector and partial completions are paired (they are counted as unpaired or
 understate the block layer latency, see the package comment in
 `internal/iotrace/session.go`); the cost of the per-CPU ring buffers and the
-256 MiB budget with its 1-16 MiB per-CPU range; and the effect of tracing on the
-measured I/O. Run it first on a test machine, and use `--no-io-trace` if it
+256 MiB default budget with its 1-64 MiB per-CPU range; and the effect of
+tracing on the measured I/O. Run it first on a test machine, and use `--no-io-trace` if it
 disturbs a measurement.
 
 **In the web UI.** The Latency chart draws the traced mean latency as dashed
