@@ -1,6 +1,6 @@
 # Web UI
 
-The `bbbench serve` command (also started automatically by `orchestrator` during a run) exposes a web interface on `http://0.0.0.0:12345` by default; `--addr <host:port>` changes it for both `serve` and `orchestrator`.
+The `bbbench serve` command (also started automatically by `orchestrator` during a run) exposes a web interface on `http://0.0.0.0:12345` by default; `--addr <host:port>` changes it for both `serve` and `orchestrator`. While an orchestrator runs, `serve` refuses only the same address (the orchestrator records its address in `$TMPDIR/.bbbench.orchestrator.lock`); on another address it starts and shows saved results only, not the live run.
 
 ## Benchmark Status
 

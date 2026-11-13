@@ -107,6 +107,7 @@ func runOrchestrator(args []string) error {
 		return err
 	}
 	defer releaseOrchestratorLock()
+	recordOrchestratorAddr(*webAddr)
 	cleanStaleTraces(os.Stdout)
 	defer ResetStatus() // Reset web status when done
 

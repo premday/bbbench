@@ -27,9 +27,13 @@ func runServe(args []string) error {
 	outputDir := fs.String("output", "~/.bbbench/output", "output directory containing benchmark results")
 	_ = fs.Parse(args)
 
-	// Check if orchestrator is running
-	if isOrchestratorRunning() {
-		return errors.New("orchestrator is already running with web interface enabled\nConnect to its web address (default http://" + defaultWebAddr + ", set by its -addr) to view status")
+	// An orchestrator serves its own web UI: only the same address collides.
+	note, err := checkServeAddr(*addr)
+	if err != nil {
+		return err
+	}
+	if note != "" {
+		fmt.Println(note)
 	}
 
 	// Load existing benchmark results from output directory
