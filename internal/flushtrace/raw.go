@@ -353,14 +353,27 @@ func loadRawFormats(root string, enable []string) (*rawFormats, error) {
 // each reader goroutine has one.
 type decoder struct {
 	*rawFormats
+	byID        []*plan // plans by event id
 	rwbs, disks map[string]string
 	ctrls       map[int32]string
-	unknown     int64 // data events of an id without a plan
-	bad         int64 // records or pages that do not fit
+	// the last interned values: consecutive events mostly repeat them
+	lastRWBS, lastDisk, lastCtrl string
+	lastCtrlID                   int32
+	unknown                      int64 // data events of an id without a plan
+	bad                          int64 // records or pages that do not fit
 }
 
 func newDecoder(rf *rawFormats) *decoder {
-	return &decoder{rawFormats: rf, rwbs: map[string]string{}, disks: map[string]string{}, ctrls: map[int32]string{}}
+	d := &decoder{rawFormats: rf, rwbs: map[string]string{}, disks: map[string]string{}, ctrls: map[int32]string{}}
+	for id, p := range rf.plans {
+		if id >= 0 && id < 1<<16 { // common_type is a u16
+			if id >= len(d.byID) {
+				d.byID = append(d.byID, make([]*plan, id+1-len(d.byID))...)
+			}
+			d.byID[id] = p
+		}
+	}
+	return d
 }
 
 func readUint(b []byte, d fieldDef) uint64 {
@@ -505,29 +518,36 @@ func (d *decoder) decodePage(page []byte, out []Event) ([]Event, int64) {
 			entry = data[i+4 : i+4+size]
 			i += 4 + size
 		}
-		if ev, ok := d.decodeEntry(entry, int64(ts)); ok {
-			out = append(out, ev)
+		out = append(out, Event{})
+		if !d.decodeEntry(entry, int64(ts), &out[len(out)-1]) {
+			out = out[:len(out)-1]
 		}
 	}
 	return out, lost
 }
 
-func (d *decoder) decodeEntry(entry []byte, ts int64) (Event, bool) {
+// decodeEntry fills ev (zero) from a trace entry; false = not an event to
+// feed (unknown id, or too short: counted).
+func (d *decoder) decodeEntry(entry []byte, ts int64, ev *Event) bool {
 	tf := d.typeField
 	if len(entry) < tf.off+tf.size {
 		d.bad++
-		return Event{}, false
+		return false
 	}
-	p := d.plans[int(readUint(entry, tf))]
+	id := int(readUint(entry, tf))
+	var p *plan
+	if id >= 0 && id < len(d.byID) {
+		p = d.byID[id]
+	}
 	if p == nil {
 		d.unknown++
-		return Event{}, false
+		return false
 	}
 	if len(entry) < p.minSize {
 		d.bad++
-		return Event{}, false
+		return false
 	}
-	ev := Event{TimeNs: ts, Name: p.name}
+	ev.TimeNs, ev.Name = ts, p.name
 	f := &ev.F
 	f.Decoded = true
 	switch p.kind {
@@ -537,23 +557,36 @@ func (d *decoder) decodeEntry(entry []byte, ts int64) (Event, bool) {
 		f.Dev = uint32(readUint(entry, p.dev))
 		f.Sector = readUint(entry, p.sector)
 		f.NrSector = uint32(readUint(entry, p.nr))
-		f.RWBS = intern(d.rwbs, cstr(entry, p.rwbs))
+		if b := cstr(entry, p.rwbs); string(b) == d.lastRWBS {
+			f.RWBS = d.lastRWBS
+		} else {
+			f.RWBS = intern(d.rwbs, b)
+			d.lastRWBS = f.RWBS
+		}
 	case planNVMeSetup, planNVMeDone:
 		f.CtrlID = int32(readUint(entry, p.ctrl))
 		f.QID = int32(readUint(entry, p.qid))
 		f.CID = int32(readUint(entry, p.cid))
-		if s, ok := d.ctrls[f.CtrlID]; ok {
+		if f.CtrlID == d.lastCtrlID && d.lastCtrl != "" {
+			f.Ctrl = d.lastCtrl
+		} else if s, ok := d.ctrls[f.CtrlID]; ok {
 			f.Ctrl = s
 		} else {
 			f.Ctrl = "nvme" + strconv.Itoa(int(f.CtrlID))
 			d.ctrls[f.CtrlID] = f.Ctrl
 		}
+		d.lastCtrlID, d.lastCtrl = f.CtrlID, f.Ctrl
 		if p.kind == planNVMeSetup {
 			f.Opcode = uint8(readUint(entry, p.op))
 			if p.hasDisk {
-				f.Disk = intern(d.disks, cstr(entry, p.disk))
+				if b := cstr(entry, p.disk); string(b) == d.lastDisk {
+					f.Disk = d.lastDisk
+				} else {
+					f.Disk = intern(d.disks, b)
+					d.lastDisk = f.Disk
+				}
 			}
 		}
 	}
-	return ev, true
+	return true
 }

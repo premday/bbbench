@@ -12,21 +12,22 @@ func sampleResult() Result {
 		return Stats{Count: n, MeanNs: mean, MinNs: 1000, MaxNs: mx, P50Ns: 2000, P99Ns: mx / 2}
 	}
 	r := Result{
-		Summary: Summary{AvgMsec: 1000, OffsetMs: 10000, Overrun: 3, StartMissing: true, Devices: []DeviceSummary{
-			{Name: "nvme0n1", Source: "nvme", Exact: true, BlockLayer: true, Pair: "ctrl,qid,cmdid",
-				Events: []string{"nvme_setup_cmd -> nvme_complete_rq", "block_rq_insert -> block_rq_complete"},
-				Stats: map[Kind]map[Dir]Stats{
-					KindDevice:     {DirRead: st(312, 85000.5, 410000), DirWrite: st(10, 90000, 500000)},
-					KindBlockLayer: {DirRead: st(312, 95000.25, 450000)}}},
-			{Name: "sdb", Source: "block", Exact: true, Pair: "dev,sector", Unpaired: 2,
-				Events: []string{"block_rq_issue -> block_rq_complete"},
-				Stats:  map[Kind]map[Dir]Stats{KindDevice: {DirWrite: st(50, 8e9, 4_000_000_000)}}},
-			{Name: "md0", Note: "bio_based, a=b 100% +x, no requests"},
-			{Name: "sdc", Source: "block", Pair: "dev,sector=1", Events: []string{"a_b -> c=d"}},
-			{Name: "md1", Source: "bio", BioBased: true, Pair: PairBio, Unpaired: 1,
-				Events: []string{"block_bio_queue -> block_bio_complete"},
-				Stats:  map[Kind]map[Dir]Stats{KindBio: {DirRead: st(20, 300000, 900000), DirWrite: st(4, 9.5e6, 12_000_000)}}},
-		}},
+		Summary: Summary{AvgMsec: 1000, OffsetMs: 10000, Overrun: 3, StartMissing: true,
+			Reader: "raw", Clock: "mono", Late: 4, ReaderNote: "2 raw records could not be decoded; x=y", Devices: []DeviceSummary{
+				{Name: "nvme0n1", Source: "nvme", Exact: true, BlockLayer: true, Pair: "ctrl,qid,cmdid",
+					Events: []string{"nvme_setup_cmd -> nvme_complete_rq", "block_rq_insert -> block_rq_complete"},
+					Stats: map[Kind]map[Dir]Stats{
+						KindDevice:     {DirRead: st(312, 85000.5, 410000), DirWrite: st(10, 90000, 500000)},
+						KindBlockLayer: {DirRead: st(312, 95000.25, 450000)}}},
+				{Name: "sdb", Source: "block", Exact: true, Pair: "dev,sector", Unpaired: 2,
+					Events: []string{"block_rq_issue -> block_rq_complete"},
+					Stats:  map[Kind]map[Dir]Stats{KindDevice: {DirWrite: st(50, 8e9, 4_000_000_000)}}},
+				{Name: "md0", Note: "bio_based, a=b 100% +x, no requests"},
+				{Name: "sdc", Source: "block", Pair: "dev,sector=1", Events: []string{"a_b -> c=d"}},
+				{Name: "md1", Source: "bio", BioBased: true, Pair: PairBio, Unpaired: 1,
+					Events: []string{"block_bio_queue -> block_bio_complete"},
+					Stats:  map[Kind]map[Dir]Stats{KindBio: {DirRead: st(20, 300000, 900000), DirWrite: st(4, 9.5e6, 12_000_000)}}},
+			}},
 		Windows: []Window{
 			{EndMs: 11000, Dev: "nvme0n1", Kind: KindDevice, Dir: DirRead, Stats: st(100, 85000.5, 410000)},
 			{EndMs: 11000, Dev: "nvme0n1", Kind: KindBlockLayer, Dir: DirWrite, Stats: st(7, 99999.5, 450000)},

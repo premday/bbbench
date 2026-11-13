@@ -104,21 +104,61 @@ func InstanceName(kind string) string {
 	return fmt.Sprintf("bbbench-%s-%d-%d", kind, os.Getpid(), instanceSeq.Add(1))
 }
 
-// Instance is one private tracefs instance with one reader goroutine. The
-// system-wide trace buffer and settings are left alone, so instances do not
-// interfere with each other.
+// Instance is one private tracefs instance and its reader: the binary
+// per-CPU pipes when the kernel offers them and their formats decode (one
+// goroutine per CPU and a merger), else the text trace_pipe (one goroutine).
+// The system-wide trace buffer and settings are left alone, so instances do
+// not interfere with each other.
 type Instance struct {
-	dir      string
-	pipe     *os.File
-	events   []string // enable files switched on, to switch off again
-	feed     func(ev Event, startNs int64)
-	mu       sync.Mutex
-	done     chan struct{}
-	stopSeen chan struct{} // closed when the stop marker was read
-	startNs  int64         // trace-clock time of the last start marker (0 = not seen)
-	overrun  int64         // events the kernel dropped ([LOST N EVENTS])
-	stopOnce sync.Once
-	stopErr  error
+	dir        string
+	pipe       *os.File   // text reader
+	raw        *rawReader // raw reader (nil = text)
+	readerNote string     // why the raw reader is not used
+	clock      string     // the instance's trace clock ("" = unknown)
+	events     []string   // enable files switched on, to switch off again
+	feed       func(ev Event, startNs int64)
+	mu         sync.Mutex
+	done       chan struct{}
+	stopSeen   chan struct{} // closed when the stop marker was read
+	startNs    int64         // trace-clock time of the last start marker (0 = not seen)
+	overrun    atomic.Int64  // events the kernel dropped ([LOST N EVENTS], missed-events flags)
+	stopOnce   sync.Once
+	stopErr    error
+}
+
+// Clocks the private instance uses, in order of preference: both are
+// global (comparable across CPUs, which pairing events of different CPUs
+// needs) and in ns. The default "local" is per CPU.
+var preferredClocks = []string{"mono", "global"}
+
+// nsClocks are the trace clocks whose timestamps are ns.
+var nsClocks = map[string]bool{"local": true, "global": true, "mono": true, "mono_raw": true, "boot": true, "perf": true, "tai": true}
+
+// setClock switches the instance to a global ns clock when its trace_clock
+// file offers one and returns the clock in effect ("" when unknown).
+// Changing the clock resets the buffer: it runs before anything is recorded.
+func (i *Instance) setClock() string {
+	b, err := os.ReadFile(filepath.Join(i.dir, "trace_clock"))
+	if err != nil {
+		return ""
+	}
+	cur, offered := "", map[string]bool{}
+	for _, f := range strings.Fields(string(b)) {
+		if strings.HasPrefix(f, "[") && strings.HasSuffix(f, "]") {
+			f = strings.Trim(f, "[]")
+			cur = f
+		}
+		offered[f] = true
+	}
+	for _, c := range preferredClocks {
+		if c == cur {
+			return cur
+		}
+		if offered[c] && i.write("trace_clock", c) == nil {
+			return c
+		}
+	}
+	return cur
 }
 
 // OpenInstance creates instances/<name>, sets its buffer size (bufferKB > 0),
@@ -149,15 +189,19 @@ func OpenInstanceStart(root, name string, bufferKB int, enable []string, filters
 		return nil, err
 	}
 
+	i.clock = i.setClock()
 	if bufferKB > 0 {
 		_ = i.write("buffer_size_kb", strconv.Itoa(bufferKB))
 	}
-	pipe, err := os.Open(filepath.Join(dir, "trace_pipe"))
-	if err != nil {
-		return fail(fmt.Errorf("open trace_pipe: %w", err))
+	if err := i.openRaw(root, enable); err != nil {
+		i.readerNote = err.Error()
+		pipe, err := os.Open(filepath.Join(dir, "trace_pipe"))
+		if err != nil {
+			return fail(fmt.Errorf("open trace_pipe: %w", err))
+		}
+		i.pipe = pipe
+		go i.read()
 	}
-	i.pipe = pipe
-	go i.read()
 
 	for _, e := range enable {
 		if f, ok := filters[e]; ok {
@@ -178,6 +222,60 @@ func OpenInstanceStart(root, name string, bufferKB int, enable []string, filters
 	return i, nil
 }
 
+// openRaw starts the raw reader, or says why it cannot be used.
+func (i *Instance) openRaw(root string, enable []string) error {
+	if i.clock != "" && !nsClocks[i.clock] {
+		return fmt.Errorf("trace clock %s is not in ns", i.clock)
+	}
+	r, err := openRawReader(root, i.dir, enable, &i.overrun, i.deliver)
+	if err != nil {
+		return err
+	}
+	for _, c := range r.readers {
+		if !c.pollable {
+			if st, err := c.f.Stat(); err != nil || !st.Mode().IsRegular() {
+				r.closeFiles()
+				return fmt.Errorf("%s cannot be polled", c.path)
+			}
+		}
+	}
+	// Poll reports readable as soon as the buffer holds anything (the
+	// default 50 % would leave an idle CPU's events in the kernel while
+	// the merger takes the CPU for empty).
+	if _, err := os.Stat(filepath.Join(i.dir, "buffer_percent")); err == nil {
+		_ = i.write("buffer_percent", "0")
+	}
+	i.raw = r
+	r.start()
+	go func() { <-r.done; close(i.done) }()
+	return nil
+}
+
+// deliver runs emit, which passes a run of the raw reader's events in time
+// order to handle, with the mutex held: one lock per run.
+func (i *Instance) deliver(emit func(handle func(*Event))) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	emit(func(ev *Event) { i.handle(*ev) })
+}
+
+// handle consumes the start and stop markers and feeds every other event;
+// the mutex is held.
+func (i *Instance) handle(ev Event) {
+	switch {
+	case ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, startMarker):
+		i.startNs = ev.TimeNs // MarkStart moves time zero
+	case ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, stopMarker):
+		select {
+		case <-i.stopSeen:
+		default:
+			close(i.stopSeen)
+		}
+	default:
+		i.feed(ev, i.startNs)
+	}
+}
+
 func (i *Instance) write(rel, val string) error {
 	return os.WriteFile(filepath.Join(i.dir, rel), []byte(val), 0o644)
 }
@@ -195,23 +293,10 @@ func (i *Instance) read() {
 		line, err := r.ReadString('\n')
 		if ev, ok := ParseLine(line); ok {
 			i.mu.Lock()
-			switch {
-			case ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, startMarker):
-				i.startNs = ev.TimeNs // MarkStart moves time zero
-			case ev.Name == "tracing_mark_write" && strings.Contains(ev.Payload, stopMarker):
-				select {
-				case <-i.stopSeen:
-				default:
-					close(i.stopSeen)
-				}
-			default:
-				i.feed(ev, i.startNs)
-			}
+			i.handle(ev)
 			i.mu.Unlock()
 		} else if n := lostEvents(line); n > 0 {
-			i.mu.Lock()
-			i.overrun += n
-			i.mu.Unlock()
+			i.overrun.Add(n)
 		}
 		if err != nil {
 			return // io.EOF once tracing is off and the buffer is drained
@@ -261,6 +346,9 @@ func (i *Instance) stopWithin(wait time.Duration) error {
 }
 
 func (i *Instance) stop(wait time.Duration) error {
+	if i.raw != nil {
+		return i.stopRaw(wait)
+	}
 	i.disable()
 	// Wake the reader with a marker while tracing is still on, and wait until
 	// it has read everything up to it. (On a real kernel trace_pipe does not
@@ -283,6 +371,72 @@ func (i *Instance) stop(wait time.Duration) error {
 	return nil
 }
 
+// stopRaw ends a raw reader: no more events (disabled, tracing off), then
+// every CPU's pipe is drained until empty, which proves that every stored
+// event was delivered, and the merger emits what is left. A reader that does
+// not finish within wait is woken by closing its file.
+func (i *Instance) stopRaw(wait time.Duration) error {
+	i.disable()
+	_ = i.write("trace_marker", stopMarker)
+	_ = i.write("tracing_on", "0")
+	i.raw.drain()
+	var errs []string
+	select {
+	case <-i.done:
+	case <-time.After(wait):
+		errs = append(errs, "trace reader did not finish")
+		i.raw.closeFiles()
+		select {
+		case <-i.done:
+		case <-time.After(time.Second):
+		}
+	}
+	if err := i.cleanup(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// Reader is ReaderRaw or ReaderText.
+func (i *Instance) Reader() string {
+	if i.raw != nil {
+		return ReaderRaw
+	}
+	return ReaderText
+}
+
+// ReaderNote says why the raw reader is not used ("" when it is), and,
+// after Stop, how many raw records could not be decoded.
+func (i *Instance) ReaderNote() string {
+	if i.raw == nil {
+		return i.readerNote
+	}
+	var parts []string
+	if n := i.raw.bad.Load(); n > 0 {
+		parts = append(parts, strconv.FormatInt(n, 10)+" raw records could not be decoded")
+	}
+	if n := i.raw.unknown.Load(); n > 0 {
+		parts = append(parts, strconv.FormatInt(n, 10)+" raw events of an unknown id")
+	}
+	return strings.Join(parts, "; ")
+}
+
+// Late is the number of events the raw reader's merger received after a
+// newer one had been fed (always 0 for the text reader): they were fed out
+// of order, and a pair they broke counts as unpaired.
+func (i *Instance) Late() int64 {
+	if i.raw == nil {
+		return 0
+	}
+	return i.raw.late.Load()
+}
+
+// Clock is the instance's trace clock ("" when unknown).
+func (i *Instance) Clock() string { return i.clock }
+
 // StartNs is the trace-clock time of the start marker (0 = not seen).
 func (i *Instance) StartNs() int64 {
 	i.mu.Lock()
@@ -291,11 +445,7 @@ func (i *Instance) StartNs() int64 {
 }
 
 // Overrun is the number of events the kernel reported as lost.
-func (i *Instance) Overrun() int64 {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.overrun
-}
+func (i *Instance) Overrun() int64 { return i.overrun.Load() }
 
 // Locked runs f with the reader's mutex held, so f may read what feed fills.
 // The mutex is not reentrant: StartNs, Overrun and Locked must not be called
@@ -309,6 +459,9 @@ func (i *Instance) Locked(f func()) {
 func (i *Instance) cleanup() error {
 	if i.pipe != nil {
 		_ = i.pipe.Close()
+	}
+	if i.raw != nil {
+		i.raw.closeFiles()
 	}
 	if err := os.Remove(i.dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove trace instance %s: %w", i.dir, err)

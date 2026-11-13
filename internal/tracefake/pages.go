@@ -113,7 +113,7 @@ func (t *Tree) Pages(evs []Event, o PageOptions) (map[int][][]byte, error) {
 			delta = 0
 		} else {
 			if o.PadEvery > 0 && p.n%o.PadEvery == 0 && delta > 1 {
-				d := delta / 2
+				d := min(delta/2, maxDelta)
 				p.put(header(typePadding, uint32(d)), 4) // a discarded event: header + length word
 				delta -= d
 			}

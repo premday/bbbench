@@ -12,6 +12,13 @@
 //     and completions are paired first-in first-out per device. The mean is
 //     exact regardless of pairing; individual samples (hence percentiles)
 //     are only trustworthy when one Flush is in flight at a time.
+//
+// Reading (Instance): the binary per-CPU pipes (per_cpu/cpuN/trace_pipe_raw)
+// when the kernel offers them and the events' format files decode, one
+// goroutine per CPU and a merger that restores the time order; else the
+// text trace_pipe (ParseLine), which also stays the reference the tests
+// compare the raw path with. The raw path is verified only against pages
+// built by the tests (internal/tracefake), not on a running kernel.
 package flushtrace
 
 import "strings"

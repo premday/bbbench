@@ -28,7 +28,7 @@ func statsFields(s Stats) string {
 // device and per summary (kind, direction), then one data line per window
 // stamped at the window END:
 //
-//	# bbbench-iolat-log v1 avg_msec=1000 offset_ms=10000 overrun=0 lost=0
+//	# bbbench-iolat-log v1 avg_msec=1000 offset_ms=10000 overrun=0 lost=0 reader=raw clock=mono
 //	# device nvme0n1 source=nvme exact=true block_layer=true unpaired=0 pair=ctrl,qid,cmdid events=a->b,c->d
 //	# device md0 source=bio exact=false block_layer=false unpaired=0 bio_based=true pair=dev,sector,nr_sectors events=block_bio_queue->block_bio_complete
 //	# summary nvme0n1 device r count=312 mean_ns=85000.5 min_ns=60000 max_ns=410000 p50_ns=84000 p99_ns=120000
@@ -38,13 +38,27 @@ func statsFields(s Stats) string {
 //
 // The kind is device, blocklayer or bio (the bios of a bio-based node).
 // bio_based=true marks a device without a blk-mq queue (an md or dm node);
-// it is absent when false, so logs written before it read the same.
+// it is absent when false, so logs written before it read the same. The
+// header's reader, clock, late and reader_note (URL-escaped) are absent in
+// older logs.
 func WriteLog(w io.Writer, r Result) error {
 	bw := bufio.NewWriter(w)
 	s := &r.Summary
 	fmt.Fprintf(bw, "%s avg_msec=%d offset_ms=%d overrun=%d lost=%d", logMagic, s.AvgMsec, s.OffsetMs, s.Overrun, s.Lost)
 	if s.StartMissing {
 		fmt.Fprint(bw, " start_missing=true")
+	}
+	if s.Reader != "" {
+		fmt.Fprintf(bw, " reader=%s", s.Reader)
+	}
+	if s.Clock != "" {
+		fmt.Fprintf(bw, " clock=%s", s.Clock)
+	}
+	if s.Late > 0 {
+		fmt.Fprintf(bw, " late=%d", s.Late)
+	}
+	if s.ReaderNote != "" {
+		fmt.Fprintf(bw, " reader_note=%s", url.QueryEscape(s.ReaderNote))
 	}
 	fmt.Fprintln(bw)
 	for _, d := range s.Devices {
@@ -108,6 +122,14 @@ func ReadLog(rd io.Reader) (Result, error) {
 					res.Summary.Overrun = n
 				case "start_missing":
 					res.Summary.StartMissing = v == "true"
+				case "reader":
+					res.Summary.Reader = v
+				case "clock":
+					res.Summary.Clock = v
+				case "late":
+					res.Summary.Late = n
+				case "reader_note":
+					res.Summary.ReaderNote, _ = url.QueryUnescape(v)
 				}
 			}
 			continue

@@ -108,7 +108,18 @@ type Summary struct {
 	StartMissing bool            `json:"start_missing,omitempty"`
 	Devices      []DeviceSummary `json:"devices"`
 	Lost         int64           `json:"lost"` // Overrun + every Unpaired
-	Text         string          `json:"text"` // SourceLine
+	// Reader is how the events were read: flushtrace.ReaderRaw (binary
+	// per-CPU pages) or flushtrace.ReaderText (trace_pipe); ReaderNote why
+	// the raw reader was not used, or what it could not decode. Clock is the
+	// instance's trace clock.
+	Reader     string `json:"reader,omitempty"`
+	ReaderNote string `json:"reader_note,omitempty"`
+	Clock      string `json:"clock,omitempty"`
+	// Late counts the events the raw reader's merge received after a newer
+	// one had been fed: they were fed out of order. A pair one broke is in
+	// Unpaired, so Late is not added to Lost.
+	Late int64  `json:"late,omitempty"`
+	Text string `json:"text"` // SourceLine
 	// TextDevice and TextBlockLayer are SourceLineOf for each kind: the
 	// source lines of the Device and the Block-layer latency cards (a
 	// bio-based node's bio series is on the Device latency card).
@@ -319,6 +330,8 @@ func (s *Session) Stop() (Result, error) {
 		res.Summary = sum
 	})
 	res.Summary.Overrun = s.inst.Overrun()
+	res.Summary.Reader, res.Summary.ReaderNote = s.inst.Reader(), s.inst.ReaderNote()
+	res.Summary.Clock, res.Summary.Late = s.inst.Clock(), s.inst.Late()
 	res.Summary.StartMissing = s.inst.StartNs() == 0
 	res.Summary.Fill()
 	return res, err

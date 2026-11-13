@@ -152,6 +152,7 @@ func run(t *testing.T, devices []string, events []string, sys string, opts Optio
 		t.Fatalf("Start: %v", err)
 	}
 	res, _ := s.Stop() // the fake instance directory is not empty: a cleanup error is expected
+	checkRawLikeText(t, devices, events, sys, opts, lines, res)
 	return res, inst
 }
 
