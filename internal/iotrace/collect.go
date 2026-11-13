@@ -74,6 +74,49 @@ func parseBlockRq(p string, withBytes bool) (blockRq, bool) {
 	return r, true
 }
 
+// blockOf returns the block_rq_* fields of an event: decoded by the raw
+// reader, else parsed from the text payload.
+func blockOf(ev flushtrace.Event, withBytes bool) (blockRq, bool) {
+	if f := &ev.F; f.Decoded {
+		return blockRq{Maj: f.Major(), Min: f.Minor(), RWBS: f.RWBS, Sector: f.Sector, Nr: f.NrSector}, true
+	}
+	return parseBlockRq(ev.Payload, withBytes)
+}
+
+// bioOf is blockOf for block_bio_queue and block_bio_complete.
+func bioOf(ev flushtrace.Event) (blockRq, bool) {
+	if f := &ev.F; f.Decoded {
+		return blockRq{Maj: f.Major(), Min: f.Minor(), RWBS: f.RWBS, Sector: f.Sector, Nr: f.NrSector}, true
+	}
+	return parseBlockBio(ev.Payload)
+}
+
+// nvmeSetupOf returns the nvme_setup_cmd fields of an event; op is the
+// command name the text shows (nvme_cmd_read, nvme_cmd_write, ...) for an
+// I/O queue, "" for an opcode the collectors do not time.
+func nvmeSetupOf(ev flushtrace.Event) (ctrl, disk string, qid, cmdid int, op string, ok bool) {
+	if f := &ev.F; f.Decoded {
+		if f.QID > 0 {
+			switch f.Opcode {
+			case 1:
+				op = "nvme_cmd_write"
+			case 2:
+				op = "nvme_cmd_read"
+			}
+		}
+		return f.Ctrl, f.Disk, int(f.QID), int(f.CID), op, true
+	}
+	return parseNVMeSetup(ev.Payload)
+}
+
+// nvmeDoneOf returns the nvme_complete_rq fields of an event.
+func nvmeDoneOf(ev flushtrace.Event) (ctrl string, qid, cmdid int, ok bool) {
+	if f := &ev.F; f.Decoded {
+		return f.Ctrl, int(f.QID), int(f.CID), true
+	}
+	return parseNVMeDone(ev.Payload)
+}
+
 // parseBlockBio parses a block_bio_queue or block_bio_complete payload
 // (TP_printk "%d,%d %s %llu + %u [%s]", the last field the comm of a queue,
 // the error of a completion):
@@ -435,7 +478,7 @@ func (c *collector) feed(ev flushtrace.Event, startNs int64) {
 func (c *collector) blockDev(r blockRq) *device { return c.byNum[devNum{r.Maj, r.Min}] }
 
 func (c *collector) blockQueued(ev flushtrace.Event) {
-	r, ok := parseBlockRq(ev.Payload, true)
+	r, ok := blockOf(ev, true)
 	if !ok {
 		return
 	}
@@ -485,7 +528,7 @@ func (c *collector) blockQueued(ev flushtrace.Event) {
 }
 
 func (c *collector) blockComplete(ev flushtrace.Event, startNs int64) {
-	r, ok := parseBlockRq(ev.Payload, false)
+	r, ok := blockOf(ev, false)
 	if !ok {
 		return
 	}
@@ -531,7 +574,7 @@ func (c *collector) blockComplete(ev flushtrace.Event, startNs int64) {
 
 // bioQueued records a read or write bio submitted to a bio-based node.
 func (c *collector) bioQueued(ev flushtrace.Event) {
-	r, ok := parseBlockBio(ev.Payload)
+	r, ok := bioOf(ev)
 	if !ok {
 		return
 	}
@@ -555,7 +598,7 @@ func (c *collector) bioQueued(ev flushtrace.Event) {
 // part the node split off (bio_split + bio_chain): it is not counted, the
 // whole bio is when its remainder completes. Anything else is unpaired.
 func (c *collector) bioComplete(ev flushtrace.Event, startNs int64) {
-	r, ok := parseBlockBio(ev.Payload)
+	r, ok := bioOf(ev)
 	if !ok {
 		return
 	}
@@ -593,7 +636,7 @@ func (c *collector) bioComplete(ev flushtrace.Event, startNs int64) {
 }
 
 func (c *collector) nvmeSetup(ev flushtrace.Event) {
-	ctrl, disk, qid, cmdid, op, ok := parseNVMeSetup(ev.Payload)
+	ctrl, disk, qid, cmdid, op, ok := nvmeSetupOf(ev)
 	if !ok || qid == 0 {
 		return
 	}
@@ -631,7 +674,7 @@ func (c *collector) nvmeSetup(ev flushtrace.Event) {
 // by opcode, so those of Flushes, discards and admin commands (whose setup
 // the kernel filter drops) look the same.
 func (c *collector) nvmeComplete(ev flushtrace.Event, startNs int64) {
-	ctrl, qid, cmdid, ok := parseNVMeDone(ev.Payload)
+	ctrl, qid, cmdid, ok := nvmeDoneOf(ev)
 	if !ok || qid == 0 {
 		return
 	}

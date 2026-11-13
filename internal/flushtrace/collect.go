@@ -123,6 +123,10 @@ func NewNVMe(disk string) *NVMe {
 }
 
 func (c *NVMe) Feed(ev Event) {
+	if ev.F.Decoded {
+		c.feedDecoded(ev)
+		return
+	}
 	switch ev.Name {
 	case "nvme_setup_cmd":
 		m := nvmeSetupRe.FindStringSubmatch(ev.Payload)
@@ -141,6 +145,32 @@ func (c *NVMe) Feed(ev Event) {
 			c.s.add(ev.TimeNs, ev.TimeNs-t0)
 		}
 	}
+}
+
+// feedDecoded is Feed for an event of the raw reader: the same pairing on
+// the decoded fields. A Flush is opcode 0 on an I/O queue (the text shows
+// it as cmd=(nvme_cmd_flush ...); opcode 0 on the admin queue is another
+// command).
+func (c *NVMe) feedDecoded(ev Event) {
+	f := &ev.F
+	switch ev.Name {
+	case "nvme_setup_cmd":
+		if f.Opcode != 0 || f.QID <= 0 || f.Disk != c.disk {
+			return
+		}
+		c.pending[nvmeKeyOf(f)] = ev.TimeNs
+	case "nvme_complete_rq":
+		key := nvmeKeyOf(f)
+		if t0, ok := c.pending[key]; ok {
+			delete(c.pending, key)
+			c.s.add(ev.TimeNs, ev.TimeNs-t0)
+		}
+	}
+}
+
+// nvmeKeyOf is the pending key of the text path ("ctrl/qid/cmdid").
+func nvmeKeyOf(f *Fields) string {
+	return strconv.Itoa(int(f.CtrlID)) + "/" + strconv.Itoa(int(f.QID)) + "/" + strconv.Itoa(int(f.CID))
 }
 
 func (c *NVMe) Summary() Summary  { return c.s.summary("nvme", true, len(c.pending)) }
@@ -187,8 +217,11 @@ func NewBio(major, minor int) *Block {
 		issueEv: "block_bio_queue", doneEv: "block_bio_complete", issueRe: bioRe, doneRe: bioRe}
 }
 
-func (c *Block) isFlush(re *regexp.Regexp, payload string) bool {
-	m := re.FindStringSubmatch(payload)
+func (c *Block) isFlush(re *regexp.Regexp, ev Event) bool {
+	if f := &ev.F; f.Decoded {
+		return strings.HasPrefix(f.RWBS, "F") && f.NrSector == 0 && f.Major() == c.major && f.Minor() == c.minor
+	}
+	m := re.FindStringSubmatch(ev.Payload)
 	if m == nil || !strings.HasPrefix(m[3], "F") || m[4] != "0" {
 		return false
 	}
@@ -200,11 +233,11 @@ func (c *Block) isFlush(re *regexp.Regexp, payload string) bool {
 func (c *Block) Feed(ev Event) {
 	switch ev.Name {
 	case c.issueEv:
-		if c.isFlush(c.issueRe, ev.Payload) {
+		if c.isFlush(c.issueRe, ev) {
 			c.pending = append(c.pending, ev.TimeNs)
 		}
 	case c.doneEv:
-		if c.isFlush(c.doneRe, ev.Payload) && len(c.pending) > 0 {
+		if c.isFlush(c.doneRe, ev) && len(c.pending) > 0 {
 			t0 := c.pending[0]
 			c.pending = c.pending[1:]
 			c.s.add(ev.TimeNs, ev.TimeNs-t0)

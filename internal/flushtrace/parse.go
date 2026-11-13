@@ -20,7 +20,10 @@ import "strings"
 type Event struct {
 	TimeNs  int64  // timestamp in nanoseconds
 	Name    string // event name, e.g. "block_rq_issue"
-	Payload string // the event's own fields, as printed by the kernel
+	Payload string // the event's own fields, as printed by the kernel (text reader; a marker's text on the raw reader)
+	// F holds the fields decoded from a binary page (raw reader, F.Decoded);
+	// the text reader leaves it zero and the collectors parse Payload.
+	F Fields
 }
 
 // ParseLine parses one ftrace text line, e.g.
