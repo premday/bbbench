@@ -382,6 +382,23 @@ var groupFilters = `
         <div class="fg"><ul class="flist"><li><label><input type="checkbox" id="hide-invalid" checked>&nbsp;Hide invalid results</label></li></ul></div>
         </div>`
 
+// scaleSelector is the sidebar's Y scale selector (SCALE_CRITERIA in the
+// page): the y range and SI prefix of the cards, per phase (default), one
+// per metric over the whole page, or per card. It applies at once
+// (setScaleCriterion), without Show Graphs; autocomplete off so a page
+// restored from the browser cache does not show another choice than the
+// one in use.
+var scaleSelector = `
+        <div class="fg">
+            <div class="fg-hdr"><label class="fg-title" for="y-scale">Y scale</label></div>
+            <select id="y-scale" class="fsel" autocomplete="off"
+                    title="Global: one range per graph type over every phase; Per phase: one range per phase; Per graph: each graph its own range">
+                <option value="global">Global</option>
+                <option value="phase" selected>Per phase</option>
+                <option value="graph">Per graph</option>
+            </select>
+        </div>`
+
 // handleGraphsPage serves the graphs visualization page (?id=<run> or
 // ?group=<group>).
 func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
@@ -395,6 +412,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
 	// The setting filter and the invalid toggle are shown only for data of
 	// labelled drives (a run group); a plain run never sees them.
 	sidebar := filterGroup("graph_type", "Graph Type") +
+		scaleSelector +
 		groupFilters +
 		filterGroup("technology", "Drive Type") +
 		filterGroup("vendor", "Vendor") +
@@ -440,6 +458,8 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .fg-allnone a { font-size: 11px; color: #2563eb; text-decoration: none; }
         .fg-allnone a:hover { text-decoration: underline; }
         .flist { list-style: none; }
+        .fsel { width: 100%; font: inherit; font-size: 11px; color: #334155; padding: 3px 4px;
+                border: 1px solid #cbd5e1; border-radius: 5px; background: #fff; cursor: pointer; }
         .flist li label {
             display: flex; align-items: flex-start; gap: 5px;
             font-size: 11px; color: #334155; cursor: pointer;
@@ -1103,7 +1123,8 @@ __NAVBAR_HTML__
     }
 
     // phaseScale is the SI scale of a card (siScale): its prefix is chosen
-    // from the data maximum of its phase, not from the axis maximum, which
+    // from the data maximum of its y range (the phase's, the metric's or the
+    // card's own, per the Y scale criterion), not from the axis maximum, which
     // has 15% headroom (a 900 MiB/s peak must stay 944M, not become an axis
     // in G that stops at 1.09). A card plots in the base unit: its values and
     // its yLow/yHigh are multiplied by sc.mul.
@@ -1608,7 +1629,7 @@ __NAVBAR_HTML__
         if (metric.key === 'flush') return makeFlushChart(canvas, d, metric, yHigh);
         if (iolatKind(metric)) return makeIOLatChart(canvas, d, metric, yLow, yHigh);
         if (memberMetric(d, metric)) return makeMembersChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
-        // One unit for every card of the phase: chosen from the phase's scale.
+        // The card's unit: chosen from its range (the Y scale criterion).
         const sc = phaseScale(metric, yLow, yHigh);
         const cd = chartDatasets(d, metric, mode);
         const datasets = toBase(cd.datasets, sc);
@@ -1761,11 +1782,11 @@ __NAVBAR_HTML__
         });
         return out;
     }
-    // phaseExtent is the y range of a phase's cards (metric units, with
-    // AXIS_HEADROOM) over the series they show: each value, or for a stacked
-    // chart the sum of each stack per window (read and write apart, as
-    // Chart.js stacks them). Nothing shown, or only zeros: 0..1.
-    function phaseExtent(phaseData, metric, mode) {
+    // phaseRange is the data range {yMax, yMin} (metric units, no headroom,
+    // 0 when nothing is above or below zero) of the cards of phaseData over
+    // the series they show: each value, or for a stacked chart the sum of
+    // each stack per window (read and write apart, as Chart.js stacks them).
+    function phaseRange(phaseData, metric, mode) {
         let yMax = 0, yMin = 0;
         const see = v => { if (v > yMax) yMax = v; if (v < yMin) yMin = v; };
         const val = p => typeof p === 'number' ? p : (p && p.y !== null && p.y !== undefined ? p.y : 0);
@@ -1785,13 +1806,70 @@ __NAVBAR_HTML__
             });
             Object.values(sums).forEach(s => s.forEach(e => { see(e.pos); see(e.neg); }));
         });
+        return {yMax, yMin};
+    }
+    // rangeExtent turns a data range (phaseRange) into the y range of a card
+    // {yLow, yHigh}, with AXIS_HEADROOM. Nothing shown, or only zeros: 0..1.
+    function rangeExtent(r) {
         return {
-            yHigh: yMax > 0 ? yMax * AXIS_HEADROOM : (yMin < 0 ? 0 : 1),
-            yLow: yMin < 0 ? yMin * AXIS_HEADROOM : 0,
+            yHigh: r.yMax > 0 ? r.yMax * AXIS_HEADROOM : (r.yMin < 0 ? 0 : 1),
+            yLow: r.yMin < 0 ? r.yMin * AXIS_HEADROOM : 0,
         };
     }
-    // REFILL maps a metric key to the fill() of each of its phases (renderAll
-    // resets it): a toggle redraws the cards of that metric only.
+    // phaseExtent is the y range of a phase's cards (phaseRange, rangeExtent).
+    function phaseExtent(phaseData, metric, mode) {
+        return rangeExtent(phaseRange(phaseData, metric, mode));
+    }
+
+    // ── Y scale criterion ──
+    // SCALE_CRITERIA are the choices of the sidebar's Y scale selector, the
+    // y range and SI prefix a card is drawn on: 'phase' (default) one per
+    // phase, shared by its cards; 'global' one per metric over all its
+    // phases on the page, each phase contributing in its own graph mode, so
+    // every card of the metric compares directly; 'graph' each card its own.
+    // Hidden series never count. The time axis (X_MAX) is not part of it.
+    // scaleCriterion is page memory only, like HIDDEN and graphModeOf.
+    const SCALE_CRITERIA = [['global', 'Global'], ['phase', 'Per phase'], ['graph', 'Per graph']];
+    let scaleCriterion = 'phase';
+    // scaleScope gives the y range of every card under criterion: phases is
+    // [{phaseData, mode}] (the phases of one metric), the result one array
+    // per phase with one {yLow, yHigh} per card of phaseData. An unknown
+    // criterion is 'phase'. Global takes the union of the phases' data
+    // ranges, so a phase with nothing to draw does not widen it to 0..1.
+    function scaleScope(criterion, phases, metric) {
+        if (criterion === 'graph') return phases.map(p => p.phaseData.map(d => phaseExtent([d], metric, p.mode)));
+        if (criterion === 'global') {
+            const all = {yMax: 0, yMin: 0};
+            phases.forEach(p => {
+                const r = phaseRange(p.phaseData, metric, p.mode);
+                all.yMax = Math.max(all.yMax, r.yMax);
+                all.yMin = Math.min(all.yMin, r.yMin);
+            });
+            const e = rangeExtent(all);
+            return phases.map(p => p.phaseData.map(() => e));
+        }
+        return phases.map(p => { const e = phaseExtent(p.phaseData, metric, p.mode); return p.phaseData.map(() => e); });
+    }
+    // SCALE_PHASES maps a metric key to its phases on the page, [{pname,
+    // phaseData}] in the order of REFILL[metric.key] (renderAll resets it).
+    let SCALE_PHASES = {};
+    // metricScales is scaleScope of the metric's phases on the page, each in
+    // its current graph mode, under the active criterion.
+    function metricScales(metric) {
+        return scaleScope(scaleCriterion, (SCALE_PHASES[metric.key] || []).map(p =>
+            ({phaseData: p.phaseData, mode: graphMode(metric, p.pname)})), metric);
+    }
+    // setScaleCriterion selects a criterion (an unknown one is 'phase') and
+    // redraws every metric on the page (applyShown: cards and open modal);
+    // series toggles, graph modes and folded sections are kept.
+    function setScaleCriterion(v) {
+        scaleCriterion = SCALE_CRITERIA.some(c => c[0] === v) ? v : 'phase';
+        METRICS.filter(m => REFILL[m.key]).forEach(m => applyShown(m));
+    }
+    // REFILL maps a metric key to the fill(ext) of each of its phases, ext
+    // being that phase's card ranges (metricScales; renderAll resets it): a
+    // toggle redraws every phase of that metric only, so under Global the
+    // untouched phases follow the new range.
     let REFILL = {};
     // ROW_BOXES maps '<where>|<skey>' to the checkbox of the series row now
     // shown there (where = a card's chart id or 'modal:<metric>'), so a
@@ -1833,14 +1911,32 @@ __NAVBAR_HTML__
         });
         return row;
     }
+    // refillMetric redraws every phase of the metric on its card ranges
+    // under the active criterion (metricScales) and returns those ranges.
+    function refillMetric(metric) {
+        const ext = metricScales(metric);
+        (REFILL[metric.key] || []).forEach((f, i) => f(ext[i]));
+        return ext;
+    }
     // applyShown redraws every phase of the metric, and the modal when it
-    // shows that metric, on the scale of the series now shown.
+    // shows that metric, on the scale of the series now shown, the graph
+    // modes and the criterion.
     function applyShown(metric) {
-        (REFILL[metric.key] || []).forEach(f => f());
+        const ext = refillMetric(metric);
         if (modalCtx && modalCtx.metric.key === metric.key) {
-            const c = modalCtx, e = phaseExtent(c.phaseData || [c.d], metric, c.mode);
+            const c = modalCtx, e = modalExtent(c, ext);
             openModal(c.d, c.metric, e.yLow, e.yHigh, c.mode, c.pname, c.phaseData);
         }
+    }
+    // modalExtent is the y range of the open modal's card c: its entry in
+    // ext (metricScales), or its phase's own range when the card is not on
+    // the page.
+    function modalExtent(c, ext) {
+        const phases = SCALE_PHASES[c.metric.key] || [];
+        const pi = phases.findIndex(p => p.pname === c.pname);
+        const j = pi < 0 ? -1 : phases[pi].phaseData.indexOf(c.d);
+        if (j >= 0 && ext && ext[pi] && ext[pi][j]) return ext[pi][j];
+        return phaseExtent(c.phaseData || [c.d], c.metric, c.mode);
     }
 
     // ── Modal ──
@@ -1960,6 +2056,7 @@ __NAVBAR_HTML__
     function renderAll() {
         destroyAllCharts();
         REFILL = {};
+        SCALE_PHASES = {};
         ROW_BOXES = {};
         const main = document.getElementById('main');
         main.innerHTML = '';
@@ -2049,15 +2146,17 @@ __NAVBAR_HTML__
                 grid.className = 'chart-grid';
                 phaseBody.appendChild(grid);
 
-                // (Re)draws this phase's cards in its current graph mode.
-                const fill = () => {
-                    const mode = graphMode(metric, pname), sc = phaseExtent(phaseData, metric, mode);
+                // (Re)draws this phase's cards in its current graph mode, each
+                // on its range in ext (metricScales: the Y scale criterion).
+                const fill = ext => {
+                    const mode = graphMode(metric, pname);
                     Object.keys(charts).forEach(id => {
                         if (id.indexOf(metric.key + ':' + pname + ':') === 0) { charts[id].destroy(); delete charts[id]; }
                     });
                     grid.innerHTML = '';
                     phaseData.forEach((d, i) => {
                         const cid = metric.key + ':' + pname + ':' + i;
+                        const sc = (ext && ext[i]) || phaseExtent([d], metric, mode);
                         grid.appendChild(makeChartCard(d, metric, cid, sc.yLow, sc.yHigh, mode, pname, phaseData));
                     });
                     toggle.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
@@ -2068,17 +2167,22 @@ __NAVBAR_HTML__
                 GRAPH_MODES.forEach(([key, label]) => {
                     const b = document.createElement('button');
                     b.type = 'button'; b.dataset.mode = key; b.textContent = label;
-                    b.addEventListener('click', e => { e.stopPropagation(); graphModeOf[metric.key + ':' + pname] = key; fill(); });
+                    // Every phase of the metric is redrawn: under Global the
+                    // mode of one phase moves the range of the others.
+                    b.addEventListener('click', e => { e.stopPropagation(); graphModeOf[metric.key + ':' + pname] = key; applyShown(metric); });
                     toggle.appendChild(b);
                 });
                 if (metric.key !== 'lat' && phaseData.some(d => memberMetric(d, metric))) phaseHdr.appendChild(toggle);
                 (REFILL[metric.key] || (REFILL[metric.key] = [])).push(fill);
-                fill();
+                (SCALE_PHASES[metric.key] || (SCALE_PHASES[metric.key] = [])).push({pname, phaseData});
             });
+            // Drawn once all its phases are known (a Global range needs them all).
+            refillMetric(metric);
         });
     }
 
     document.getElementById('btn-show').addEventListener('click', renderAll);
+    document.getElementById('y-scale').addEventListener('change', e => setScaleCriterion(e.target.value));
     document.getElementById('hide-invalid').addEventListener('change', e => setShowInvalid(!e.target.checked));
 
     fetch(DATA_URL)

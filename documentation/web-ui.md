@@ -61,6 +61,7 @@ The left sidebar provides filters that update the displayed graphs in real time:
 | Filter | Description |
 |--------|-------------|
 | **Graph Type** | Toggle IOPS, Bandwidth, Latency, Flush latency, Device latency (ftrace) and Block-layer latency (ftrace) charts independently. |
+| **Y scale** | How the cards share a y range and SI prefix: **Per phase** (default), **Global** or **Per graph** (see *Y scale* below). Applies at once, without **Show Graphs**. |
 | **Drive Type** | Narrow down to HDD or SSD results. |
 | **Vendor / Model / Serial** | Select specific hardware identities. |
 | **Disk** | Choose which drives to include. |
@@ -72,7 +73,15 @@ The left sidebar provides filters that update the displayed graphs in real time:
 
 Each matching combination of disk × phase is rendered as its own graph card. Click a card to maximize it; press **Esc** to return to the grid.
 
-**Units.** A chart plots its metric in the base unit and prints the numbers with an SI prefix letter: bandwidth in bytes/s (fio's KiB/s * 1024, so `2.4G` is 2.4 * 10^9 bytes/s, and 2300 MiB/s reads `2.41G`), IOPS, and latency and Flush latency in seconds (`800μ`, `2.5m`). The prefix (k, M, G, T, P; for seconds n, μ, m) is chosen from the largest value of the phase, so every card of a phase uses the same one, with the axis headroom left out (a 900 MiB/s peak reads `944M`, not `0.94G`). The y axis is titled with the base unit (`bytes/s`, `IOPS`, `s`), ticks show the prefixed number (`1.5G`) and the hover adds the unit (`Read: 2.41G bytes/s`, `Stack total read: 2.41G bytes/s`). The data is unchanged. The compare chart picks its prefix the same way from the largest value it plots, its axis title names the base unit (`Bandwidth (bytes/s)`).
+**Units.** A chart plots its metric in the base unit and prints the numbers with an SI prefix letter: bandwidth in bytes/s (fio's KiB/s * 1024, so `2.4G` is 2.4 * 10^9 bytes/s, and 2300 MiB/s reads `2.41G`), IOPS, and latency and Flush latency in seconds (`800μ`, `2.5m`). The prefix (k, M, G, T, P; for seconds n, μ, m) is chosen from the largest value of the card's y range (by default the phase's, so every card of a phase uses the same one; see *Y scale*), with the axis headroom left out (a 900 MiB/s peak reads `944M`, not `0.94G`). The y axis is titled with the base unit (`bytes/s`, `IOPS`, `s`), ticks show the prefixed number (`1.5G`) and the hover adds the unit (`Read: 2.41G bytes/s`, `Stack total read: 2.41G bytes/s`). The data is unchanged. The compare chart picks its prefix the same way from the largest value it plots, its axis title names the base unit (`Bandwidth (bytes/s)`).
+
+**Y scale.** The sidebar's **Y scale** selector decides which cards share a y range (and so an SI prefix):
+
+- **Per phase** (default): the cards of a phase share one range, from the largest shown value of that phase.
+- **Global**: every card of a graph type (IOPS, Bandwidth, Latency, ...) has the same range over all its phases on the page, so cards compare directly across phases. Each phase counts in its own Normal | Stacked mode (a stacked phase by its stack tops). A phase of very different magnitude sets the prefix of all of them: next to an HDD phase in seconds, an SSD phase's microseconds read as `0.00010 s` and its line lies close to zero.
+- **Per graph**: each card has its own range and prefix from its own shown series, so cards of one phase may show different prefixes (each axis still names its unit).
+
+Hidden series never count; a card or a range with nothing shown is 0..1. Changing the criterion, a series checkbox or a phase's mode redraws every card of the graph type (under Global the other phases follow) and the enlarged chart; checkboxes, modes and folded sections are kept. The choice lasts until the page is reloaded. The time axis is not affected. The compare page keeps its own single-chart scale.
 
 **Time axis.** All time-series graphs use one x axis, in seconds from the start of the phase, from 0 to the longest series shown, so cards line up. fio's `ramp_time` is shaded as **ramp-up**: fio logs nothing during it, so the fio curves start where it ends. A point is the average over one polling window (`--log-avg-msec`) and is drawn at the start of its window; hover it to see the window. fio stamps the end of a window, so its points are moved back by one window, which keeps the first point at the end of the ramp-up instead of one interval later.
 

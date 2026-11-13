@@ -491,7 +491,7 @@ func TestGraphsPageMemberGrid(t *testing.T) {
 	for _, f := range []string{"rampOf", "windowOf", "fioShift", "memberNames", "memberStep", "memberKey",
 		"memberGrid", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets",
 		"iolatKind", "iolatPoints", "ftraceDatasets", "memberColors", "memberMetric", "memberLatencyDatasets", "ftraceOnGrid",
-		"isShown", "setShown", "chartDatasets", "phaseExtent"} {
+		"isShown", "setShown", "chartDatasets", "phaseRange", "rangeExtent", "phaseExtent"} {
 		js.WriteString(jsFunction(t, body, f))
 		js.WriteString("\n")
 	}
@@ -909,7 +909,7 @@ console.log('OK');
 var ftraceFuncs = []string{"windowOf", "memberStep", "memberKey", "memberColors", "rgba",
 	"iolatKind", "iolatPtsHave", "iolatMembersHave", "iolatStatsHas", "iolatHasKind", "iolatBlkHas", "iolatBlkNoneText",
 	"iolatPoints", "iolatMean", "ftraceDatasets", "iolatNone", "siScale", "fmtScaled", "toBase",
-	"rampOf", "fioShift", "memberMetric", "isShown", "chartDatasets", "phaseExtent"}
+	"rampOf", "fioShift", "memberMetric", "isShown", "chartDatasets", "phaseRange", "rangeExtent", "phaseExtent"}
 
 const ftraceTestPrelude = `
 const assert = require('assert');
@@ -1153,7 +1153,7 @@ console.log('OK');
 var seriesFuncs = []string{"rampOf", "windowOf", "fioShift", "memberMetric", "memberNames", "memberColors", "rgba",
 	"memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "stackedMemberDatasets", "memberLatencyDatasets",
 	"arrayDatasets", "iolatKind", "iolatPoints", "iolatMean", "ftraceDatasets", "ftraceOnGrid",
-	"isShown", "setShown", "chartDatasets", "cardSeries", "phaseExtent"}
+	"isShown", "setShown", "chartDatasets", "cardSeries", "phaseRange", "rangeExtent", "phaseExtent"}
 
 const seriesTestPrelude = `
 const assert = require('assert');
@@ -1334,7 +1334,7 @@ func TestGraphsPageSeriesRowStopsPropagation(t *testing.T) {
 		}
 	}
 	for fn, want := range map[string]string{"makeChartCard": "seriesRow(d, metric, mode, cid)", "openModal": "seriesRow(d, metric, mode, 'modal:' + metric.key)",
-		"renderAll": "REFILL = {};", "applyShown": "REFILL[metric.key]"} {
+		"renderAll": "REFILL = {};", "applyShown": "refillMetric(metric)", "refillMetric": "REFILL[metric.key]"} {
 		if !strings.Contains(jsFunction(t, body, fn), want) {
 			t.Errorf("%s lacks %q", fn, want)
 		}
@@ -1345,9 +1345,10 @@ func TestGraphsPageSeriesRowStopsPropagation(t *testing.T) {
 	if !strings.Contains(body, `id="modal-series"`) {
 		t.Error("the modal has no series row")
 	}
-	runPageJS(t, []string{"seriesRow", "applyShown", "isShown", "setShown"}, `
+	runPageJS(t, []string{"seriesRow", "refillMetric", "applyShown", "modalExtent", "isShown", "setShown"}, `
 const assert = require('assert');
-const HIDDEN = {};
+const HIDDEN = {}, SCALE_PHASES = {};
+const metricScales = () => [];
 let REFILL = {}, modalCtx = null, opened = [], ROW_BOXES = {}, focused = null;
 const made = [];
 const document = {createElement: tag => { const e = {tag, children: [], style: {}, dataset: {}, className: '', handlers: {},
@@ -1459,7 +1460,7 @@ func TestGraphsPageNormalModeDrawsMembersAndArray(t *testing.T) {
 	for _, f := range []string{"rampOf", "windowOf", "fioShift", "memberNames", "memberStep", "memberKey",
 		"memberGrid", "memberLabel", "hasDir", "rgba", "stackedMemberDatasets", "arrayDatasets",
 		"iolatKind", "iolatPoints", "ftraceDatasets", "memberColors", "memberMetric", "memberLatencyDatasets", "ftraceOnGrid",
-		"isShown", "setShown", "chartDatasets", "phaseExtent"} {
+		"isShown", "setShown", "chartDatasets", "phaseRange", "rangeExtent", "phaseExtent"} {
 		js.WriteString(jsFunction(t, body, f))
 		js.WriteString("\n")
 	}
@@ -1627,6 +1628,149 @@ const md = {io_trace: {devices: [{block_layer: false, events: ['block_bio_queue 
 assert.deepStrictEqual(ftraceEvents([md], {key: 'iolat'}), ['block_bio_queue -> block_bio_complete', 'block_rq_issue -> block_rq_complete']);
 assert.deepStrictEqual(ftraceEvents([md], {key: 'iolatblk'}), ['block_rq_insert -> block_rq_complete']);
 assert.deepStrictEqual(ftraceEvents([md], {key: 'flush'}), ['block_bio_queue -> block_bio_complete']);
+console.log('OK');
+`)
+}
+
+// scaleTestPrelude adds the phases of TestGraphsPageScaleScope to the series
+// prelude: two SSD drives in ms (500 us and 50 us), an HDD in seconds (2 s
+// reads, 0.3 s writes) and a drive with only a 5 us read.
+const scaleTestPrelude = `
+const close = (a, b, m) => assert.ok(Math.abs(a - b) < 1e-6, (m || '') + ' ' + a + ' != ' + b);
+const closeExt = (e, lo, hi, m) => { close(e.yLow, lo, m + ' yLow'); close(e.yHigh, hi, m + ' yHigh'); };
+const LATU = Object.assign({unit: 'μs'}, LAT), IOPSU = Object.assign({unit: 'IOPS'}, IOPS);
+const lat = pts => ({log_avg_msec: 1000, ramp_sec: 0, ts_lat: pts});
+const a1 = lat([{t: 0, r: 500, w: 0}, {t: 1, r: 400, w: 0}]), a2 = lat([{t: 0, r: 50, w: 0}]);
+const hdd = lat([{t: 0, r: 2e6, w: 3e5}]), small = lat([{t: 0, r: 5, w: 0}]);
+const phases = [{phaseData: [a1, a2], mode: 'normal'}, {phaseData: [hdd], mode: 'normal'}, {phaseData: [small], mode: 'normal'}];
+const prefix = e => phaseScale(LATU, e.yLow, e.yHigh).prefix;
+const noNaN = s => s.forEach(p => p.forEach(e => assert.ok(isFinite(e.yLow) && isFinite(e.yHigh), JSON.stringify(e))));
+`
+
+// TestGraphsPageScaleScope: the Y scale criteria. Per phase gives every card
+// of a phase the phase's range, Global one range over every phase of the
+// metric (each phase in its own graph mode), Per graph each card its own; the
+// SI prefix follows the range; hidden series are left out and nothing shown
+// is 0..1 without NaN.
+func TestGraphsPageScaleScope(t *testing.T) {
+	funcs := append(append([]string{}, seriesFuncs...), "siScale", "phaseScale", "scaleScope")
+	runPageJS(t, funcs, seriesTestPrelude+scaleTestPrelude+`
+const H = 1.15;
+// Per phase (today's behaviour): one range per phase.
+let s = scaleScope('phase', phases, LATU);
+assert.strictEqual(s.length, 3);
+assert.deepStrictEqual(s.map(p => p.length), [2, 1, 1]);
+closeExt(s[0][0], 0, 500 * H, 'phase A'); assert.deepStrictEqual(s[0][1], s[0][0]);
+closeExt(s[1][0], -3e5 * H, 2e6 * H, 'phase hdd');
+closeExt(s[2][0], 0, 5 * H, 'phase small');
+assert.deepStrictEqual(s.map(p => prefix(p[0])), ['μ', '', 'μ']);
+// An unknown criterion is Per phase.
+assert.deepStrictEqual(scaleScope('bogus', phases, LATU), s);
+// Global: the HDD's seconds set the range and the prefix of every card.
+s = scaleScope('global', phases, LATU);
+s.forEach((p, i) => p.forEach((e, j) => closeExt(e, -3e5 * H, 2e6 * H, 'global ' + i + ':' + j)));
+assert.ok(s.every(p => p.every(e => prefix(e) === '')));
+// Per graph: each card its own range and prefix.
+s = scaleScope('graph', phases, LATU);
+closeExt(s[0][0], 0, 500 * H, 'graph a1'); closeExt(s[0][1], 0, 50 * H, 'graph a2');
+closeExt(s[1][0], -3e5 * H, 2e6 * H, 'graph hdd'); closeExt(s[2][0], 0, 5 * H, 'graph small');
+assert.deepStrictEqual([prefix(s[0][1]), prefix(s[1][0])], ['μ', '']);
+// A phase with nothing to draw does not pull the global range to 0..1.
+s = scaleScope('global', [{phaseData: [{}], mode: 'normal'}, {phaseData: [small], mode: 'normal'}], LATU);
+closeExt(s[0][0], 0, 5 * H, 'global empty+small'); closeExt(s[1][0], 0, 5 * H, 'global small');
+// Hidden series are left out under every criterion; nothing left is 0..1.
+setShown('lat', 'fio.r', false);
+s = scaleScope('global', phases, LATU);
+s.forEach(p => p.forEach(e => closeExt(e, -3e5 * H, 0, 'global writes only')));
+s = scaleScope('phase', phases, LATU);
+assert.deepStrictEqual(s[0][0], {yLow: 0, yHigh: 1}); assert.deepStrictEqual(s[2][0], {yLow: 0, yHigh: 1});
+s = scaleScope('graph', phases, LATU);
+assert.deepStrictEqual(s[0][1], {yLow: 0, yHigh: 1});
+setShown('lat', 'fio.w', false);
+['global', 'phase', 'graph'].forEach(c => {
+    const all = scaleScope(c, phases, LATU);
+    noNaN(all);
+    all.forEach(p => p.forEach(e => assert.deepStrictEqual(e, {yLow: 0, yHigh: 1}, c)));
+    assert.ok(all.every(p => p.every(e => isFinite(phaseScale(LATU, e.yLow, e.yHigh).div))));
+});
+setShown('lat', 'fio.r', true); setShown('lat', 'fio.w', true);
+// Each phase contributes in its own graph mode: the stacked phase's stack
+// top (600 / 300) sets the global range, the normal one its lines.
+const a = array();
+const normal = phaseExtent([a], IOPSU, 'normal');
+s = scaleScope('global', [{phaseData: [a], mode: 'stacked'}, {phaseData: [array()], mode: 'normal'}], IOPSU);
+s.forEach(p => closeExt(p[0], -300 * H, 600 * H, 'global stacked+normal'));
+s = scaleScope('global', [{phaseData: [a], mode: 'normal'}, {phaseData: [array()], mode: 'normal'}], IOPSU);
+s.forEach(p => assert.deepStrictEqual(p[0], normal));
+s = scaleScope('phase', [{phaseData: [a], mode: 'stacked'}, {phaseData: [array()], mode: 'normal'}], IOPSU);
+closeExt(s[0][0], -300 * H, 600 * H, 'phase stacked'); assert.deepStrictEqual(s[1][0], normal);
+assert.deepStrictEqual(scaleScope('global', [], LATU), []);
+console.log('OK');
+`)
+}
+
+// TestGraphsPageScaleCriterionRefill: changing the criterion, a series toggle
+// or a phase's graph mode refills every phase of the metric on the scale of
+// the active criterion (under Global the untouched phases too), and the open
+// modal is drawn again on its card's new range.
+func TestGraphsPageScaleCriterionRefill(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{`<select id="y-scale"`, `<option value="global">Global</option>`,
+		`<option value="phase" selected>Per phase</option>`, `<option value="graph">Per graph</option>`, "Y scale"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graphs page lacks %q", want)
+		}
+	}
+	ra := jsFunction(t, body, "renderAll")
+	for _, want := range []string{"SCALE_PHASES = {};", "graphModeOf[metric.key + ':' + pname] = key; applyShown(metric);", "refillMetric(metric)"} {
+		if !strings.Contains(ra, want) {
+			t.Errorf("renderAll lacks %q", want)
+		}
+	}
+	if !strings.Contains(body, "setScaleCriterion(e.target.value)") {
+		t.Error("the Y scale selector does not call setScaleCriterion")
+	}
+	funcs := append(append([]string{}, seriesFuncs...), "siScale", "phaseScale", "scaleScope", "graphMode",
+		"metricScales", "refillMetric", "applyShown", "modalExtent", "setScaleCriterion")
+	runPageJS(t, funcs, seriesTestPrelude+scaleTestPrelude+`
+const H = 1.15;
+const SCALE_CRITERIA = [['global', 'Global'], ['phase', 'Per phase'], ['graph', 'Per graph']];
+let scaleCriterion = 'phase', modalCtx = null;
+const graphModeOf = {}, opened = [], got = {};
+const openModal = (...a) => opened.push(a);
+const METRICS = [LATU, IOPSU, BW];
+const SCALE_PHASES = {lat: [{pname: 'A', phaseData: [a1, a2]}, {pname: 'B', phaseData: [hdd]}],
+    iops: [{pname: 'X', phaseData: [array()]}, {pname: 'Y', phaseData: [array()]}]};
+const REFILL = {lat: [e => { got.A = e; }, e => { got.B = e; }], iops: [e => { got.X = e; }, e => { got.Y = e; }]};
+refillMetric(LATU);
+closeExt(got.A[0], 0, 500 * H, 'phase A'); closeExt(got.B[0], -3e5 * H, 2e6 * H, 'phase B');
+setScaleCriterion('global');
+assert.strictEqual(scaleCriterion, 'global');
+[got.A[0], got.A[1], got.B[0]].forEach(e => closeExt(e, -3e5 * H, 2e6 * H, 'global lat'));
+assert.ok(got.X && got.Y, 'iops not refilled');
+// A toggle under Global refills the phase it was not made in too.
+setShown('lat', 'fio.w', false);
+applyShown(LATU);
+[got.A[0], got.A[1], got.B[0]].forEach(e => closeExt(e, 0, 2e6 * H, 'global no writes'));
+setShown('lat', 'fio.w', true);
+// A phase's graph mode under Global: the other phase follows the stack top.
+graphModeOf['iops:X'] = 'stacked';
+applyShown(IOPSU);
+closeExt(got.Y[0], -300 * H, 600 * H, 'global iops Y after X stacked');
+// The open modal is drawn again on its card's range under the new criterion.
+modalCtx = {d: a2, metric: LATU, pname: 'A', mode: 'normal', phaseData: [a1, a2]};
+setScaleCriterion('graph');
+assert.strictEqual(opened.length, 1);
+close(opened[0][2], 0); close(opened[0][3], 50 * H, 'modal a2 per graph');
+closeExt(got.A[1], 0, 50 * H, 'graph a2'); closeExt(got.A[0], 0, 500 * H, 'graph a1');
+setScaleCriterion('phase');
+close(opened[1][3], 500 * H, 'modal a2 per phase');
+// A modal card that is not on the page falls back to its phase's range.
+modalCtx = {d: small, metric: LATU, pname: 'gone', mode: 'normal', phaseData: [small]};
+applyShown(LATU);
+close(opened[2][3], 5 * H, 'modal fallback');
+setScaleCriterion('bogus');
+assert.strictEqual(scaleCriterion, 'phase');
 console.log('OK');
 `)
 }
