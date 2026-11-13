@@ -2,7 +2,7 @@ package main
 
 // chartSharedJS is the chart code the graphs and compare pages have in common,
 // spliced into each page's script at __CHART_SHARED_JS__. The pages keep their
-// own X_MAX (the graphs page spans all charts, the compare page one chart).
+// own x maximum (the graphs page one per phase, the compare page one chart).
 //
 // Time axis: every series counts seconds from the start of the phase. fio's
 // own logs start when its ramp-up ends, so fioShift moves their points by the

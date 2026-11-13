@@ -88,7 +88,7 @@ function Chart(canvas, cfg) { last = cfg; this.cfg = cfg; }
 // rampPlugin comes with fioShift's source.
 const mdPlugin = {id: 'mdTrack'};
 const MEMBER_PALETTE = [[22, 163, 74], [217, 119, 6], [124, 58, 237]];
-let X_MAX = 0;
+let PHASE_X = {};
 const AXIS_HEADROOM = 1.15;
 const HIDDEN = {};
 const tick = v => last.options.scales.y.ticks.callback(v);
@@ -100,7 +100,7 @@ var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "siScale", "fmtScale
 	"stackedMemberDatasets", "memberLatencyDatasets", "arrayDatasets", "makeMembersChart",
 	"mdMetric", "hasMD", "mdBusy", "mdActions", "mdBands", "mdIndex", "mdTipLines", "mdMarkers", "mdOptions",
 	"chartPlugins", "yAxisTitle", "lineScales", "barAxis", "barChart", "windowTitle", "makeFlushChart", "barData", "iolatKind", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart",
-	"isShown", "chartDatasets"}
+	"isShown", "chartDatasets", "phaseKey"}
 
 // TestGraphsPageChartPhaseScale: a card plots its values in the base unit,
 // its ticks and tooltips carry the SI prefix chosen from the phase's data
@@ -223,6 +223,48 @@ assert.deepStrictEqual(ds, [{data: [{x: 0, y: 20}, {x: 1, y: null}]}, {data: [30
 // The axis title does not repeat itself.
 assert.strictEqual(axisTitle({label: 'IOPS'}, {unit: 'IOPS'}), 'IOPS');
 assert.strictEqual(axisTitle({label: 'Bandwidth'}, {unit: 'bytes/s'}), 'Bandwidth (bytes/s)');
+console.log('OK');
+`)
+}
+
+// TestGraphsPageXAxisPerPhase: phaseXMax gives each phase its own x maximum
+// over every drive and shown metric (fio shifted, members, ftrace), whatever
+// the other phases hold; hidden series do not shrink it; and every chart of a
+// phase (modal included, it is the same makeChart) takes its phase's maximum.
+func TestGraphsPageXAxisPerPhase(t *testing.T) {
+	runPageJS(t, append([]string{"phaseXMax", "memberMaxT", "seriesMaxT"}, chartFuncs...), chartStubJS+`
+const BW = {key: 'bw', unit: 'MB/s', tsKey: 'ts_bw', sumR: d => 0, sumW: d => 0};
+const LAT = {key: 'lat', unit: 'μs', tsKey: 'ts_lat', sumR: d => 0, sumW: d => 0};
+const IOL = {key: 'iolat', unit: 'μs', tsKey: 'ts_iolat', sumR: d => 0, sumW: d => 0};
+const ser = n => Array.from({length: n}, (_, i) => ({t: i + 1, r: 1, w: 0}));
+// Phase A: 60 s of fio on one drive, the other drive has members to 75 s;
+// phase B: 600 s of fio, ftrace to 610 s.
+const a1 = {phase_name: 'A', ramp_sec: 0, ts_bw: ser(60), ts_lat: ser(60)};
+const a2 = {phase_name: 'A', ramp_sec: 0, ts_bw: ser(30), ts_lat: ser(30),
+    ts_members: {sdb: {role: 'data', bw: ser(75)}}};
+const b1 = {phase_name: 'B', ramp_sec: 0, ts_bw: ser(600), ts_lat: ser(600),
+    ts_iolat: [{kind: 'device', dir: 'r', stat: 'mean', t: 610, n: 3, mean: 5}]};
+const m = phaseXMax([a1, a2, b1], [BW, LAT]);
+assert.strictEqual(m.A, 75);
+assert.strictEqual(m.B, 610); // the Latency card's ftrace line
+// Hidden series never shrink it: it is computed from the data.
+HIDDEN['fio.r'] = true; HIDDEN['member.sdb.r'] = true;
+assert.strictEqual(phaseXMax([a1, a2, b1], [BW, LAT]).A, 75);
+// ftrace beyond the fio series of the Latency card extends its phase only.
+const m2 = phaseXMax([a1, a2, b1], [BW, LAT, IOL]);
+assert.strictEqual(m2.B, 610);
+assert.strictEqual(phaseXMax([b1], [BW]).B, 599);
+assert.strictEqual(m2.A, 75);
+// Phases without a name are keyed by number.
+assert.strictEqual(phaseKey({phase_num: 3}), 'Phase 3');
+// The charts take their own phase's maximum.
+PHASE_X = m;
+makeChart({}, a1, BW, 0, 2);
+assert.strictEqual(last.options.scales.x.max, 75);
+makeChart({}, b1, BW, 0, 2);
+assert.strictEqual(last.options.scales.x.max, 610);
+makeChart({}, b1, LAT, 0, 2);
+assert.strictEqual(last.options.scales.x.max, 610);
 console.log('OK');
 `)
 }

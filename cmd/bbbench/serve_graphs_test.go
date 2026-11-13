@@ -338,7 +338,7 @@ func TestGraphsPageStacksMembers(t *testing.T) {
 	body := graphsPageBody(t)
 	// Read and write stack separately: Chart.js adds a 0 to every earlier
 	// value of its stack, whatever their sign.
-	for _, want := range []string{"'members'", "'members-write'", "stack = 'array'", "lineScales(sc, yLow, yHigh, { stacked: stacked })",
+	for _, want := range []string{"'members'", "'members-write'", "stack = 'array'", "lineScales(d, sc, yLow, yHigh, { stacked: stacked })",
 		"mode: 'index', intersect: false", "Stack total", "'Array '", "ts_members", "fill: first ? 'origin' : '-1'"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("graphs page lacks %q", want)

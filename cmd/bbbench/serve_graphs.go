@@ -1073,10 +1073,28 @@ __NAVBAR_HTML__
     // ftrace samples, or the phase mean as a single bar when no series exists.
     // ── Shared time axis ──
     // Every time-series chart counts seconds from the start of the phase and
-    // spans 0..X_MAX, so graphs line up. fio's own logs start when its
+    // spans 0..PHASE_X[phase], so the graphs of a phase line up. fio's own logs start when its
     // ramp-up ends, so their points are shifted by the ramp; the Flush series
     // already counts from the start of tracing. The ramp-up is shaded.
-    let X_MAX = 0;
+    let PHASE_X = {};
+    // phaseKey names the phase of a drive's data (the grouping of the cards).
+    function phaseKey(d) { return d.phase_name || ('Phase ' + d.phase_num); }
+    // phaseXMax gives, per phase, the end of the longest series of every
+    // shown metric over all drives: fio (shifted), members, ftrace. Computed
+    // from the data, so hidden series and the Y scale criterion do not matter.
+    function phaseXMax(data, selMetrics) {
+        const out = {};
+        data.forEach(d => {
+            const k = phaseKey(d);
+            let m = out[k] || 0;
+            selMetrics.forEach(me => {
+                m = Math.max(m, seriesMaxT(d, me), memberMetric(d, me) ? memberMaxT(d, me) : 0);
+                ftraceDatasets(d, me).forEach(ds => ds.data.forEach(p => { m = Math.max(m, p.x); }));
+            });
+            out[k] = m;
+        });
+        return out;
+    }
     __CHART_SHARED_JS__
 
     // yAxisTitle is the y axis title of a card: the base unit of its ticks,
@@ -1084,12 +1102,12 @@ __NAVBAR_HTML__
     function yAxisTitle(sc) {
         return { display: true, text: sc.unit, color: '#94a3b8', font: {size: 9} };
     }
-    // lineScales are the axes of a line chart: seconds on x (0..X_MAX, shared
-    // by every card), y from yLow to yHigh in the base unit with the scale's
+    // lineScales are the axes of a line chart: seconds on x (0..the phase's
+    // maximum of d, shared by every card of the phase), y from yLow to yHigh in the base unit with the scale's
     // ticks and a darker zero line; extra overrides or adds y options.
-    function lineScales(sc, yLow, yHigh, extra) {
+    function lineScales(d, sc, yLow, yHigh, extra) {
         return {
-            x: { type: 'linear', min: 0, max: X_MAX || undefined,
+            x: { type: 'linear', min: 0, max: PHASE_X[phaseKey(d)] || undefined,
                  title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
                  ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
             y: Object.assign({ min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
@@ -1152,7 +1170,7 @@ __NAVBAR_HTML__
                             label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit +
                                 ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
                     },
-                    scales: lineScales(sc, 0, yHigh, { grid: { color: '#f1f5f9' } })
+                    scales: lineScales(d, sc, 0, yHigh, { grid: { color: '#f1f5f9' } })
                 }
             });
         }
@@ -1393,7 +1411,7 @@ __NAVBAR_HTML__
                         },
                     },
                 },
-                scales: lineScales(sc, yLow, yHigh, { stacked: stacked })
+                scales: lineScales(d, sc, yLow, yHigh, { stacked: stacked })
             }
         });
     }
@@ -1650,7 +1668,7 @@ __NAVBAR_HTML__
                             afterBody: items => mdTipLines(d, items)
                         }}
                     },
-                    scales: lineScales(sc, yLow, yHigh)
+                    scales: lineScales(d, sc, yLow, yHigh)
                 }
             });
         }
@@ -1666,7 +1684,7 @@ __NAVBAR_HTML__
         const cd = chartDatasets(d, metric, 'normal');
         const datasets = toBase(cd.datasets, sc);
         // The bars keep the line chart's y axis (tick colour, zero line).
-        const scales = lineScales(sc, yLow, yHigh);
+        const scales = lineScales(d, sc, yLow, yHigh);
         if (!cd.bars) {
             return new Chart(canvas, {
                 type: 'line', data: { datasets }, plugins: [rampPlugin],
@@ -1827,7 +1845,7 @@ __NAVBAR_HTML__
     // phase, shared by its cards; 'global' one per metric over all its
     // phases on the page, each phase contributing in its own graph mode, so
     // every card of the metric compares directly; 'graph' each card its own.
-    // Hidden series never count. The time axis (X_MAX) is not part of it.
+    // Hidden series never count. The time axis (PHASE_X) is not part of it.
     // scaleCriterion is page memory only, like HIDDEN and graphModeOf.
     const SCALE_CRITERIA = [['global', 'Global'], ['phase', 'Per phase'], ['graph', 'Per graph']];
     let scaleCriterion = 'phase';
@@ -2073,12 +2091,8 @@ __NAVBAR_HTML__
             return;
         }
 
-        // One time axis for every chart shown.
-        X_MAX = 0;
-        data.forEach(d => selMetrics.forEach(m => {
-            X_MAX = Math.max(X_MAX, seriesMaxT(d, m), memberMetric(d, m) ? memberMaxT(d, m) : 0);
-            ftraceDatasets(d, m).forEach(ds => ds.data.forEach(p => { X_MAX = Math.max(X_MAX, p.x); }));
-        }));
+        // One time axis per phase, over every chart of the phase.
+        PHASE_X = phaseXMax(data, selMetrics);
 
         selMetrics.forEach(metric => {
             // ── Metric-level foldable section ──
