@@ -209,7 +209,7 @@ Pages available:
 - `/export?id=<id>` — download self-contained HTML report
 - `/health`, `/api/status`, `/api/status/phases`, `/api/results`, `/api/results/detail`, `/api/results/graphs`, `/api/results/summary`, `/api/groups`, `/api/groups/detail`, `/api/groups/graphs` — JSON behind the pages
 
-The web UI is also started automatically by `orchestrator` on `0.0.0.0:12345` during a run.
+The web UI is also started automatically by `orchestrator` during a run, on `0.0.0.0:12345` unless `orchestrator --addr <host:port>` says otherwise (the same flag as `serve`).
 
 ---
 

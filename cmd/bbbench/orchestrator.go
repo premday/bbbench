@@ -76,6 +76,7 @@ func runOrchestrator(args []string) error {
 	distDir := fs.String("dist", "", "dist directory (default ./dist or BBBENCH_DIST_DIR)")
 	mode := fs.String("mode", "parallel-sync", "execution mode: parallel-sync or sequential")
 	outputDir := fs.String("output", "", "output directory for results (default: from config fioplot.output.path)")
+	webAddr := fs.String("addr", defaultWebAddr, "address to bind the web server that serves the run (all interfaces by default)")
 	dryRun := fs.Bool("dry-run", false, "show what would be executed without running fio")
 	resume := fs.Bool("resume", false, "resume from previous interrupted run")
 	verbose := fs.Bool("verbose", false, "show detailed execution information")
@@ -371,10 +372,10 @@ func runOrchestrator(args []string) error {
 	var startOnce sync.Once
 	opts.OnStarted = func() {
 		startOnce.Do(func() {
-			srv = newWebServer("0.0.0.0:12345")
+			srv = newWebServer(*webAddr)
 			go func(srv *http.Server) {
 				logger.Info("starting web server from orchestrator", "addr", srv.Addr)
-				fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
+				fmt.Printf("Web server available at http://%s\n\n", *webAddr)
 				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					logger.Error("web server error", "err", err)
 				}
@@ -432,7 +433,7 @@ func runOrchestrator(args []string) error {
 	}
 
 	// Keep web server running until user interrupts
-	fmt.Printf("\nWeb server still running at http://0.0.0.0:12345\n")
+	fmt.Printf("\nWeb server still running at http://%s\n", *webAddr)
 	fmt.Printf("Results available at: %s\n", outDir)
 	fmt.Printf("\nPress Ctrl+C to stop...\n\n")
 

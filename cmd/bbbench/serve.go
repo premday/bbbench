@@ -16,16 +16,20 @@ import (
 	"time"
 )
 
+// defaultWebAddr is where the web server listens unless -addr says otherwise
+// (serve and orchestrator).
+const defaultWebAddr = "0.0.0.0:12345"
+
 // runServe starts the web server for the bbbench GUI.
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", "0.0.0.0:12345", "address to bind web server (all interfaces by default)")
+	addr := fs.String("addr", defaultWebAddr, "address to bind web server (all interfaces by default)")
 	outputDir := fs.String("output", "~/.bbbench/output", "output directory containing benchmark results")
 	_ = fs.Parse(args)
 
 	// Check if orchestrator is running
 	if isOrchestratorRunning() {
-		return errors.New("orchestrator is already running with web interface enabled\nConnect to http://0.0.0.0:12345 to view status")
+		return errors.New("orchestrator is already running with web interface enabled\nConnect to its web address (default http://" + defaultWebAddr + ", set by its -addr) to view status")
 	}
 
 	// Load existing benchmark results from output directory

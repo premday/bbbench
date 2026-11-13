@@ -4,6 +4,7 @@
 
 ### Added
 
+- `orchestrator --addr <host:port>` sets the address of the web server it starts for a run (it was fixed at `0.0.0.0:12345`, so `-addr` only worked with `serve`); its messages print the real address, the `serve` help line shows the real default, and the "orchestrator is already running" hint no longer names a fixed address
 - Graphs page: a **Y scale** selector in the sidebar chooses how cards share a y range and SI prefix: Per phase (default, as before), Global (one range per graph type over all its phases, each phase in its own Normal | Stacked mode, so cards compare directly across phases) or Per graph (each card its own range). Hidden series never count; changing it, a series checkbox or a phase's mode redraws every phase of the graph type and the enlarged chart, keeping checkboxes, modes and folded sections. Page memory only; the compare page is unchanged.
 - Graphs page: the x axis is per phase: the cards of a phase (all drives, all shown graph types, the enlarged chart included) share 0..the longest series of that phase, so a 60 s phase is no longer squeezed by a 600 s one; hidden series, the Y scale criterion and the Normal | Stacked mode do not change it. The compare page is unchanged
 - Results tab: run groups start expanded; a group is a white line and the runs nested in it are a bright grey line indented as a whole (left bar, timestamp and ID cells pushed in), so groups and their runs are told apart at a glance; the group row's first action is labelled Details, like a single run's
