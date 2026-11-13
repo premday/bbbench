@@ -246,6 +246,11 @@ func TestFormatIOTraceSummary(t *testing.T) {
 	if got := formatIOTraceSummary(s); got != want+" (12 events lost)" {
 		t.Errorf("with loss: %q", got)
 	}
+	s.Lost, s.Overrun = 1012, 1000
+	if got := formatIOTraceSummary(s); got != want+" (1012 events lost, 1000 of them in the ring buffer: raise --trace-buffer-mb or lower the IOPS)" {
+		t.Errorf("with overrun: %q", got)
+	}
+	s.Lost, s.Overrun = 0, 0
 	readOnly := &iotrace.Summary{Devices: []iotrace.DeviceSummary{{Name: "nvme0n1", Source: "nvme", Stats: map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{
 		iotrace.KindDevice: {iotrace.DirRead: {Count: 3, MeanNs: 4.5e6, P99Ns: 9e6}}}}}}
 	if got := formatIOTraceSummary(readOnly); got != "ftrace device (nvme): read avg 4500.0 us p99 9000.0 us" {

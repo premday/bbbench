@@ -89,9 +89,15 @@ func runOrchestrator(args []string) error {
 	noFlushTrace := fs.Bool("no-flush-trace", false, "do not trace device Flush latency (kernel trace events) during fsync phases")
 	noIOTrace := fs.Bool("no-io-trace", false, "do not trace read and write latency (kernel trace events) during phases")
 	logAvgMsec := fs.Int("log-avg-msec", 1000, "fio log averaging interval in milliseconds (--log_avg_msec)")
+	traceBufferMB := fs.Int("trace-buffer-mb", defaultTraceBufferMB, "MiB of kernel ring buffer shared by the concurrent ftrace sessions (I/O and Flush latency). "+
+		"Each CPU of each session gets an equal share, at least 1 MiB and at most 64 MiB: kernel memory = sessions x CPUs x per-CPU size, "+
+		"at most this budget except at the 1 MiB floor. Raise it when the trace reports events lost in the ring buffer")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
 	sysBlock := fs.String("sys-block", "", "override /sys/block (tests)")
 	_ = fs.Parse(args)
+	if err := checkTraceBufferMB(*traceBufferMB); err != nil {
+		return err
+	}
 
 	if os.Geteuid() != 0 {
 		return errors.New("bbbench orchestrator must run as root")
@@ -362,6 +368,7 @@ func runOrchestrator(args []string) error {
 		Verbose:          *verbose,
 		FlushTrace:       !*noFlushTrace,
 		IOTrace:          !*noIOTrace,
+		TraceBufferMB:    *traceBufferMB,
 		SkipWriteThrough: *skipWriteThrough,
 		LogAvgMsec:       *logAvgMsec,
 	}
@@ -456,6 +463,7 @@ type runOptions struct {
 	DryRun, Verbose  bool
 	FlushTrace       bool
 	IOTrace          bool
+	TraceBufferMB    int // --trace-buffer-mb; 0 = defaultTraceBufferMB
 	SkipWriteThrough bool
 	LogAvgMsec       int
 	// OnStarted, when non-nil, is called once the run's live result is in
@@ -516,10 +524,14 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 	coordinator.logAvgMsec = opts.LogAvgMsec
 	coordinator.flushTrace = opts.FlushTrace
 	coordinator.ioTrace = opts.IOTrace
+	coordinator.traceBufferMB = opts.TraceBufferMB
 	coordinator.labels = spec.Labels
 	coordinator.groupID = spec.GroupID
 	if err := coordinator.checkEnvironment(); err != nil {
 		return nil, err
+	}
+	if coordinator.ioTrace || (coordinator.flushTrace && coordinator.hasFsyncPhase()) {
+		fmt.Println(traceBufferLine(coordinator.traceBufferMB, coordinator.maxTraceSessions(), traceCPUs()))
 	}
 	coordinator.skipWriteThrough = opts.SkipWriteThrough
 

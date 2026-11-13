@@ -913,7 +913,8 @@ __NAVBAR_HTML__
             const labels = ls.map(s => s.label).filter((l, k, a) => a.indexOf(l) === k);
             lines.push('Ring buffer: ' + fmtCount(overrun) + ' events dropped by the kernel because the trace buffers filled before bbbench read them (typically very high IOPS). ' +
                 'This makes every ftrace series of this phase incomplete, every device and kind; on this card (' + labels.length + '): ' + labels.join(', ') + '. ' +
-                'Their statistics come from the events that did arrive: a sample, in which a busy period may be under-represented.');
+                'Their statistics come from the events that did arrive: a sample, in which a busy period may be under-represented. ' +
+                'To avoid it: __TRACE_LOSS_HINT__.');
         }
         if (unpaired > 0) {
             lines.push('Unpaired (a request or bio that never completed within the trace, or whose start or end event was lost; counted per device): ' +
@@ -2313,6 +2314,7 @@ __NAVBAR_HTML__
 
 	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
 	html = strings.ReplaceAll(html, "__CHART_SHARED_JS__", chartSharedJS)
+	html = strings.ReplaceAll(html, "__TRACE_LOSS_HINT__", traceLossHint)
 	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/results"))
 	html = strings.ReplaceAll(html, "__DATA_URL__", jsString(dataURL))
 	html = strings.ReplaceAll(html, "__SIDEBAR__", sidebar)

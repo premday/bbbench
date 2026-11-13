@@ -826,6 +826,7 @@ let i = lossInfo(over, M('lat'), latSeries);
 assert.strictEqual(i.headline, '⚠ 1,296,525,622 trace events lost (ring buffer 1,296,525,622): every ftrace series on this card is incomplete');
 assert.strictEqual(i.lines.length, 2, i.text);
 assert.ok(i.lines[0].startsWith('Ring buffer: 1,296,525,622 events dropped by the kernel'), i.lines[0]);
+assert.ok(i.lines[0].endsWith('To avoid it: raise --trace-buffer-mb or lower the IOPS.'), i.lines[0]);
 assert.ok(i.lines[0].includes('every ftrace series of this phase'), i.lines[0]);
 assert.ok(i.lines[0].includes('on this card (4): Read device mean, Write device mean, Read block layer mean, Write block layer mean.'), i.lines[0]);
 assert.ok(!i.lines[0].includes('fio'), i.lines[0]);

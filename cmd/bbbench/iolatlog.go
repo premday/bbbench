@@ -60,30 +60,77 @@ func startIOTraceWith(drive DriveInfo, logPrefix string, avgMsec, rampMs int, op
 // Trace ring buffer sizing. The kernel allocates buffer_size_kb for every
 // CPU of every session, and a parallel run has one I/O session per drive (its
 // members included) in each phase, plus one Flush session per drive in a
-// phase that fsyncs: 16 MiB x 64 CPUs x 12 drives would be 12 GiB. Both kinds
-// count as one session each against the budget. The reader drains trace_pipe continuously, so the buffer only has
-// to absorb a reader stall; the concurrent sessions share ioTraceBudgetKB,
-// each CPU getting at least ioTraceMinBufferKB (about 13k events, a stall of
-// a fraction of a second at a few hundred thousand IOPS per CPU: an overrun
-// beyond it is counted and shown, never hidden) and at most the iotrace
-// default.
+// phase that fsyncs: 64 MiB x 64 CPUs x 12 drives would be 48 GiB. Both kinds
+// count as one session each against the budget, --trace-buffer-mb (default
+// defaultTraceBufferMB). The readers drain the buffers continuously (one per
+// CPU on the raw path), so a buffer only has to absorb a reader stall or a
+// burst; each CPU gets budget / (sessions x CPUs), at least
+// ioTraceMinBufferKB (about 13k events, a stall of a fraction of a second at
+// a few hundred thousand IOPS per CPU: an overrun beyond it is counted and
+// shown, never hidden) and at most ioTraceMaxBufferKB. The kernel memory is
+// sessions x CPUs x the per-CPU size: at most the budget, except at the
+// floor, where it is sessions x CPUs MiB.
 const (
-	ioTraceBudgetKB    = 256 * 1024
-	ioTraceMinBufferKB = 1024
-	ioTraceMaxBufferKB = 16384
+	defaultTraceBufferMB = 256
+	maxTraceBufferMB     = 1 << 20 // 1 TiB: anything larger is a typo
+	ioTraceMinBufferKB   = 1024
+	ioTraceMaxBufferKB   = 64 * 1024
 )
 
+// traceLossHint is what to do about ring-buffer overruns, for the terminal
+// and the graphs page.
+const traceLossHint = "raise --trace-buffer-mb or lower the IOPS"
+
+// checkTraceBufferMB validates --trace-buffer-mb.
+func checkTraceBufferMB(mb int) error {
+	if mb < 1 || mb > maxTraceBufferMB {
+		return fmt.Errorf("invalid --trace-buffer-mb %d: must be from 1 to %d (MiB shared by the concurrent trace sessions)", mb, maxTraceBufferMB)
+	}
+	return nil
+}
+
 // ioTraceBufferKB is the per-CPU buffer of one of sessions concurrent
-// sessions on cpus CPUs.
-func ioTraceBufferKB(sessions, cpus int) int {
+// sessions on cpus CPUs sharing budgetMB (0 = the default).
+func ioTraceBufferKB(budgetMB, sessions, cpus int) int {
+	if budgetMB <= 0 {
+		budgetMB = defaultTraceBufferMB
+	}
 	sessions, cpus = max(sessions, 1), max(cpus, 1)
-	return min(max(ioTraceBudgetKB/(sessions*cpus), ioTraceMinBufferKB), ioTraceMaxBufferKB)
+	return min(max(budgetMB*1024/(sessions*cpus), ioTraceMinBufferKB), ioTraceMaxBufferKB)
 }
 
 // flushTraceBufferKB is the per-CPU buffer of a Flush session: the same
 // share of the budget, at most the Flush default (it sees only Flushes).
-func flushTraceBufferKB(sessions, cpus int) int {
-	return min(ioTraceBufferKB(sessions, cpus), flushtrace.DefaultBufferKB)
+func flushTraceBufferKB(budgetMB, sessions, cpus int) int {
+	return min(ioTraceBufferKB(budgetMB, sessions, cpus), flushtrace.DefaultBufferKB)
+}
+
+// traceBufferLine says how big the trace buffers of a run are: the budget,
+// the per-CPU size at the run's most concurrent phase and the kernel memory
+// it takes.
+func traceBufferLine(budgetMB, sessions, cpus int) string {
+	if budgetMB <= 0 {
+		budgetMB = defaultTraceBufferMB
+	}
+	sessions, cpus = max(sessions, 1), max(cpus, 1)
+	per := ioTraceBufferKB(budgetMB, sessions, cpus)
+	plural := "s"
+	if sessions == 1 {
+		plural = ""
+	}
+	return fmt.Sprintf("ftrace buffers: %d MiB budget (--trace-buffer-mb), %s per CPU for up to %d concurrent session%s on %d CPUs: %s of kernel memory",
+		budgetMB, fmtKB(per), sessions, plural, cpus, fmtKB(per*sessions*cpus))
+}
+
+// fmtKB renders a size in KiB as MiB or GiB.
+func fmtKB(kb int) string {
+	if kb >= 1024*1024 && kb%(1024*1024) == 0 {
+		return strconv.Itoa(kb/(1024*1024)) + " GiB"
+	}
+	if kb%1024 == 0 {
+		return strconv.Itoa(kb/1024) + " MiB"
+	}
+	return strconv.Itoa(kb) + " KiB"
 }
 
 // IOLatPoint is the I/O latency of one traced device over one window, in µs;

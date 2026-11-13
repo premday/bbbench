@@ -332,19 +332,22 @@ func TestUpdateLivePhaseCarriesIOTrace(t *testing.T) {
 	}
 }
 
-// The ring buffer of the concurrent sessions shares one budget, within a
-// floor (a reader stall of a fraction of a second at high IOPS) and the
-// iotrace default.
+// The ring buffer of the concurrent sessions shares one budget
+// (--trace-buffer-mb), within a floor (a reader stall of a fraction of a
+// second at high IOPS) and a 64 MiB cap per CPU.
 func TestIOTraceBufferKB(t *testing.T) {
-	for _, c := range []struct{ sessions, cpus, want int }{
-		{1, 8, 16384},  // 256 MiB / 8 CPUs = 32 MiB, capped at the default
-		{1, 16, 16384}, // exactly the budget
-		{4, 16, 4096},
-		{12, 64, 1024}, // floor
-		{0, 0, 16384},  // unknown counts = one session on one CPU
+	for _, c := range []struct{ budget, sessions, cpus, want int }{
+		{0, 1, 8, 32768},     // default 256 MiB / 8 CPUs = 32 MiB
+		{256, 1, 2, 65536},   // 128 MiB per CPU, capped at 64 MiB
+		{256, 1, 16, 16384},  // exactly the budget
+		{256, 4, 16, 4096},   // shared by 4 sessions
+		{256, 12, 64, 1024},  // floor: 768 x 1 MiB, above the budget
+		{4096, 12, 64, 5461}, // a raised budget
+		{1, 1, 1, 1024},      // floor
+		{256, 0, 0, 65536},   // unknown counts = one session on one CPU
 	} {
-		if got := ioTraceBufferKB(c.sessions, c.cpus); got != c.want {
-			t.Errorf("ioTraceBufferKB(%d, %d) = %d, want %d", c.sessions, c.cpus, got, c.want)
+		if got := ioTraceBufferKB(c.budget, c.sessions, c.cpus); got != c.want {
+			t.Errorf("ioTraceBufferKB(%d, %d, %d) = %d, want %d", c.budget, c.sessions, c.cpus, got, c.want)
 		}
 	}
 }
@@ -352,13 +355,45 @@ func TestIOTraceBufferKB(t *testing.T) {
 // Flush sessions take their share of the same budget, at most the Flush
 // default.
 func TestFlushTraceBufferKB(t *testing.T) {
-	for _, c := range []struct{ sessions, cpus, want int }{
-		{1, 8, 8192}, // capped at the Flush default
-		{8, 16, 2048},
-		{24, 64, 1024}, // floor
+	for _, c := range []struct{ budget, sessions, cpus, want int }{
+		{256, 1, 8, 8192}, // capped at the Flush default
+		{256, 8, 16, 2048},
+		{256, 24, 64, 1024}, // floor
+		{64, 2, 16, 2048},
 	} {
-		if got := flushTraceBufferKB(c.sessions, c.cpus); got != c.want {
-			t.Errorf("flushTraceBufferKB(%d, %d) = %d, want %d", c.sessions, c.cpus, got, c.want)
+		if got := flushTraceBufferKB(c.budget, c.sessions, c.cpus); got != c.want {
+			t.Errorf("flushTraceBufferKB(%d, %d, %d) = %d, want %d", c.budget, c.sessions, c.cpus, got, c.want)
+		}
+	}
+}
+
+func TestCheckTraceBufferMB(t *testing.T) {
+	for _, ok := range []int{1, 256, 1 << 20} {
+		if err := checkTraceBufferMB(ok); err != nil {
+			t.Errorf("%d refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []int{0, -1, 1<<20 + 1} {
+		if err := checkTraceBufferMB(bad); err == nil || !strings.Contains(err.Error(), "--trace-buffer-mb") {
+			t.Errorf("%d accepted: %v", bad, err)
+		}
+	}
+}
+
+// The run says how big its trace buffers are and what they cost.
+func TestTraceBufferLine(t *testing.T) {
+	for _, c := range []struct {
+		budget, sessions, cpus int
+		want                   string
+	}{
+		{256, 2, 8, "ftrace buffers: 256 MiB budget (--trace-buffer-mb), 16 MiB per CPU for up to 2 concurrent sessions on 8 CPUs: 256 MiB of kernel memory"},
+		{0, 1, 2, "ftrace buffers: 256 MiB budget (--trace-buffer-mb), 64 MiB per CPU for up to 1 concurrent session on 2 CPUs: 128 MiB of kernel memory"},
+		{256, 12, 64, "ftrace buffers: 256 MiB budget (--trace-buffer-mb), 1 MiB per CPU for up to 12 concurrent sessions on 64 CPUs: 768 MiB of kernel memory"},
+		{4096, 1, 64, "ftrace buffers: 4096 MiB budget (--trace-buffer-mb), 64 MiB per CPU for up to 1 concurrent session on 64 CPUs: 4 GiB of kernel memory"},
+		{100, 3, 7, "ftrace buffers: 100 MiB budget (--trace-buffer-mb), 4876 KiB per CPU for up to 3 concurrent sessions on 7 CPUs: 102396 KiB of kernel memory"},
+	} {
+		if got := traceBufferLine(c.budget, c.sessions, c.cpus); got != c.want {
+			t.Errorf("got  %q\nwant %q", got, c.want)
 		}
 	}
 }
@@ -428,6 +463,28 @@ func TestExecutePhaseIOTraceNoteNotError(t *testing.T) {
 	}
 	if !strings.HasPrefix(res.IOTraceNote, "no ftrace latency: ") || res.IOTrace != nil {
 		t.Errorf("note = %q, trace = %+v", res.IOTraceNote, res.IOTrace)
+	}
+}
+
+// The buffer line uses the most concurrent phase of the run.
+func TestMaxTraceSessions(t *testing.T) {
+	fsync := []FioJob{{Name: "j", Section: "[j]\nfsync=1\n"}}
+	plain := []FioJob{{Name: "j", Section: "[j]\n"}}
+	drives := []DriveInfo{{Device: blockdev.Device{Name: "sda"}}, {Device: blockdev.Device{Name: "sdb"}}}
+	workloads := map[string]*FioWorkload{
+		"sda": {Phases: [][]FioJob{plain, fsync}},
+		"sdb": {Phases: [][]FioJob{plain, fsync}},
+	}
+	ec := &ExecutionCoordinator{mode: "parallel-sync", drives: drives, workloads: workloads, flushTrace: true, ioTrace: true}
+	if got := ec.maxTraceSessions(); got != 4 {
+		t.Errorf("parallel: %d, want 4", got)
+	}
+	ec.mode = "sequential"
+	if got := ec.maxTraceSessions(); got != 2 {
+		t.Errorf("sequential: %d, want 2", got)
+	}
+	if got := (&ExecutionCoordinator{}).maxTraceSessions(); got != 1 {
+		t.Errorf("no drives: %d, want 1", got)
 	}
 }
 
@@ -502,5 +559,15 @@ func TestIOTraceCloseThenStop(t *testing.T) {
 	}
 	if run.Stop() == nil {
 		t.Error("Stop after Close = nil")
+	}
+}
+
+// --trace-buffer-mb is checked before anything else (root included).
+func TestOrchestratorRejectsTraceBufferMB(t *testing.T) {
+	for _, v := range []string{"0", "-5"} {
+		err := runOrchestrator([]string{"--trace-buffer-mb", v})
+		if err == nil || !strings.Contains(err.Error(), "--trace-buffer-mb") {
+			t.Errorf("--trace-buffer-mb %s: %v", v, err)
+		}
 	}
 }

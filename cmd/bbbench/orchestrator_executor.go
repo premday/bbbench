@@ -53,6 +53,9 @@ type ExecutionCoordinator struct {
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
 	flushTrace  bool             // trace device Flush latency during phases that fsync
 	ioTrace     bool             // trace read and write latency (kernel events) during every phase
+	// traceBufferMB is the ring buffer budget shared by the concurrent
+	// trace sessions (--trace-buffer-mb; 0 = defaultTraceBufferMB).
+	traceBufferMB int
 
 	labels  map[string]rungroup.Label // device -> setting label (run groups; nil otherwise)
 	groupID string
@@ -108,6 +111,20 @@ func (ec *ExecutionCoordinator) traceSessions(drive string, phaseIdx int) int {
 		}
 	}
 	return max(n, 1)
+}
+
+// maxTraceSessions is the largest traceSessions of any phase of any drive:
+// the run's most concurrent phase.
+func (ec *ExecutionCoordinator) maxTraceSessions() int {
+	n := 1
+	for _, d := range ec.drives {
+		if w := ec.workloads[d.Device.Name]; w != nil {
+			for i := range w.Phases {
+				n = max(n, ec.traceSessions(d.Device.Name, i))
+			}
+		}
+	}
+	return n
 }
 
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
@@ -1128,12 +1145,12 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	var flush *flushTraceRun
 	if ec.flushTrace && phaseHasFsync(phase) {
 		flush = startFlushTrace(drive.Device.Name, logPrefix, logAvgMsec, rampMs,
-			flushtrace.Options{SysBlock: ec.sysBlock, BufferKB: flushTraceBufferKB(sessions, cpus)})
+			flushtrace.Options{SysBlock: ec.sysBlock, BufferKB: flushTraceBufferKB(ec.traceBufferMB, sessions, cpus)})
 	}
 	var ioTrace *ioTraceRun
 	if ec.ioTrace {
 		ioTrace, result.IOTraceNote = startIOTraceWith(drive, logPrefix, logAvgMsec, rampMs,
-			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ioTraceBufferKB(sessions, cpus)})
+			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ioTraceBufferKB(ec.traceBufferMB, sessions, cpus)})
 	}
 	// A force quit (cleanup) must not leave the instances behind.
 	untrack := ec.registerTrace(func() {

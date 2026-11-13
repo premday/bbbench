@@ -262,7 +262,10 @@ func formatIOTraceSummary(s *iotrace.Summary) string {
 	slices.Sort(sources)
 	head := "ftrace (" + strings.Join(sources, ", ") + ")"
 	lost := ""
-	if s.Lost > 0 {
+	switch {
+	case s.Overrun > 0:
+		lost = fmt.Sprintf(" (%d events lost, %d of them in the ring buffer: %s)", s.Lost, s.Overrun, traceLossHint)
+	case s.Lost > 0:
 		lost = fmt.Sprintf(" (%d events lost)", s.Lost)
 	}
 	target := s.Devices[0]
