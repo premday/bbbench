@@ -803,8 +803,96 @@ func TestGraphsPageNoNVMeAssumption(t *testing.T) {
 	}
 }
 
+// lossFuncs are the page functions of the trace-loss note.
+var lossFuncs = []string{"iolatKind", "fmtCount", "lossShare", "lossSeries", "lossInfo", "lossNote", "addLossNote"}
+
+// The loss note says which series of the card are incomplete and why: the
+// ring buffer overrun (session-wide, every series) apart from each device's
+// unpaired requests (only the devices with a series on the card), with the
+// share of the events lost when the counts allow it.
+func TestGraphsPageLossNote(t *testing.T) {
+	runPageJS(t, lossFuncs, `
+const assert = require('assert');
+const M = k => ({key: k});
+const S = (skey, label) => ({skey, label});
+const latSeries = [S('fio.r', 'Read (fio)'), S('fio.w', 'Write (fio)'),
+    S('ftrace.device.mean.r', 'Read device mean (ftrace)'), S('ftrace.device.mean.w', 'Write device mean (ftrace)'),
+    S('ftrace.blocklayer.mean.r', 'Read block layer mean (ftrace)'), S('ftrace.blocklayer.mean.w', 'Write block layer mean (ftrace)')];
+const st = (r, w) => ({r: {count: r, mean_ns: 1}, w: {count: w, mean_ns: 1}});
+// overrun only: every ftrace series of the card, the statistics are a sample
+const over = {disk: 'nvme0n1', io_trace: {overrun: 1296525622, lost: 1296525622, devices: [
+    {name: 'nvme0n1', source: 'nvme', block_layer: true, stats: {device: st(40000000, 40000000), blocklayer: st(1, 1)}}]}};
+let i = lossInfo(over, M('lat'), latSeries);
+assert.strictEqual(i.headline, '⚠ 1,296,525,622 trace events lost (ring buffer 1,296,525,622): every ftrace series on this card is incomplete');
+assert.strictEqual(i.lines.length, 2, i.text);
+assert.ok(i.lines[0].startsWith('Ring buffer: 1,296,525,622 events dropped by the kernel'), i.lines[0]);
+assert.ok(i.lines[0].includes('every ftrace series of this phase'), i.lines[0]);
+assert.ok(i.lines[0].includes('on this card (4): Read device mean, Write device mean, Read block layer mean, Write block layer mean.'), i.lines[0]);
+assert.ok(!i.lines[0].includes('fio'), i.lines[0]);
+assert.ok(i.lines[0].includes('a sample'), i.lines[0]);
+// 1,296,525,622 / (1,296,525,622 + 80,000,000) = 94.2%: the device and
+// block-layer kinds time the same requests, the largest count is taken
+assert.strictEqual(i.lines[1], 'About 94% of the events were lost: 1,296,525,622 lost vs 80,000,000 requests timed in these series.');
+assert.strictEqual(i.text, i.headline + '\n' + i.lines.join('\n'));
+assert.strictEqual(lossNote(over, M('lat'), latSeries), i.text);
+// unpaired only: the devices with a series on the card, by name, with
+// their series; sdc has no series here and is left out
+const devSeries = [S('ftrace.bio.mean.r', 'Array read bio mean (ftrace)'), S('ftrace.bio.p99.r', 'Array read bio p99 (ftrace)'),
+    S('ftrace.member:sdb', 'sdb device mean (ftrace)')];
+const unp = {disk: 'md0', io_trace: {lost: 20, devices: [
+    {name: 'md0', source: 'bio', bio_based: true, unpaired: 3, stats: {bio: st(10, 0)}},
+    {name: 'sdb', source: 'block', unpaired: 12, stats: {device: st(5, 5)}},
+    {name: 'sdc', source: 'block', unpaired: 5, stats: {device: st(5, 5)}}]}};
+i = lossInfo(unp, M('iolat'), devSeries);
+assert.strictEqual(i.headline, '⚠ 15 trace events lost (unpaired 15): incomplete: md0, sdb');
+assert.ok(i.lines[0].startsWith('Unpaired (a request or bio that never completed within the trace, or whose start or end event was lost'), i.lines[0]);
+assert.ok(i.lines[0].includes('md0: 3 unpaired: Array read bio mean, Array read bio p99'), i.lines[0]);
+assert.ok(i.lines[0].includes('sdb: 12 unpaired: sdb device mean'), i.lines[0]);
+assert.ok(!i.lines[0].includes('sdc'), i.lines[0]);
+assert.ok(!i.text.includes('Ring buffer'), i.text);
+// 15 / (15 + 10 + 10): md0 bio and sdb device counts
+assert.ok(i.lines[1].startsWith('About 43% of the events were lost'), i.lines[1]);
+// both: the breakdown in the headline, overrun = lost - unpaired for a
+// summary without the overrun field (omitempty)
+const both = {disk: 'sdb', io_trace: {lost: 1012, devices: [{name: 'sdb', source: 'block', unpaired: 12}]}};
+const rd = [S('ftrace.device.mean.r', 'Read device mean (ftrace)')];
+i = lossInfo(both, M('iolat'), rd);
+assert.strictEqual(i.headline, '⚠ 1,012 trace events lost (ring buffer 1,000, unpaired 12): every ftrace series on this card is incomplete');
+assert.strictEqual(i.lines.length, 2, i.text); // no counts: no share
+assert.ok(i.lines[1].includes('sdb: 12 unpaired: Read device mean'), i.lines[1]);
+// nothing lost, no ftrace series, other metrics: no note
+assert.strictEqual(lossInfo({io_trace: {lost: 0}}, M('lat'), latSeries), null);
+assert.strictEqual(lossInfo(over, M('lat'), latSeries.slice(0, 2)), null);
+assert.strictEqual(lossInfo(over, M('iops'), [S('fio.r', 'Read (fio)')]), null);
+assert.strictEqual(lossNote({}, M('lat'), latSeries), '');
+// unpaired of a device without a series here only: no note
+assert.strictEqual(lossInfo({io_trace: {lost: 5, devices: [{name: 'sda'}, {name: 'sdc', unpaired: 5}]}}, M('iolat'), rd), null);
+// Flush: its own session, lost = issued but never seen completing
+const fl = {flush: {lost: 2, count: 198}};
+i = lossInfo(fl, M('flush'), [S('flush', 'Flush (ftrace)')]);
+assert.strictEqual(i.headline, '⚠ 2 Flush commands never seen completing: Flush (ftrace) is incomplete');
+assert.ok(i.lines[0].includes('ring-buffer overruns are not recorded'), i.lines[0]);
+assert.strictEqual(i.lines[1], 'About 1% of the Flushes were not timed: 2 vs 198 timed.');
+assert.strictEqual(lossInfo({flush: {lost: 0, count: 3}}, M('flush'), [S('flush', 'Flush (ftrace)')]), null);
+// addLossNote: appended after tsWarn's text, the series from cardSeries
+const cardSeries = () => latSeries;
+const el = {className: 'x', textContent: 'a'};
+addLossNote(el, over, M('lat'), 'normal');
+assert.ok(el.textContent.startsWith('a · ⚠ 1,296,525,622'), el.textContent);
+assert.strictEqual(el.className, 'ts-warn');
+// a share under 1% is not rounded to 0%
+const few = {disk: 'sdb', io_trace: {lost: 12, devices: [{name: 'sdb', unpaired: 12, stats: {device: st(50000, 50000)}}]}};
+assert.strictEqual(lossInfo(few, M('iolat'), rd).lines[1], 'Under 1% of the events were lost: 12 lost vs 100,000 requests timed in these series.');
+assert.strictEqual(lossShare(0), 'About 0%');
+assert.strictEqual(fmtCount(0), '0');
+assert.strictEqual(fmtCount(999), '999');
+assert.strictEqual(fmtCount(1000), '1,000');
+console.log('OK');
+`)
+}
+
 func TestGraphsPageSourceLine(t *testing.T) {
-	runPageJS(t, []string{"iolatKind", "sourceLine", "lossNote", "addLossNote"}, `
+	runPageJS(t, []string{"iolatKind", "sourceLine"}, `
 const assert = require('assert');
 const M = k => ({key: k});
 const nv = {io_trace: {text: 'ftrace: nvme_setup_cmd -> nvme_complete_rq', lost: 0}, flush_source: 'ftrace: flush src'};
@@ -828,19 +916,9 @@ assert.strictEqual(sourceLine(split, M('lat')), 'fio · ftrace: dev, blk · x');
 // a summary without the per-kind texts (older JSON) keeps the whole line
 assert.strictEqual(sourceLine(nv, M('iolatblk')), 'ftrace: nvme_setup_cmd -> nvme_complete_rq');
 assert.strictEqual(sourceLine(mem, M('iolatblk')), 'no ftrace latency: no tracefs');
-assert.strictEqual(lossNote(split, M('iolatblk')), '⚠ 2 trace events lost: the ftrace series are incomplete');
 const h = sourceLine(hdd, M('iolat'));
 assert.ok(h.includes('block_rq_issue -> block_rq_complete') && !h.includes('nvme'), h);
 assert.ok(!sourceLine(hdd, M('lat')).includes('nvme'));
-assert.strictEqual(lossNote(hdd, M('lat')), '⚠ 3 trace events lost: the ftrace series are incomplete');
-assert.strictEqual(lossNote(hdd, M('iolat')), '⚠ 3 trace events lost: the ftrace series are incomplete');
-assert.strictEqual(lossNote(hdd, M('iops')), '');
-assert.strictEqual(lossNote(hdd, M('flush')), '');
-assert.strictEqual(lossNote(nv, M('lat')), '');
-assert.strictEqual(lossNote({}, M('lat')), '');
-const el = {className: 'x', textContent: 'a'};
-addLossNote(el, hdd, M('lat'));
-assert.ok(el.textContent.startsWith('a · ⚠ 3'), el.textContent);
 console.log('OK');
 `)
 }
@@ -878,7 +956,7 @@ console.log('OK');
 
 // A loss note shown in the modal must not survive into the next one.
 func TestGraphsPageModalClearsWarn(t *testing.T) {
-	runPageJS(t, []string{"openModal", "iolatKind", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote"}, `
+	runPageJS(t, []string{"openModal", "iolatKind", "fmtCount", "lossShare", "lossSeries", "lossInfo", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote"}, `
 const assert = require('assert');
 const els = {};
 const el = id => els[id] || (els[id] = {id, textContent: '', className: '', innerHTML: '',
@@ -891,9 +969,11 @@ const membersText = () => '', settingTag = () => '', RPV = {}, mdHeader = () => 
 const seriesRow = () => ({});
 let modalCtx = null;
 const makeChart = (c, d, m, lo, hi, warnEl) => ({destroy() {}});
+const cardSeries = () => [{skey: 'ftrace.device.mean.r', label: 'Read device mean (ftrace)'}];
 const lossy = {disk: 'sda', io_trace: {lost: 4}};
 openModal(lossy, {key: 'lat', label: 'Latency', source: 'fio'}, 0, 1, 'normal');
-assert.ok(el('modal-ts-warn').textContent.includes('4 trace events lost'));
+assert.ok(el('modal-ts-warn').textContent.includes('4 trace events lost (ring buffer 4)'), el('modal-ts-warn').textContent);
+assert.ok(el('modal-ts-warn').textContent.includes('\nRing buffer: 4 events dropped'), el('modal-ts-warn').textContent);
 openModal({disk: 'sda'}, {key: 'bw', label: 'BW', source: 'fio'}, 0, 1, 'normal');
 assert.strictEqual(el('modal-ts-warn').textContent, '');
 // a bio-based node's Block-layer modal adds the node's note to the source line

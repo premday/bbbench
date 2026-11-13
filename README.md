@@ -496,6 +496,15 @@ when a run is loaded; the run summary JSON (`<id>_summary.json`) stores
 overruns (the reader fell behind) plus events that found no partner (requests
 still pending when the phase ended, a command id reused, completions with no
 request). It is shown on the cards and the Details page and is never hidden.
+On the graphs page a card with losses says which of its ftrace series are
+incomplete and why: the ring buffer part makes every ftrace series of the phase
+incomplete (their statistics are a sample of the events that arrived), the
+unpaired part names each device with a series on that card and those series,
+with the share of the events lost when the counts allow it. Large ring buffer
+counts are expected on fast drives: an SSD phase runs 3600 s by default, and at
+100,000 IOPS with two to four events per request that is about a billion trace
+events, which a single reader may not keep up with; `--no-io-trace` turns the
+tracing off.
 
 **Cost and opt-out.** Tracing every read and write costs CPU, and at very high
 IOPS it can disturb the numbers it measures; this is why `--no-io-trace` exists.

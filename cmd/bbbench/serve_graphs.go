@@ -573,6 +573,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .modal-md .md-badge { font-size: 11px; }
         .modal-md .md-note { font-size: 12px; }
         .ts-warn {
+            white-space: pre-line;
             font-size: 10px; color: #92400e; background: #fef3c7;
             border: 1px solid #fcd34d; border-radius: 3px;
             padding: 2px 6px; margin-top: 4px;
@@ -602,6 +603,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .modal-hint { font-size: 11px; color: #94a3b8; margin-top: 4px; }
         .modal-chart-wrap  { position: relative; flex: 1; margin-top: 10px; }
         .modal-ts-warn {
+            white-space: pre-line;
             font-size: 11px; color: #92400e; background: #fef3c7;
             border: 1px solid #fcd34d; border-radius: 3px;
             padding: 3px 8px; margin-top: 6px;
@@ -833,16 +835,115 @@ __NAVBAR_HTML__
         }
         return '';
     }
-    // lossNote warns when the kernel dropped trace events of this phase.
-    function lossNote(d, metric) {
-        if (metric.key !== 'lat' && !iolatKind(metric)) return '';
-        const n = d.io_trace ? d.io_trace.lost || 0 : 0;
-        return n > 0 ? '\u26a0 ' + n + ' trace events lost: the ftrace series are incomplete' : '';
+    // fmtCount writes an integer with thousands separators (1,296,525,622).
+    function fmtCount(n) {
+        return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     }
-    // addLossNote appends the loss note to warnEl (which tsWarn may have filled).
-    function addLossNote(warnEl, d, metric) {
-        const n = lossNote(d, metric);
-        if (!n || !warnEl) return;
+    // lossShare words a percentage: 'About 94%', 'Under 1%'.
+    function lossShare(p) {
+        return p > 0 && p < 1 ? 'Under 1%' : 'About ' + Math.round(p) + '%';
+    }
+    // lossSeries are the ftrace series of a card (series = cardSeries: skey
+    // and legend label) with the traced device and the kind each one comes
+    // from: ftrace.<kind>.<stat>.<dir> is the target (the first traced
+    // device), ftrace.member:<name> a member of the card's kind; flush the
+    // Flush series. label has the '(ftrace)' suffix removed.
+    function lossSeries(d, metric, series) {
+        const devs = (d.io_trace && d.io_trace.devices) || [];
+        const target = devs.length ? devs[0].name : d.disk;
+        const out = [];
+        (series || []).forEach(s => {
+            const label = (s.label || '').replace(/ \(ftrace\)$/, '');
+            if (s.skey === 'flush') { out.push({label, dev: '', kind: 'flush'}); return; }
+            if (!s.skey || s.skey.indexOf('ftrace.') !== 0) return;
+            const rest = s.skey.slice('ftrace.'.length);
+            if (rest.indexOf('member:') === 0) out.push({label, dev: rest.slice('member:'.length), kind: iolatKind(metric) || 'device'});
+            else out.push({label, dev: target, kind: rest.split('.')[0]});
+        });
+        return out;
+    }
+    // lossInfo says which ftrace series of a card are incomplete and why,
+    // from the data: {headline, lines, text} or null. Two causes: the ring
+    // buffer overrun (io_trace.overrun, else lost minus every unpaired: the
+    // kernel dropped events of the whole session, so every series of the
+    // phase misses some) and each device's unpaired requests (only the
+    // devices with a series on this card, with those series). The share
+    // lost is given only when the shown kinds have counts. The Flush card
+    // has its own session: lost = Flushes issued but never seen completing
+    // (its overruns are not recorded).
+    function lossInfo(d, metric, series) {
+        const ls = lossSeries(d, metric, series);
+        if (!ls.length) return null;
+        const pct = (lost, seen) => 100 * lost / (lost + seen);
+        if (metric.key === 'flush') {
+            const n = (d.flush && d.flush.lost) || 0;
+            if (n <= 0) return null;
+            const label = ls[0].label + ' (ftrace)';
+            const headline = '\u26a0 ' + fmtCount(n) + ' Flush command' + (n === 1 ? '' : 's') + ' never seen completing: ' + label + ' is incomplete';
+            const lines = ['Issued during the trace but their completion was never seen: still in flight when the phase ended, or the completion event was dropped (the Flush session\'s ring-buffer overruns are not recorded).'];
+            const seen = d.flush.count || 0;
+            if (seen > 0) lines.push(lossShare(pct(n, seen)) + ' of the Flushes were not timed: ' + fmtCount(n) + ' vs ' + fmtCount(seen) + ' timed.');
+            return {headline, lines, text: headline + '\n' + lines.join('\n')};
+        }
+        if (metric.key !== 'lat' && !iolatKind(metric)) return null;
+        const t = d.io_trace;
+        if (!t) return null;
+        const devs = t.devices || [];
+        const allUnpaired = devs.reduce((a, x) => a + (x.unpaired || 0), 0);
+        const overrun = Math.max(t.overrun || 0, (t.lost || 0) - allUnpaired);
+        // the devices of the card, in the order of their first series
+        const onCard = [];
+        ls.forEach(s => {
+            let e = onCard.find(x => x.dev === s.dev);
+            if (!e) onCard.push(e = {dev: s.dev, labels: [], kinds: []});
+            if (e.labels.indexOf(s.label) === -1) e.labels.push(s.label);
+            if (e.kinds.indexOf(s.kind) === -1) e.kinds.push(s.kind);
+        });
+        const unp = onCard.map(e => Object.assign({n: ((devs.find(x => x.name === e.dev) || {}).unpaired) || 0}, e)).filter(e => e.n > 0);
+        const unpaired = unp.reduce((a, e) => a + e.n, 0);
+        const lost = overrun + unpaired;
+        if (lost <= 0) return null;
+        const parts = [];
+        if (overrun > 0) parts.push('ring buffer ' + fmtCount(overrun));
+        if (unpaired > 0) parts.push('unpaired ' + fmtCount(unpaired));
+        const headline = '\u26a0 ' + fmtCount(lost) + ' trace events lost (' + parts.join(', ') + '): ' +
+            (overrun > 0 ? 'every ftrace series on this card is incomplete' : 'incomplete: ' + unp.map(e => e.dev).join(', '));
+        const lines = [];
+        if (overrun > 0) {
+            const labels = ls.map(s => s.label).filter((l, k, a) => a.indexOf(l) === k);
+            lines.push('Ring buffer: ' + fmtCount(overrun) + ' events dropped by the kernel because the trace buffers filled before bbbench read them (typically very high IOPS). ' +
+                'This makes every ftrace series of this phase incomplete, every device and kind; on this card (' + labels.length + '): ' + labels.join(', ') + '. ' +
+                'Their statistics come from the events that did arrive: a sample, in which a busy period may be under-represented.');
+        }
+        if (unpaired > 0) {
+            lines.push('Unpaired (a request or bio that never completed within the trace, or whose start or end event was lost; counted per device): ' +
+                unp.map(e => e.dev + ': ' + fmtCount(e.n) + ' unpaired: ' + e.labels.join(', ')).join('; ') + '.');
+        }
+        // requests timed in the card's devices (the phase summary counts of
+        // the card's kinds; the kinds of a device time the same requests,
+        // so the largest one counts)
+        let seen = 0;
+        onCard.forEach(e => {
+            const dev = devs.find(x => x.name === e.dev);
+            seen += Math.max(0, ...e.kinds.map(k => {
+                const st = dev && dev.stats && dev.stats[k];
+                return st ? ((st.r && st.r.count) || 0) + ((st.w && st.w.count) || 0) : 0;
+            }));
+        });
+        if (seen > 0) lines.push(lossShare(pct(lost, seen)) + ' of the events were lost: ' + fmtCount(lost) + ' lost vs ' + fmtCount(seen) + ' requests timed in these series.');
+        return {headline, lines, text: headline + '\n' + lines.join('\n')};
+    }
+    // lossNote is the text of lossInfo, '' when nothing is lost.
+    function lossNote(d, metric, series) {
+        const i = lossInfo(d, metric, series);
+        return i ? i.text : '';
+    }
+    // addLossNote appends the loss note of the card's series to warnEl
+    // (which tsWarn may have filled); text only, one line per cause.
+    function addLossNote(warnEl, d, metric, mode) {
+        if (!warnEl) return;
+        const n = lossNote(d, metric, cardSeries(d, metric, mode));
+        if (!n) return;
         warnEl.className = warnEl.className.includes('modal') ? 'modal-ts-warn' : 'ts-warn';
         warnEl.textContent = (warnEl.textContent ? warnEl.textContent + ' \u00b7 ' : '') + n;
     }
@@ -1991,7 +2092,7 @@ __NAVBAR_HTML__
         warnEl.className = 'modal-ts-warn';
         warnEl.textContent = '';
         modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl, mode);
-        addLossNote(warnEl, d, metric);
+        addLossNote(warnEl, d, metric, mode);
         const seriesEl = document.getElementById('modal-series');
         seriesEl.innerHTML = '';
         seriesEl.appendChild(seriesRow(d, metric, mode, 'modal:' + metric.key));
@@ -2065,7 +2166,7 @@ __NAVBAR_HTML__
             return card;
         }
         charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
-        addLossNote(warnEl, d, metric);
+        addLossNote(warnEl, d, metric, mode);
 
         card.addEventListener('click', () => openModal(d, metric, yLow, yHigh, mode, pname, phaseData));
         return card;
