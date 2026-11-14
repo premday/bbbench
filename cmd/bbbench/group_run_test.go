@@ -27,7 +27,7 @@ type fakeCall struct {
 	CtxErr         error // ctx.Err() when the call was made
 }
 
-// fakeSetting keeps a current value per device. Apply takes effect unless
+// fakeSetting (drive ops) keeps a current value per device. Apply takes effect unless
 // onApply says otherwise; Restore fails for the devices in restoreErr.
 type fakeSetting struct {
 	mu         sync.Mutex
@@ -39,14 +39,17 @@ type fakeSetting struct {
 	applyN     int
 }
 
+// perDrive is the Setting of fake drive ops, with a short read-back.
+func perDrive(ops settings.DriveOps) settings.Setting {
+	return settings.PerDrive(ops, 50*time.Millisecond)
+}
+
 func newFakeSetting(cur map[string]string) *fakeSetting {
 	return &fakeSetting{cur: cur, restoreErr: map[string]bool{}}
 }
 
 func (f *fakeSetting) Name() string             { return "fake cache" }
 func (f *fakeSetting) Kind() settings.Kind      { return settings.Applied }
-func (f *fakeSetting) Scope() settings.Scope    { return settings.ScopeDrive }
-func (f *fakeSetting) Input() settings.Input    { return settings.InputValues }
 func (f *fakeSetting) Values() []settings.Value { return fakeValues }
 func (f *fakeSetting) Applicable(settings.Target) (bool, string) {
 	return true, ""
@@ -168,7 +171,7 @@ func testGroup(t *testing.T, strategy rungroup.Strategy, names ...string) (group
 	ex := &fakeExec{}
 	dir := t.TempDir()
 	cfg := groupConfig{
-		Setting:      fs,
+		Setting:      perDrive(fs),
 		Values:       fakeValues,
 		Strategy:     strategy,
 		Drives:       drives,
@@ -688,15 +691,14 @@ func TestDriveRefs(t *testing.T) {
 
 func TestRestoreFromRecovery_MatchesBySerial(t *testing.T) {
 	quietLogger(t)
-	drives, targets := testDrives("sdc")
-	drives[0].Device.Serial = "S1"
+	_, targets := testDrives("sdc")
 	targets["sdc"] = settings.Target{Name: "sdc", Path: "/dev/sdc", Serial: "S1", Model: "M1"}
 	fs := newFakeSetting(map[string]string{"sdc": "disabled"})
 	rec := &rungroup.Recovery{Setting: fs.Name(), Drives: []rungroup.RecoveryDrive{
 		{Serial: "S1", Model: "M1", Name: "sdb", Original: settings.Reading{Value: "enabled"}},
 		{Serial: "S9", Model: "M1", Name: "sdx", Original: settings.Reading{Value: "disabled"}},
 	}}
-	failed := restoreFromRecovery(context.Background(), fs, rec, drives, targets)
+	failed := restoreFromRecovery(context.Background(), perDrive(fs), rec, filepath.Join(t.TempDir(), "rec.json"), targets)
 	restores := fs.callsOf("restore")
 	if len(restores) != 1 || restores[0].Dev != "sdc" || restores[0].Value != "enabled" {
 		t.Errorf("restores %+v, want sdc to enabled", restores)
@@ -711,13 +713,13 @@ func TestRestoreFromRecovery_MatchesBySerial(t *testing.T) {
 
 func TestRestoreFromRecovery_VerifyFailureReported(t *testing.T) {
 	quietLogger(t)
-	drives, targets := testDrives("sdb")
+	_, targets := testDrives("sdb")
 	fs := newFakeSetting(map[string]string{"sdb": "disabled"})
 	fs.restoreErr["sdb"] = true
 	rec := &rungroup.Recovery{Setting: fs.Name(), Drives: []rungroup.RecoveryDrive{
 		{Serial: "SN-sdb", Model: "M1", Name: "sdb", Original: settings.Reading{Value: "enabled"}},
 	}}
-	if failed := restoreFromRecovery(context.Background(), fs, rec, drives, targets); !reflect.DeepEqual(failed, []string{"sdb"}) {
+	if failed := restoreFromRecovery(context.Background(), perDrive(fs), rec, filepath.Join(t.TempDir(), "rec.json"), targets); !reflect.DeepEqual(failed, []string{"sdb"}) {
 		t.Errorf("failed = %v, want [sdb]", failed)
 	}
 }
@@ -791,7 +793,7 @@ func TestRunGroup_SignalRestores(t *testing.T) {
 	}
 }
 
-// panicSetting panics when restoring one drive.
+// panicSetting (drive ops) panics when restoring one drive.
 type panicSetting struct {
 	*fakeSetting
 	dev string
@@ -806,7 +808,7 @@ func (p panicSetting) Restore(ctx context.Context, t settings.Target, original s
 
 func TestRunGroup_RestorePanicOnOneDrive(t *testing.T) {
 	cfg, fs, _ := testGroup(t, rungroup.Sequential, "sdb", "sdc")
-	cfg.Setting = panicSetting{fs, "sdb"}
+	cfg.Setting = perDrive(panicSetting{fs, "sdb"})
 	g, err := runGroup(context.Background(), cfg)
 	if err == nil {
 		t.Error("no error")
@@ -822,7 +824,7 @@ func TestRunGroup_RestorePanicOnOneDrive(t *testing.T) {
 	}
 }
 
-// hinterSetting adds a manual restore command to the fake setting.
+// hinterSetting (drive ops) adds a manual restore command to the fake setting.
 type hinterSetting struct {
 	*fakeSetting
 	cmd func(t settings.Target, original settings.Reading) string
@@ -846,9 +848,9 @@ func TestRunGroup_RestoreFailureReportsCommand(t *testing.T) {
 	cfg, fs, _ := testGroup(t, rungroup.Sequential, "sdb", "sdc")
 	out := captureReport(t)
 	fs.restoreErr["sdb"] = true
-	cfg.Setting = hinterSetting{fs, func(tg settings.Target, o settings.Reading) string {
+	cfg.Setting = perDrive(hinterSetting{fs, func(tg settings.Target, o settings.Reading) string {
 		return "fixit --value=" + o.Value + " " + tg.Path
-	}}
+	}})
 	runGroup(context.Background(), cfg)
 	rep := out.String()
 	for _, want := range []string{"RESTORE FAILED", "sdb", "SN-sdb", `"enabled"`, "to set it back by hand: fixit --value=enabled /dev/sdb"} {
@@ -881,7 +883,7 @@ func TestRunGroup_ReportPanicDoesNotStopRestore(t *testing.T) {
 	cfg, fs, _ := testGroup(t, rungroup.Sequential, "sdb", "sdc", "sdd")
 	captureReport(t)
 	fs.restoreErr["sdb"] = true
-	cfg.Setting = hinterSetting{fs, func(tg settings.Target, o settings.Reading) string { panic("report bug") }}
+	cfg.Setting = perDrive(hinterSetting{fs, func(tg settings.Target, o settings.Reading) string { panic("report bug") }})
 	g, err := runGroup(context.Background(), cfg)
 	if err == nil {
 		t.Error("no error")
@@ -1060,13 +1062,13 @@ type writerFunc func([]byte) (int, error)
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 func TestResumeIgnoredNote(t *testing.T) {
-	if n := resumeIgnoredNote(false, newFakeSetting(nil)); n != "" {
+	if n := resumeIgnoredNote(false, perDrive(newFakeSetting(nil))); n != "" {
 		t.Errorf("note without --resume: %q", n)
 	}
 	if n := resumeIgnoredNote(true, nil); n != "" {
 		t.Errorf("note for a single run: %q", n)
 	}
-	if n := resumeIgnoredNote(true, newFakeSetting(nil)); !strings.Contains(n, "--resume") || !strings.Contains(n, "state file") {
+	if n := resumeIgnoredNote(true, perDrive(newFakeSetting(nil))); !strings.Contains(n, "--resume") || !strings.Contains(n, "state file") {
 		t.Errorf("note = %q", n)
 	}
 }

@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 
 	"bbbench/internal/flushtrace"
 )
@@ -25,6 +28,9 @@ var dependencies = []dependency{
 	{"hdparm", []string{"-V"}, false, "the SATA identify report in the disk dump, and changing the write cache of SATA drives in a setting test", "hdparm"},
 	{"sdparm", []string{"--version"}, false, "changing the write cache of SAS/SCSI drives in a setting test", "sdparm"},
 	{"lspci", []string{"--version"}, false, "the storage controller's name on the status page", "pciutils"},
+	{"mdadm", []string{"--version"}, false, "building software RAID arrays in a layout setting test (mdadm backend)", "mdadm"},
+	{"lvm", []string{"version"}, false, "building logical volumes in a layout setting test (LVM backend), and listing LVM physical volumes so that they are never offered", "lvm2"},
+	{"udevadm", []string{"--version"}, false, "waiting for udev after a layout teardown", "udev (systemd)"},
 }
 
 // depReport is the outcome of checking the external programs.
@@ -164,19 +170,44 @@ func (ec *ExecutionCoordinator) checkEnvironment() error {
 	if err := checkFioEngines(fioEngineList(), ec.workloads); err != nil {
 		return err
 	}
-	if !ec.flushTrace {
-		return nil
+	ec.warnTracing(flushtrace.TracefsAvailable, os.Stdout)
+	return nil
+}
+
+// tracingWarned makes each tracefs warning print once per process: a run
+// group calls checkEnvironment for every run.
+var tracingWarned struct{ flush, io sync.Once }
+
+// warnTracing says once per process that Flush or I/O latency cannot be
+// traced (tracefs missing): the phases still run.
+func (ec *ExecutionCoordinator) warnTracing(available func() error, w io.Writer) {
+	for _, t := range []struct {
+		on     bool
+		once   *sync.Once
+		format string // %v is the tracefs error
+	}{
+		{ec.flushTrace && ec.hasFsyncPhase(), &tracingWarned.flush, "  warning: Flush latency cannot be traced: %v\n" +
+			"           mount it with `mount -t tracefs nodev /sys/kernel/tracing`; the fsync phases still run and report fio's fsync latency only\n"},
+		{ec.ioTrace, &tracingWarned.io, "  warning: I/O latency cannot be traced: %v\n" +
+			"           the phases still run and report fio's latency only\n"},
+	} {
+		if !t.on {
+			continue
+		}
+		if err := available(); err != nil {
+			t.once.Do(func() { fmt.Fprintf(w, t.format, err) })
+		}
 	}
+}
+
+// hasFsyncPhase reports whether any workload has a phase that fsyncs.
+func (ec *ExecutionCoordinator) hasFsyncPhase() bool {
 	for _, w := range ec.workloads {
 		for _, phase := range w.Phases {
 			if phaseHasFsync(phase) {
-				if err := flushtrace.TracefsAvailable(); err != nil {
-					fmt.Printf("  warning: Flush latency cannot be traced: %v\n"+
-						"           mount it with `mount -t tracefs nodev /sys/kernel/tracing`; the fsync phases still run and report fio's fsync latency only\n", err)
-				}
-				return nil
+				return true
 			}
 		}
 	}
-	return nil
+	return false
 }

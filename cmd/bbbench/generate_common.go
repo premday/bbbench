@@ -54,14 +54,11 @@ func generateFioFilesForDrives(
 			"vendor":      strings.TrimSpace(disk.Vendor),
 		}
 
-		manufacturer := util.SanitizeFilename(strings.TrimSpace(disk.Vendor), "_")
-		if manufacturer == "" {
-			manufacturer = "unknown"
-		}
+		manufacturer := fileManufacturer(disk)
 
 		path := filepath.Join(outBase, host)
 		deviceName := filepath.Base(disk.Path)
-		filename := util.SanitizeFilename(fmt.Sprintf("%s_%s_%s_%s_%s_config.fio", host, manufacturer, disk.Model, disk.Serial, disk.ParentSubsystem), "_")
+		filename := fioFileName(host, disk)
 		filenameFioplot := util.SanitizeFilename(fmt.Sprintf("%s_%s_%s_%s_%s_fioplot.yml", host, manufacturer, disk.Model, disk.Serial, disk.ParentSubsystem), "_")
 
 		if err := os.MkdirAll(path, 0o755); err != nil {
@@ -101,4 +98,21 @@ func generateFioFilesForDrives(
 	}
 
 	return nil
+}
+
+// fileManufacturer is the sanitized vendor used in generated file names,
+// "unknown" when the vendor is empty.
+func fileManufacturer(d blockdev.Device) string {
+	m := util.SanitizeFilename(strings.TrimSpace(d.Vendor), "_")
+	if m == "" {
+		m = "unknown"
+	}
+	return m
+}
+
+// fioFileName is the name of a device's generated fio file,
+// {host}_{manufacturer}_{model}_{serial}_{subsystem}_config.fio, sanitized.
+// generate and discovery both use it, so they always agree.
+func fioFileName(host string, d blockdev.Device) string {
+	return util.SanitizeFilename(fmt.Sprintf("%s_%s_%s_%s_%s_config.fio", host, fileManufacturer(d), d.Model, d.Serial, d.ParentSubsystem), "_")
 }

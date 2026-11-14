@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -85,11 +84,7 @@ type selectionModel struct {
 }
 
 func newSelectionModel(drives []DriveInfo) selectionModel {
-	sorted := make([]DriveInfo, len(drives))
-	copy(sorted, drives)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Device.Name < sorted[j].Device.Name
-	})
+	sorted := sortedDrives(drives)
 
 	items := make([]list.Item, len(sorted))
 	for i, d := range sorted {

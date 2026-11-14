@@ -20,6 +20,8 @@ type GroupFile struct {
 	Originals map[string]settings.Reading `json:"originals"`
 	Runs      []GroupRun                  `json:"runs"`
 	Restore   GroupRestore                `json:"restore"`
+	// Variants lists the layouts of a layout group (empty for other groups).
+	Variants []GroupVariant `json:"variants,omitempty"`
 }
 
 type GroupRun struct {
@@ -27,6 +29,8 @@ type GroupRun struct {
 	Round  int          `json:"round"`
 	Status RunStatus    `json:"status"`
 	Drives []GroupDrive `json:"drives"`
+	// Teardown is the outcome of removing the run's layout (layout groups only).
+	Teardown *GroupRestore `json:"teardown,omitempty"`
 }
 
 type GroupDrive struct {
@@ -35,6 +39,10 @@ type GroupDrive struct {
 	Model  string `json:"model"`
 	Value  string `json:"value"`
 	Label  Label  `json:"label"`
+	// Kind is "" for a drive, "array" for a composite target.
+	Kind    settings.TargetKind `json:"kind,omitempty"`
+	UUID    string              `json:"uuid,omitempty"`
+	Members []Member            `json:"members,omitempty"`
 }
 
 // RestoreStatus is the state of restoring a group's original values.

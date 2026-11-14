@@ -3,7 +3,10 @@ package main
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+
+	"bbbench/internal/flushtrace"
 )
 
 func lookIn(present ...string) func(string) (string, error) {
@@ -20,8 +23,8 @@ func lookIn(present ...string) func(string) (string, error) {
 func fakeVersion(bin string, _ ...string) string { return bin + "-1.0" }
 
 func TestCheckDependencies_AllPresent(t *testing.T) {
-	r := checkDependencies(lookIn("fio", "smartctl", "nvme", "hdparm", "sdparm", "lspci"), fakeVersion)
-	if len(r.missing) != 0 || len(r.notes) != 0 || len(r.found) != 6 || r.found[0] != "fio-1.0" {
+	r := checkDependencies(lookIn("fio", "smartctl", "nvme", "hdparm", "sdparm", "lspci", "mdadm", "lvm", "udevadm"), fakeVersion)
+	if len(r.missing) != 0 || len(r.notes) != 0 || len(r.found) != 9 || r.found[0] != "fio-1.0" {
 		t.Errorf("%+v", r)
 	}
 	if err := printDependencies(r); err != nil {
@@ -33,11 +36,11 @@ func TestCheckDependencies_AllPresent(t *testing.T) {
 // install; a missing fio stops the run.
 func TestCheckDependencies_MissingOptionalAndRequired(t *testing.T) {
 	r := checkDependencies(lookIn("fio", "nvme"), fakeVersion)
-	if len(r.missing) != 0 || len(r.notes) != 4 {
+	if len(r.missing) != 0 || len(r.notes) != 7 {
 		t.Fatalf("%+v", r)
 	}
 	all := strings.Join(r.notes, "\n")
-	for _, want := range []string{"smartctl not found (install: smartmontools)", "SMART health", "hdparm not found (install: hdparm)", "sdparm not found (install: sdparm)", "lspci not found (install: pciutils)"} {
+	for _, want := range []string{"smartctl not found (install: smartmontools)", "SMART health", "hdparm not found (install: hdparm)", "sdparm not found (install: sdparm)", "lspci not found (install: pciutils)", "mdadm not found (install: mdadm)", "lvm not found (install: lvm2)", "udevadm not found (install: udev (systemd))"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("notes lack %q:\n%s", want, all)
 		}
@@ -91,5 +94,45 @@ func TestCheckFioEngines(t *testing.T) {
 	// If the engine list could not be read, fio itself reports it later.
 	if err := checkFioEngines(nil, w); err != nil {
 		t.Error(err)
+	}
+}
+
+// The tracefs warnings print once per process, not once per run of a group.
+func TestWarnTracingOncePerProcess(t *testing.T) {
+	tracingWarned = struct{ flush, io sync.Once }{}
+	t.Cleanup(func() { tracingWarned = struct{ flush, io sync.Once }{} })
+	fsync := []FioJob{{Name: "j", Section: "[j]\nfsync=1\n"}}
+	ec := &ExecutionCoordinator{flushTrace: true, ioTrace: true,
+		workloads: map[string]*FioWorkload{"sda": {Phases: [][]FioJob{fsync}}}}
+	missing := func() error { return errors.New("tracefs not found") }
+	var out strings.Builder
+	ec.warnTracing(missing, &out)
+	ec.warnTracing(missing, &out)
+	got := out.String()
+	if strings.Count(got, "warning: I/O latency cannot be traced: tracefs not found") != 1 ||
+		strings.Count(got, "warning: Flush latency cannot be traced") != 1 ||
+		!strings.Contains(got, "           the phases still run and report fio's latency only\n") {
+		t.Errorf("output:\n%s", got)
+	}
+	// Flush tracing off: the I/O warning still comes.
+	tracingWarned = struct{ flush, io sync.Once }{}
+	out.Reset()
+	(&ExecutionCoordinator{ioTrace: true}).warnTracing(missing, &out)
+	if !strings.Contains(out.String(), "I/O latency cannot be traced") || strings.Contains(out.String(), "Flush") {
+		t.Errorf("output:\n%s", out.String())
+	}
+}
+
+// The tracefs error is said once, without another feature's name.
+func TestWarnTracingTracefsMissingText(t *testing.T) {
+	tracingWarned = struct{ flush, io sync.Once }{}
+	t.Cleanup(func() { tracingWarned = struct{ flush, io sync.Once }{} })
+	dir := t.TempDir()
+	missing := func() error { _, err := flushtrace.FindTracefs(flushtrace.Options{TracefsRoot: dir}); return err }
+	var out strings.Builder
+	(&ExecutionCoordinator{ioTrace: true}).warnTracing(missing, &out)
+	if !strings.Contains(out.String(), "warning: I/O latency cannot be traced: tracefs not found (is it mounted, and are you root?)\n") ||
+		strings.Contains(out.String(), "unsupported") {
+		t.Errorf("output:\n%s", out.String())
 	}
 }

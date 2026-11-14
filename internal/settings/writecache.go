@@ -26,12 +26,18 @@ const (
 type writeCache struct{ env Env }
 
 // NewWriteCache returns the disk write cache policy setting.
-func NewWriteCache(env Env) Setting { return &writeCache{env: env.fill()} }
+func NewWriteCache(env Env) Setting {
+	env = env.fill()
+	return PerDrive(newWriteCacheOps(env), env.Settle)
+}
+
+// newWriteCacheOps returns the write cache of each drive.
+func newWriteCacheOps(env Env) *writeCache { return &writeCache{env: env.fill()} }
+
+var _ DriveCommandHinter = (*writeCache)(nil)
 
 func (w *writeCache) Name() string { return "disk write cache policy" }
 func (w *writeCache) Kind() Kind   { return Applied }
-func (w *writeCache) Scope() Scope { return ScopeDrive }
-func (w *writeCache) Input() Input { return InputValues }
 func (w *writeCache) Values() []Value {
 	return []Value{{ID: enabled, Label: "Write cache enabled"}, {ID: disabled, Label: "Write cache disabled"}}
 }

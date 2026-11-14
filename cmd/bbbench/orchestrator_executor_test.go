@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"bbbench/internal/blockdev"
 )
 
 // TestParseFioSingleLog_IOPS verifies that IOPS values from 10 job files are
@@ -512,5 +515,34 @@ func TestParseFioSingleLog_EdgeSlotsNotIncomplete(t *testing.T) {
 		if p.Incomplete {
 			t.Errorf("edge point t=%v flagged incomplete", p.T)
 		}
+	}
+}
+
+// The results summary lists the drives in natural device-name order.
+func TestDisplayResultsNaturalOrder(t *testing.T) {
+	quietLogger(t)
+	ec := &ExecutionCoordinator{results: map[string][]*FioResult{}}
+	for _, n := range []string{"nvme10n1", "sdaa", "nvme2n1", "sdz"} {
+		ec.drives = append(ec.drives, DriveInfo{Device: blockdev.Device{Name: n}})
+		ec.results[n] = []*FioResult{{DeviceName: n}}
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	displayResults(ec)
+	os.Stdout = stdout
+	w.Close()
+	b, _ := io.ReadAll(r)
+	var order []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if name, ok := strings.CutPrefix(l, "Drive: "); ok {
+			order = append(order, strings.Fields(name)[0])
+		}
+	}
+	if strings.Join(order, ",") != "nvme2n1,nvme10n1,sdz,sdaa" {
+		t.Errorf("order = %v\n%s", order, b)
 	}
 }

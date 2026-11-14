@@ -18,6 +18,7 @@ import (
 
 	"bbbench/internal/diskinfo"
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/iotrace"
 	"bbbench/internal/rungroup"
 )
 
@@ -40,12 +41,21 @@ type ExecutionCoordinator struct {
 	finishOnce  sync.Once
 	tempFiles   []string
 	tempFilesMu sync.Mutex
+	// traces closes the trace sessions of the running phases on a force quit
+	// (cleanup): registerTrace.
+	traces      map[int]func()
+	traceSeq    int
+	tracesMu    sync.Mutex
 	stateFile   string
 	resumeState *ExecutionState
 	startTime   time.Time
 	liveResult  *BenchmarkResult // updated after each phase for live web view
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
 	flushTrace  bool             // trace device Flush latency during phases that fsync
+	ioTrace     bool             // trace read and write latency (kernel events) during every phase
+	// traceBufferMB is the ring buffer budget shared by the concurrent
+	// trace sessions (--trace-buffer-mb; 0 = defaultTraceBufferMB).
+	traceBufferMB int
 
 	labels  map[string]rungroup.Label // device -> setting label (run groups; nil otherwise)
 	groupID string
@@ -74,6 +84,49 @@ func (ec *ExecutionCoordinator) avgMsec() int {
 	return ec.logAvgMsec
 }
 
+// traceSessions is the number of trace sessions open at the same time in
+// phase phaseIdx of drive: per drive one I/O session and, when that drive's
+// phase fsyncs, one Flush session; in parallel-sync mode every drive runs its
+// phase phaseIdx at the same time. They share the budget (see
+// ioTraceBufferKB). At least 1.
+func (ec *ExecutionCoordinator) traceSessions(drive string, phaseIdx int) int {
+	names := []string{drive}
+	if ec.mode == "parallel-sync" {
+		names = names[:0]
+		for _, d := range ec.drives {
+			names = append(names, d.Device.Name)
+		}
+	}
+	n := 0
+	for _, name := range names {
+		w := ec.workloads[name]
+		if w == nil || phaseIdx >= len(w.Phases) {
+			continue
+		}
+		if ec.ioTrace {
+			n++
+		}
+		if ec.flushTrace && phaseHasFsync(w.Phases[phaseIdx]) {
+			n++
+		}
+	}
+	return max(n, 1)
+}
+
+// maxTraceSessions is the largest traceSessions of any phase of any drive:
+// the run's most concurrent phase.
+func (ec *ExecutionCoordinator) maxTraceSessions() int {
+	n := 1
+	for _, d := range ec.drives {
+		if w := ec.workloads[d.Device.Name]; w != nil {
+			for i := range w.Phases {
+				n = max(n, ec.traceSessions(d.Device.Name, i))
+			}
+		}
+	}
+	return n
+}
+
 // coalesceMsec returns the timestamp bucket size used when coalescing log files.
 // It is logAvgMsec/10, with a minimum of 1000ms (1 second).
 func (ec *ExecutionCoordinator) coalesceMsec() int64 {
@@ -98,6 +151,12 @@ type FioResult struct {
 	// FlushTrace is the device Flush latency measured from kernel trace
 	// events, for phases that issue fsyncs. Nil when not measured.
 	FlushTrace *flushtrace.Summary
+	// IOTrace is the read and write latency measured from kernel trace
+	// events (the drive, then an array's members). Nil when not traced;
+	// IOTraceNote then says why ("no ftrace latency: <reason>"), unless
+	// tracing was off.
+	IOTrace     *iotrace.Summary
+	IOTraceNote string
 	// Skipped is why the phase was not run on this device (not an error).
 	Skipped string
 	// Warning is a caveat about a phase that did run (e.g. no Flush to trace).
@@ -290,16 +349,52 @@ func (ec *ExecutionCoordinator) onSecondSignal(exit func(int)) {
 	exit(exitCodeSIGINT)
 }
 
-// cleanup removes temporary files.
+// cleanup removes temporary files and ends the running trace sessions.
 func (ec *ExecutionCoordinator) cleanup() {
 	ec.tempFilesMu.Lock()
-	defer ec.tempFilesMu.Unlock()
-
 	for _, tmpFile := range ec.tempFiles {
 		if err := os.Remove(tmpFile); err != nil {
 			logger.Debug("cleanup temp file", "path", tmpFile, "err", err)
 		}
 	}
+	ec.tempFilesMu.Unlock()
+
+	ec.tracesMu.Lock()
+	closers := make([]func(), 0, len(ec.traces))
+	for _, c := range ec.traces {
+		closers = append(closers, c)
+	}
+	ec.tracesMu.Unlock()
+	runParallel(closers...)
+}
+
+// registerTrace adds the closer of a phase's trace sessions to the cleanup
+// list; the returned function removes it again.
+func (ec *ExecutionCoordinator) registerTrace(close func()) (unregister func()) {
+	ec.tracesMu.Lock()
+	defer ec.tracesMu.Unlock()
+	if ec.traces == nil {
+		ec.traces = map[int]func(){}
+	}
+	ec.traceSeq++
+	id := ec.traceSeq
+	ec.traces[id] = close
+	return func() {
+		ec.tracesMu.Lock()
+		defer ec.tracesMu.Unlock()
+		delete(ec.traces, id)
+	}
+}
+
+// runParallel runs the functions in parallel (a trace Stop or Close may
+// wait for its reader) and returns when all are done.
+func runParallel(fns ...func()) {
+	var wg sync.WaitGroup
+	wg.Add(len(fns))
+	for _, f := range fns {
+		go func() { defer wg.Done(); f() }()
+	}
+	wg.Wait()
 }
 
 // registerTempFile adds a temporary file to the cleanup list.
@@ -564,6 +659,22 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 				if result.LogPrefix != "" {
 					// Same path as reloading a saved run: from the stored log.
 					applyFlushLog(&phaseResult, deviceName, result.LogPrefix)
+					applyMembersLog(&phaseResult, deviceName, result.LogPrefix)
+				}
+				// From the stored log when there is one (like a reload),
+				// else the in-memory summary.
+				fromLog := result.LogPrefix != "" && applyIOLatLog(&phaseResult, deviceName, result.LogPrefix)
+				if result.IOTrace != nil && !fromLog {
+					if phaseResult.IOTrace == nil {
+						phaseResult.IOTrace = make(map[string]*iotrace.Summary)
+					}
+					phaseResult.IOTrace[deviceName] = result.IOTrace
+				}
+				if result.IOTraceNote != "" {
+					if phaseResult.IOTraceNotes == nil {
+						phaseResult.IOTraceNotes = make(map[string]string)
+					}
+					phaseResult.IOTraceNotes[deviceName] = result.IOTraceNote
 				}
 				if len(result.JsonOutput) > 0 {
 					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)
@@ -1022,41 +1133,39 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	result.OutputPath = outputFile
 	result.LogPrefix = logPrefix
 
+	logAvgMsec := ec.avgMsec()
+	rampMs := phaseRampMs(workload, phase)
+
+	// The trace sessions are set up before the start gate (their buffers
+	// take time to allocate, which must not delay one drive's fio behind
+	// another's) and re-marked when it opens, so their time zero is fio's.
+	// Failure to trace never fails the phase: Flush tracing logs it, I/O
+	// tracing leaves a note for the phase.
+	sessions, cpus := ec.traceSessions(drive.Device.Name, phaseIdx), traceCPUs()
+	var flush *flushTraceRun
+	if ec.flushTrace && phaseHasFsync(phase) {
+		flush = startFlushTrace(drive.Device.Name, logPrefix, logAvgMsec, rampMs,
+			flushtrace.Options{SysBlock: ec.sysBlock, BufferKB: flushTraceBufferKB(ec.traceBufferMB, sessions, cpus)})
+	}
+	var ioTrace *ioTraceRun
+	if ec.ioTrace {
+		ioTrace, result.IOTraceNote = startIOTraceWith(drive, logPrefix, logAvgMsec, rampMs,
+			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ioTraceBufferKB(ec.traceBufferMB, sessions, cpus)})
+	}
+	// A force quit (cleanup) must not leave the instances behind.
+	untrack := ec.registerTrace(func() {
+		runParallel(flush.Close, ioTrace.Close)
+	})
+	defer untrack()
+
 	// All setup done — wait for start gate so all drives launch fio together.
 	signalReady()
 	result.StartTime = time.Now()
+	flush.MarkStart()
+	ioTrace.MarkStart()
 
-	logAvgMsec := ec.avgMsec()
-
-	// For phases that fsync, time the device's Flush commands from kernel
-	// trace events while fio runs. Failure to trace never fails the phase.
-	stopTrace := func() {}
-	rampMs := phaseRampMs(workload, phase)
-	if ec.flushTrace && phaseHasFsync(phase) {
-		if sess, err := flushtrace.Start(drive.Device.Name, flushtrace.Options{}); err != nil {
-			logger.Warn("flush tracing unavailable",
-				"device", drive.Device.Name, "phase", phaseIdx, "err", err)
-		} else {
-			stopTrace = func() {
-				sum, err := sess.Stop()
-				if err != nil {
-					logger.Warn("flush tracing cleanup", "device", drive.Device.Name, "err", err)
-				}
-				sum.AvgMsec = logAvgMsec // series follow fio's polling interval
-				sum.OffsetMs = rampMs    // and fio's clock, which starts after its ramp
-				samples := sess.Samples()
-				// Same statistics as a later load of the log: without the ramp.
-				final := flushtrace.Finish(sum, samples)
-				result.FlushTrace = &final
-				// Keep the samples with the fio logs, so the run can be
-				// re-summarized and graphed later.
-				if err := writeFlushLog(logPrefix, final, samples); err != nil {
-					logger.Warn("storing flush samples", "device", drive.Device.Name, "err", err)
-				}
-				stopTrace = func() {}
-			}
-		}
-	}
+	// Sample the members of an array (no-op for a drive) while fio runs.
+	stopMembers := startMemberSampler(drive, logPrefix, logAvgMsec, rampMs)
 
 	// Execute fio with context for cancellation support
 	cmd := exec.CommandContext(ec.ctx, "fio",
@@ -1085,7 +1194,12 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		"output", outputFile)
 
 	output, err := cmd.CombinedOutput()
-	stopTrace()
+	stopMembers()
+	// Each Stop can wait up to 3 s for its reader: in parallel.
+	runParallel(
+		func() { result.IOTrace = ioTrace.Stop() },
+		func() { result.FlushTrace = flush.Stop() },
+	)
 	if err != nil {
 		// Check if it was cancelled
 		if ec.ctx.Err() != nil {

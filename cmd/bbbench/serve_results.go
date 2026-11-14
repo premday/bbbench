@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"bbbench/internal/flushtrace"
+	"bbbench/internal/iotrace"
 	"bbbench/internal/rungroup"
 )
 
@@ -49,6 +50,20 @@ type PhaseResult struct {
 	// FlushSeries is the Flush latency over time (mean µs per second, W
 	// column) per device, read back from the stored <prefix>_flush.1.log.
 	FlushSeries map[string][]TimePoint `json:"flush_series,omitempty"`
+	// MemberSeries is the I/O of each member of an array over time (device ->
+	// member -> series), read back from the stored <prefix>_members.1.log.
+	MemberSeries map[string]map[string]MemberSeries `json:"member_series,omitempty"`
+	// MDSeries is the md state and its changes per array device, read back
+	// from the same members log.
+	MDSeries map[string]MDInfo `json:"md_series,omitempty"`
+	// IOTrace is the kernel-measured I/O latency per drive (target and
+	// members), read back from the stored <prefix>_iolat.1.log.
+	IOTrace map[string]*iotrace.Summary `json:"io_trace,omitempty"`
+	// IOTraceSeries is its series: drive -> traced device -> points.
+	IOTraceSeries map[string]map[string][]IOLatPoint `json:"io_trace_series,omitempty"`
+	// IOTraceNotes says why a drive was not traced (only the summary JSON
+	// carries it; the loader never clears it).
+	IOTraceNotes map[string]string `json:"io_trace_notes,omitempty"`
 }
 
 // JobResult represents results for a single fio job.

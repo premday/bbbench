@@ -81,7 +81,7 @@ func ReadLog(r io.Reader) (Summary, []Window, error) {
 				k, v, _ := strings.Cut(f, "=")
 				switch k {
 				case "source":
-					sum.Source = v
+					sum.Source, sum.Events = v, EventsOf(v)
 				case "exact":
 					sum.Exact = v == "true"
 				case "lost":
@@ -164,11 +164,11 @@ func Finish(meta Summary, all []Sample) Summary {
 	return sum
 }
 
-// afterMs returns the samples that completed at or after ms milliseconds.
+// afterMs returns the samples that completed at or after ms milliseconds
+// (never before time zero: a Flush that completed before the last start
+// marker, i.e. before a start gate opened, has a negative time).
 func afterMs(all []Sample, ms int) []Sample {
-	if ms <= 0 {
-		return all
-	}
+	ms = max(ms, 0)
 	var out []Sample
 	for _, x := range all {
 		if x.TimeNs >= int64(ms)*1_000_000 {
@@ -188,7 +188,8 @@ type Window struct {
 }
 
 // Windows averages the samples over fixed windows of windowMs (by completion
-// time), in time order. Empty windows are omitted.
+// time), in time order. Empty windows are omitted, and so are samples before
+// time zero (negative times: completed before the last start marker).
 func Windows(all []Sample, windowMs int) []Window {
 	if windowMs <= 0 {
 		windowMs = DefaultWindowMs
@@ -200,10 +201,10 @@ func Windows(all []Sample, windowMs int) []Window {
 	}
 	m := map[int64]*acc{}
 	for _, x := range all {
-		k := x.TimeNs / windowNs
 		if x.TimeNs < 0 {
-			k = 0
+			continue
 		}
+		k := x.TimeNs / windowNs
 		a := m[k]
 		if a == nil {
 			a = &acc{min: x.LatencyNs, max: x.LatencyNs}

@@ -347,6 +347,13 @@ func TestDriveFirmware(t *testing.T) {
 	if got := DriveFirmware("sda", o); got != "1B6Q" {
 		t.Errorf("sata = %q", got)
 	}
+	fo := Options{Sys: sys, Run: fakeRun(nil), DriveWCE: func(string) (bool, error) { return false, errors.New("x") }}
+	if got := Collect("sda", fo).Firmware; got != "1B6Q" {
+		t.Errorf("Collect sata firmware = %q", got)
+	}
+	if got := Collect("nvme0n1", fo).Firmware; got != "FW9" {
+		t.Errorf("Collect nvme firmware = %q", got)
+	}
 	if got := DriveFirmware("sdz", o); got != "" {
 		t.Errorf("unknown = %q", got)
 	}

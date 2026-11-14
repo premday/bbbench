@@ -55,6 +55,10 @@ const (
 	stepVerifyingAfter  = "verifying-after"
 	stepRestoring       = "restoring"
 	stepDone            = "done"
+	// Layout groups: before stepVerifyingBefore, then after stepVerifyingAfter.
+	stepBuilding    = "building"
+	stepResyncing   = "resyncing"
+	stepTearingDown = "tearing-down"
 )
 
 // GroupStatus is where a run group is: run Run (1-based) of Runs, at Step.
@@ -65,6 +69,10 @@ type GroupStatus struct {
 	Run      int               `json:"run"`
 	Runs     int               `json:"runs"`
 	Step     string            `json:"step"`
+	// Progress is the resync progress in percent while Step is resyncing.
+	Progress float64 `json:"progress,omitempty"`
+	// Variant is the label of the current layout (layout groups only).
+	Variant string `json:"variant,omitempty"`
 }
 
 // DriveSetting is a drive's setting value in the current run of a group and
@@ -107,6 +115,15 @@ type DriveStatus struct {
 	// Setting is the run group setting of the drive (nil for a single run).
 	// It is replaced, never mutated, so snapshots can share it.
 	Setting *DriveSetting `json:"setting,omitempty"`
+	// Kind is "" for a drive, "array" for a composite target with Members.
+	Kind    string         `json:"kind,omitempty"`
+	Members []MemberStatus `json:"members,omitempty"`
+}
+
+// MemberStatus is a member disk of an array target.
+type MemberStatus struct {
+	rungroup.Member
+	Config *diskinfo.Info `json:"config,omitempty"`
 }
 
 // newDriveStatuses is the pending status of each drive at the start of a
@@ -127,6 +144,12 @@ func newDriveStatuses(drives []DriveInfo, prev []DriveStatus) []DriveStatus {
 			Capacity: drive.Device.CapacityBytes / (1024 * 1024 * 1024),
 			Type:     driveType,
 			Status:   "pending",
+		}
+		if drive.IsArray() {
+			out[i].Kind = string(settings.TargetArray)
+			for _, m := range drive.Members {
+				out[i].Members = append(out[i].Members, MemberStatus{Member: m})
+			}
 		}
 		for _, p := range prev {
 			if p.Name == drive.Device.Name {
@@ -402,6 +425,16 @@ __NAVBAR_HTML__
         // user expanded, since the lists are re-rendered every 2 seconds.
         let phasesByDrive = {};
         let phasesFor = '';
+
+        // setHTML replaces an element's content only when it changed. The
+        // page polls every 2 seconds; rebuilding identical markup would still
+        // collapse what the user expanded, reset scroll positions and drop a
+        // text selection or a hovered tooltip.
+        function setHTML(el, html) {
+            if (el._html === html) return;
+            el._html = html;
+            el.innerHTML = html;
+        }
         const openKeys = new Set();
 
         document.addEventListener('toggle', e => {
@@ -532,7 +565,7 @@ __NAVBAR_HTML__
 
         // The disk configuration read at the start of the run: interface, link,
         // power, write cache and SMART health. Anything unreadable is left out.
-        function configHTML(c) {
+        function configHTML(c, scope) {
             if (!c) return '<div class="cfg"><span class="dim">Reading configuration&hellip;</span></div>';
             const row = (k, v) => v ? '<div class="row"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>' : '';
             const sp = (cls, t) => '<span class="' + cls + '">' + esc(t) + '</span>';
@@ -583,8 +616,87 @@ __NAVBAR_HTML__
                     ctrl += ' <span class="dim">(' + esc(ct.mode) + ')</span>';
                 }
             }
+            const q = c.queue;
             return '<div class="cfg">' + row('Interface', esc(c.interface || 'unknown')) + row('Slot', slot) + row('Controller', ctrl) + row('Link', link) +
-                row('Power', power) + row('Write cache', wc) + row('SMART', smart) + '</div>';
+                row('Power', power) + row('Write cache', wc) + row('SMART', smart) +
+                row('Queue', queueHTML(q)) + row('md', q ? mdHTML(q.md) : '') + row('dm_mod', q ? dmModHTML(q.dm_mod, scope) : '') + '</div>';
+        }
+
+        // The request queue read from sysfs: blk-mq or bio-based, hardware
+        // queues, active scheduler, then the tunables. '' when unknown.
+        function queueMode(q) {
+            const n = q.nr_hw_queues || 0;
+            let s = q.mq ? 'blk-mq: yes, ' + n + ' hardware queue' + (n === 1 ? '' : 's') : 'blk-mq: no (bio-based)';
+            if (q.scheduler) s += ', scheduler ' + q.scheduler;
+            return s;
+        }
+        function queueHTML(q) {
+            if (!q) return '';
+            const bits = [
+                q.schedulers && q.schedulers.length > 1 ? 'schedulers ' + q.schedulers.join(' ') : '',
+                q.nr_requests ? 'nr_requests ' + q.nr_requests : '',
+                q.rotational ? 'rotational ' + q.rotational : '',
+                q.read_ahead_kb ? 'read_ahead_kb ' + q.read_ahead_kb : '',
+                q.max_sectors_kb ? 'max_sectors_kb ' + q.max_sectors_kb : '',
+                q.wbt_lat_usec ? 'wbt_lat_usec ' + q.wbt_lat_usec : '',
+                q.rq_affinity ? 'rq_affinity ' + q.rq_affinity : '',
+                q.nomerges ? 'nomerges ' + q.nomerges : '',
+                q.io_poll ? 'io_poll ' + q.io_poll : '',
+                q.device_queue_depth ? 'queue_depth ' + q.device_queue_depth : '',
+                q.nvme_queue_count ? 'nvme queue_count ' + q.nvme_queue_count : '',
+                q.nvme_sqsize ? 'nvme sqsize ' + q.nvme_sqsize : ''
+            ].filter(Boolean);
+            return esc(queueMode(q)) + (bits.length ? '<br><span class="dim">' + esc(bits.join(' \u00b7 ')) + '</span>' : '');
+        }
+        // An md array's own configuration (an md node, or a dm-raid node
+        // that shows its md state).
+        function mdHTML(m) {
+            if (!m) return '';
+            return esc([m.level, m.raid_disks ? m.raid_disks + ' disks' : '', m.chunk_size ? 'chunk ' + m.chunk_size : '',
+                m.stripe_cache_size ? 'stripe cache ' + m.stripe_cache_size : '', m.sync_action ? 'sync ' + m.sync_action : '',
+                m.bitmap ? 'bitmap ' + m.bitmap : ''].filter(Boolean).join(' \u00b7 '));
+        }
+        // The device-mapper core module's queue parameters; one this kernel
+        // does not have is said so, never hidden. Every parameter is in the
+        // collapsed list.
+        function dmModHTML(d, scope) {
+            if (!d) return '';
+            if (!d.loaded) return '<span class="dim">not loaded</span>';
+            const v = k => d[k] ? esc(d[k]) : '<span class="dim">n/a (not on this kernel)</span>';
+            let h = ['use_blk_mq', 'dm_mq_nr_hw_queues', 'dm_mq_queue_depth'].map(k => k + ' ' + v(k)).join(' &middot; ');
+            const ks = Object.keys(d.params || {}).sort();
+            if (ks.length) {
+                const key = 'dmmod:' + (scope || '');
+                h += '<details data-key="' + esc(key) + '"' + (openKeys.has(key) ? ' open' : '') + '><summary class="dim">all dm_mod parameters (' + ks.length + ')</summary>' +
+                    ks.map(k => esc(k) + ' = ' + esc(d.params[k])).join('<br>') + '</details>';
+            }
+            return h;
+        }
+
+        // The member disks of an array target, one row each: model, serial,
+        // firmware, role, then (once the member's configuration has been read)
+        // interface, physical slot with who reported it, link speed and SMART
+        // health. '' for a drive.
+        function membersHTML(drive) {
+            const ms = drive.members || [];
+            if (ms.length === 0) return '';
+            const rows = ms.map(m => {
+                const c = m.config || {};
+                const bits = [esc(m.model || ''), m.serial ? 'S/N ' + esc(m.serial) : '', c.firmware ? 'fw ' + esc(c.firmware) : '', esc(m.role || '')];
+                if (c.interface) bits.push(esc(c.interface));
+                const sl = c.slot;
+                if (sl && sl.name) bits.push('slot ' + esc(sl.name) + (sl.source ? ' <span class="dim">(' + esc(sl.source) + ')</span>' : ''));
+                if (c.link_speed) {
+                    bits.push('link ' + esc(c.link_speed) + (c.link_max ? ' <span class="dim">(max ' + esc(c.link_max) + ')</span>' : '') +
+                        (c.link_below_max ? ' <span class="warn">below max</span>' : ''));
+                }
+                if (c.queue) bits.push('queue ' + esc(queueMode(c.queue)));
+                const st = c.smart && c.smart.status;
+                if (st) bits.push('SMART <span class="' + (st === 'PASSED' ? 'ok' : 'bad') + '">' + esc(st) + '</span>');
+                return '<div class="row"><span class="k">' + esc(m.name) + '</span><span class="v">' +
+                    bits.filter(Boolean).join(' &middot; ') + '</span></div>';
+            }).join('');
+            return '<div class="cfg"><div class="dim">Members</div>' + rows + '</div>';
         }
 
         // ---- Run groups: banner, per-drive setting badges, whole-group ETA ----
@@ -615,6 +727,7 @@ __NAVBAR_HTML__
                 readingBadge('before', st.before, st.value) + ' ' + readingBadge('after', st.after, st.value);
             if (st.valid === false) h += ' ' + badgeHTML('invalid', 'invalid', 'this drive did not hold the value for the run');
             if (group && group.step === 'restoring') h += ' ' + badgeHTML('restoring', 'restoring', 'the original setting is being restored');
+            if (group && group.step === 'tearing-down') h += ' ' + badgeHTML('restoring', 'tearing down', 'the layout is being torn down');
             return h + '</div>';
         }
 
@@ -635,8 +748,10 @@ __NAVBAR_HTML__
         // length of one full run. Drives run side by side, so the longest
         // drive counts.
         function groupEtaText(group, drives, phasesMap) {
-            const notStarted = group.step === 'applying' || group.step === 'verifying-before';
-            const after = group.step === 'verifying-after' || group.step === 'restoring' || group.step === 'done';
+            const notStarted = group.step === 'applying' || group.step === 'verifying-before' ||
+                group.step === 'building' || group.step === 'resyncing';
+            const after = group.step === 'verifying-after' || group.step === 'restoring' || group.step === 'done' ||
+                group.step === 'tearing-down';
             const runsLeft = Math.max(0, group.runs - group.run);
             let sec = 0, unknownPhases = 0, anyLeft = runsLeft > 0;
             drives.forEach(d => {
@@ -670,14 +785,29 @@ __NAVBAR_HTML__
                 new Date(Date.now() + sec * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) + ')';
         }
 
+        // What the group is doing: the layout steps in words (with the resync
+        // progress), the other steps by name.
+        function groupStepText(group) {
+            switch (group.step) {
+            case 'building': return 'building the layout';
+            case 'resyncing': return 'resyncing ' + Math.round(group.progress || 0) + '%';
+            case 'tearing-down': return 'tearing down';
+            }
+            return group.step;
+        }
+
         // The banner above the drives; empty (so the page is as before)
-        // outside a run group.
+        // outside a run group. A layout group names the run's layout; its ETA
+        // leaves the resyncs out (their length is not known).
         function groupBannerHTML(group, drives, phasesMap) {
             if (!group) return '';
+            let eta = groupEtaText(group, drives || [], phasesMap || {});
+            if (group.variant && eta !== 'all done') eta += ' (resync time not included)';
             return '<div class="group-banner">Setting test: <b>' + esc(group.setting) + '</b>, run ' +
-                esc(group.run) + ' of ' + esc(group.runs) + ', ' + esc(group.step) +
+                esc(group.run) + ' of ' + esc(group.runs) +
+                (group.variant ? ' (layout <b>' + esc(group.variant) + '</b>)' : '') + ', ' + esc(groupStepText(group)) +
                 ' <span class="dim">&middot; strategy: ' + esc(group.strategy) + ' &middot; ' +
-                esc(groupEtaText(group, drives || [], phasesMap || {})) + '</span></div>';
+                esc(eta) + '</span></div>';
         }
 
         function phasesHTML(drive) {
@@ -724,12 +854,12 @@ __NAVBAR_HTML__
             const progressText = document.getElementById('progress-text');
             const benchmarkDetails = document.getElementById('benchmark-details');
             const drivesList = document.getElementById('drives-list');
-            document.getElementById('group-banner').innerHTML = groupBannerHTML(status.group, status.drives, phasesByDrive);
+            setHTML(document.getElementById('group-banner'), groupBannerHTML(status.group, status.drives, phasesByDrive));
             const lastUpdate = document.getElementById('last-update');
 
             // Update status badge
             if (status.running) {
-                statusInfo.innerHTML = '<span class="status-badge status-running">Running</span>';
+                setHTML(statusInfo, '<span class="status-badge status-running">Running</span>');
                 progressContainer.style.display = 'block';
 
                 // Update progress
@@ -740,14 +870,14 @@ __NAVBAR_HTML__
                 progressText.textContent = progress + '%';
 
                 // Show benchmark details
-                benchmarkDetails.innerHTML =
-                    '<div class="drive-detail">Mode: ' + status.mode + '</div>' +
+                setHTML(benchmarkDetails,
+                    '<div class="drive-detail">Mode: ' + esc(status.mode) + '</div>' +
                     '<div class="drive-detail">Phase: ' + (status.current_phase + 1) + ' / ' + status.total_phases + '</div>' +
-                    '<div class="drive-detail">Completed: ' + status.completed_phases + ' / ' + status.total_phases + '</div>';
+                    '<div class="drive-detail">Completed: ' + status.completed_phases + ' / ' + status.total_phases + '</div>');
             } else {
-                statusInfo.innerHTML = '<span class="status-badge status-idle">Idle</span>';
+                setHTML(statusInfo, '<span class="status-badge status-idle">Idle</span>');
                 progressContainer.style.display = 'none';
-                benchmarkDetails.innerHTML = '';
+                setHTML(benchmarkDetails, '');
             }
 
             // Update drives list
@@ -777,19 +907,22 @@ __NAVBAR_HTML__
                     }
 
                     html += '<div class="drive-card">' +
-                        '<div class="drive-name">' + drive.name + ' (' + (drive.type || 'Unknown') + ')</div>' +
-                        '<div class="drive-detail">' + drive.vendor + ' ' + drive.model + '</div>';
+                        '<div class="drive-name">' + esc(drive.name) + ' (' + esc(drive.type || 'Unknown') + ')' +
+                        (drive.kind === 'array' ? ' &middot; array' : '') + '</div>' +
+                        '<div class="drive-detail">' + esc(drive.vendor) + ' ' + esc(drive.model) + '</div>';
                     if (drive.serial) {
-                        html += '<div class="drive-detail">S/N: ' + drive.serial + '</div>';
+                        html += '<div class="drive-detail">S/N: ' + esc(drive.serial) + '</div>';
                     }
                     if (drive.capacity_gb) {
                         html += '<div class="drive-detail">Capacity: ' + drive.capacity_gb + ' GB</div>';
                     }
                     html += settingBadgesHTML(drive, status.group);
-                    html += configHTML(drive.config);
+                    // An array shows its own node (queue, md/dm state) once
+                    // read, then its members' configuration.
+                    html += drive.kind === 'array' ? (drive.config ? configHTML(drive.config, drive.name) : '') + membersHTML(drive) : configHTML(drive.config, drive.name);
                     html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
-                        html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';
+                        html += '<div class="drive-detail">Phase: ' + esc(drive.phase_name) + '</div>';
                     }
                     if (drive.warning) {
                         html += '<div class="drive-detail" style="color: #b26a00; white-space: pre-line; text-align: left;">&#9888; ' + esc(drive.warning) + '</div>';
@@ -798,16 +931,16 @@ __NAVBAR_HTML__
                         html += '<div class="drive-detail" style="color: #b26a00;">' + esc(drive.skipped) + '</div>';
                     }
                     if (drive.error) {
-                        html += '<div class="drive-detail" style="color: #f44336;">Error: ' + drive.error + '</div>';
+                        html += '<div class="drive-detail" style="color: #f44336;">Error: ' + esc(drive.error) + '</div>';
                     }
                     html += phasesHTML(drive);
                     html += '</div>';
                 });
                 html += '</div>';
-                drivesList.innerHTML = html;
+                setHTML(drivesList, html);
                 loadPhases(sortedDrives);
             } else {
-                drivesList.innerHTML = '<div class="no-data">No active benchmarks</div>';
+                setHTML(drivesList, '<div class="no-data">No active benchmarks</div>');
             }
 
             // Update last update time

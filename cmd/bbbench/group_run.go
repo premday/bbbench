@@ -16,12 +16,10 @@ import (
 	"syscall"
 	"time"
 
+	"bbbench/internal/blockdev"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 )
-
-// restoreTimeout bounds restoring one drive (its commands and the read-back).
-const restoreTimeout = 2 * time.Minute
 
 // groupConfig is a run group ready to execute: the setting, its values, how
 // they are spread over the drives, and how to run the test plan once.
@@ -49,6 +47,16 @@ type groupConfig struct {
 	Execute func(ctx context.Context, spec runSpec) (*BenchmarkResult, error)
 	// OnSave, when non-nil, is called after every save of the group file.
 	OnSave func(*rungroup.GroupFile)
+	// Variants are the layouts of a layout group (a LifetimeRun setting),
+	// one run each, in order; nil for a group of values.
+	Variants []settings.Variant
+	// MakeDrive turns a composite target built by a layout into the drive
+	// a run benchmarks; nil refuses composite targets.
+	MakeDrive func(bt settings.BenchTarget) (DriveInfo, error)
+	// Identify reads a disk as it is now, by kernel name (blockdev.Lookup
+	// in production). A layout run re-identifies every disk with it right
+	// before the build; nil refuses every layout run.
+	Identify func(name string) (blockdev.Device, error)
 }
 
 // driveRefs describes the drives for planning; Firmware is the drive's own
@@ -77,6 +85,11 @@ func driveRefs(drives []DriveInfo, firmware map[string]string) []rungroup.DriveR
 // cancelled ctx, SIGINT/SIGTERM/SIGHUP, or a panic, which is re-raised afterwards.
 // The recovery file is removed only when every drive was restored; otherwise
 // it is kept with the drives that failed, and the error says so.
+//
+// A layout group (a LifetimeRun setting, cfg.Variants) runs one layout per
+// run (runLayoutOne): each is prepared right before it is built, recorded in
+// the recovery file before the build and torn down after its run. Whatever
+// is still built when runGroup returns is torn down like a restore.
 func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err error) {
 	if len(cfg.Drives) == 0 {
 		return nil, errors.New("run group: no drives")
@@ -88,22 +101,42 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 	if s.Kind() != settings.Applied {
 		return nil, fmt.Errorf("run group: %s cannot be applied by bbbench", s.Name())
 	}
+	layoutGroup := false
+	switch s.Lifetime() {
+	case settings.LifetimeGroup:
+		if cfg.Variants != nil {
+			return nil, fmt.Errorf("run group: %s takes values, not layouts", s.Name())
+		}
+	case settings.LifetimeRun:
+		if len(cfg.Variants) == 0 {
+			return nil, fmt.Errorf("run group: %s needs at least one layout", s.Name())
+		}
+		layoutGroup = true
+	default:
+		return nil, fmt.Errorf("run group: %s has the unknown lifetime %q", s.Name(), s.Lifetime())
+	}
 	if cfg.RecoveryPath == "" {
 		return nil, errors.New("run group: no recovery file path")
 	}
-	identities := map[string]string{}
-	for _, d := range cfg.Drives {
-		name := d.Device.Name
-		if _, ok := cfg.Targets[name]; !ok {
-			return nil, fmt.Errorf("run group: no target for %s", name)
+	if layoutGroup {
+		if err := checkLayoutDisks(cfg); err != nil {
+			return nil, err
 		}
-		// The recovery file finds drives by serial and model: two drives
-		// it cannot tell apart could be restored to each other's value.
-		id := d.Device.Serial + "\x00" + d.Device.Model
-		if other, dup := identities[id]; dup {
-			return nil, fmt.Errorf("run group: %s and %s have the same serial and model; they cannot be told apart for restoring", other, name)
+	} else {
+		identities := map[string]string{}
+		for _, d := range cfg.Drives {
+			name := d.Device.Name
+			if _, ok := cfg.Targets[name]; !ok {
+				return nil, fmt.Errorf("run group: no target for %s", name)
+			}
+			// The recovery file finds drives by serial and model: two drives
+			// it cannot tell apart could be restored to each other's value.
+			id := d.Device.Serial + "\x00" + d.Device.Model
+			if other, dup := identities[id]; dup {
+				return nil, fmt.Errorf("run group: %s and %s have the same serial and model; they cannot be told apart for restoring", other, name)
+			}
+			identities[id] = name
 		}
-		identities[id] = name
 	}
 	if cfg.Precheck != nil {
 		if err := cfg.Precheck(); err != nil {
@@ -111,14 +144,29 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 		}
 	}
 	values := map[string]settings.Value{}
-	ids := make([]string, 0, len(cfg.Values))
-	for _, v := range cfg.Values {
-		values[v.ID] = v
-		ids = append(ids, v.ID)
-	}
-	plans, err := rungroup.PlanRuns(driveRefs(cfg.Drives, nil), ids, cfg.Strategy)
-	if err != nil {
-		return nil, fmt.Errorf("run group: %w", err)
+	var ids []string
+	var plans []rungroup.RunPlan
+	if layoutGroup {
+		rvs := make([]rungroup.Variant, 0, len(cfg.Variants))
+		for _, v := range cfg.Variants {
+			names := make([]string, 0, len(v.Disks))
+			for _, d := range v.Disks {
+				names = append(names, d.Name)
+			}
+			rvs = append(rvs, rungroup.Variant{Value: v.Value.ID, Drives: names})
+			ids = append(ids, v.Value.ID)
+		}
+		plans = rungroup.PlanVariants(rvs)
+	} else {
+		ids = make([]string, 0, len(cfg.Values))
+		for _, v := range cfg.Values {
+			values[v.ID] = v
+			ids = append(ids, v.ID)
+		}
+		plans, err = rungroup.PlanRuns(driveRefs(cfg.Drives, nil), ids, cfg.Strategy)
+		if err != nil {
+			return nil, fmt.Errorf("run group: %w", err)
+		}
 	}
 	g, err = newGroupFile(cfg, plans, ids)
 	if err != nil {
@@ -136,48 +184,57 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 		signal.Stop(sigChan)
 	}()
 
-	// The originals, read before anything changes.
-	rec := &rungroup.Recovery{Setting: s.Name()}
-	g.Originals = map[string]settings.Reading{}
-	for _, d := range cfg.Drives {
-		name := d.Device.Name
-		r, rerr := s.Read(ctx, cfg.Targets[name])
-		if rerr != nil {
-			return nil, fmt.Errorf("run group: read the original %s of %s: %w", s.Name(), name, rerr)
-		}
-		if r.Value == "" {
-			return nil, fmt.Errorf("run group: the %s of %s read back empty", s.Name(), name)
-		}
-		if cfg.Resume != nil {
-			if was, ok := cfg.Resume.Originals[name]; ok && was.Value != r.Value {
-				logger.Warn("resumed group: drive value differs from the recorded original", "device", name, "now", r.Value, "recorded", was.Value)
-			}
-		}
-		g.Originals[name] = r
-		rec.Drives = append(rec.Drives, rungroup.RecoveryDrive{Serial: d.Device.Serial, Model: d.Device.Model, Name: name, Original: r})
-	}
-
-	// The recovery file, then the group file, both before the first apply.
+	// A recovery file from an earlier group must be restored first.
 	if existing, lerr := rungroup.LoadRecovery(cfg.RecoveryPath); lerr != nil || existing != nil {
 		if lerr != nil {
 			return nil, fmt.Errorf("run group: check the recovery file %s: %w", cfg.RecoveryPath, lerr)
 		}
 		return nil, fmt.Errorf("run group: a recovery file from an earlier group exists (%s); restore it first", cfg.RecoveryPath)
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.RecoveryPath), 0o755); err != nil {
-		return nil, fmt.Errorf("run group: create the recovery directory: %w", err)
-	}
-	if err := rec.Save(cfg.RecoveryPath); err != nil {
-		return nil, fmt.Errorf("run group: write the recovery file: %w", err)
-	}
-	if err := saveGroup(cfg, g); err != nil {
-		if rerr := rec.Remove(cfg.RecoveryPath); rerr != nil {
-			logger.Warn("remove recovery file", "path", cfg.RecoveryPath, "err", rerr)
+
+	ledger := newUndoLedger(cfg.RecoveryPath, s.Name(), nil)
+	if layoutGroup {
+		// Nothing is prepared here: each layout is prepared (with its in-use
+		// re-check) and recorded right before it is built.
+		if err := saveGroup(cfg, g); err != nil {
+			return nil, fmt.Errorf("run group: write the group file: %w", err)
 		}
-		return nil, fmt.Errorf("run group: write the group file: %w", err)
+	} else {
+		// The originals, read before anything changes.
+		all := settings.Variant{Name: g.ID, Disks: groupDisks(cfg, cfg.Drives)}
+		undos, err := s.Prepare(ctx, all)
+		if err != nil {
+			return nil, fmt.Errorf("run group: %w", err)
+		}
+		g.Originals = map[string]settings.Reading{}
+		for _, u := range undos {
+			if u.Original == nil {
+				continue
+			}
+			name, r := u.Name(), *u.Original
+			if cfg.Resume != nil {
+				if was, ok := cfg.Resume.Originals[name]; ok && was.Value != r.Value {
+					logger.Warn("resumed group: drive value differs from the recorded original", "device", name, "now", r.Value, "recorded", was.Value)
+				}
+			}
+			g.Originals[name] = r
+		}
+
+		// The recovery file, then the group file, both before the first apply.
+		if err := ledger.add(undos...); err != nil {
+			return nil, fmt.Errorf("run group: %w", err)
+		}
+		if err := saveGroup(cfg, g); err != nil {
+			if rerr := (&rungroup.Recovery{}).Remove(cfg.RecoveryPath); rerr != nil {
+				logger.Warn("remove recovery file", "path", cfg.RecoveryPath, "err", rerr)
+			}
+			return nil, fmt.Errorf("run group: write the group file: %w", err)
+		}
 	}
 
-	// From here on the restore always runs.
+	// From here on the restore always runs. held are the layouts whose
+	// teardown already failed: kept for the recovery file, not retried.
+	held := map[*settings.ArrayUndo]bool{}
 	var current *rungroup.GroupRun
 	lastRun := 0 // 1-based number of the run reached, for the status page
 	defer func() {
@@ -188,7 +245,7 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 				current.Drives[i].Label = interruptedLabel(current.Drives[i].Label)
 			}
 		}
-		err = errors.Join(err, finishGroup(cfg, g, rec, lastRun, len(plans)))
+		err = errors.Join(err, finishGroup(cfg, g, ledger, lastRun, len(plans), held))
 		if p != nil {
 			panic(p)
 		}
@@ -203,7 +260,13 @@ func runGroup(ctx context.Context, cfg groupConfig) (g *rungroup.GroupFile, err 
 			return g, fmt.Errorf("run group interrupted before run %d of %d: %w", i+1, len(plans), cerr)
 		}
 		current, lastRun = run, i+1
-		if rerr := runOne(ctx, cfg, g, i, len(plans), plan, values); rerr != nil {
+		var rerr error
+		if layoutGroup {
+			rerr = runLayoutOne(ctx, cfg, g, ledger, held, i, len(plans), plan)
+		} else {
+			rerr = runOne(ctx, cfg, g, i, len(plans), plan, values)
+		}
+		if rerr != nil {
 			return g, rerr
 		}
 		current = nil
@@ -248,7 +311,16 @@ func watchGroupSignals(parent context.Context, sigs <-chan os.Signal, out io.Wri
 // matches the plan.
 func newGroupFile(cfg groupConfig, plans []rungroup.RunPlan, ids []string) (*rungroup.GroupFile, error) {
 	if r := cfg.Resume; r != nil {
-		if r.Setting != cfg.Setting.Name() || r.Strategy != cfg.Strategy || !slices.Equal(r.Values, ids) || len(r.Runs) != len(plans) {
+		layout := cfg.Variants != nil
+		if r.Setting != cfg.Setting.Name() || r.Strategy != cfg.Strategy || (!layout && !slices.Equal(r.Values, ids)) {
+			return nil, fmt.Errorf("run group: group %s does not match the setting, values or drives to resume", r.ID)
+		}
+		if layout {
+			if err := sameVariants(r.Variants, cfg.Variants); err != nil {
+				return nil, fmt.Errorf("run group: cannot resume group %s: %w", r.ID, err)
+			}
+		}
+		if len(r.Runs) != len(plans) {
 			return nil, fmt.Errorf("run group: group %s does not match the setting, values or drives to resume", r.ID)
 		}
 		serialOf := map[string]string{}
@@ -261,8 +333,10 @@ func newGroupFile(cfg groupConfig, plans []rungroup.RunPlan, ids []string) (*run
 			if run.Round != plans[i].Round {
 				return nil, fmt.Errorf("run group: run %d of group %s does not match the plan", i+1, r.ID)
 			}
-			if err := sameDrivesPerValue(run, plans[i], serialOf); err != nil {
-				return nil, fmt.Errorf("run group: cannot resume group %s: run %d %w (were the drives renamed?)", r.ID, i+1, err)
+			if !layout {
+				if err := sameDrivesPerValue(run, plans[i], serialOf); err != nil {
+					return nil, fmt.Errorf("run group: cannot resume group %s: run %d %w (were the drives renamed?)", r.ID, i+1, err)
+				}
 			}
 			run.Drives = slices.Clone(run.Drives)
 			g.Runs[i] = run
@@ -284,7 +358,77 @@ func newGroupFile(cfg groupConfig, plans []rungroup.RunPlan, ids []string) (*run
 	for i, p := range plans {
 		g.Runs[i] = rungroup.GroupRun{Round: p.Round, Status: rungroup.RunPlanned}
 	}
+	for _, v := range cfg.Variants {
+		g.Variants = append(g.Variants, rungroup.GroupVariant{Value: v.Value.ID, Disks: rungroup.MembersOf(v.Disks)})
+	}
 	return g, nil
+}
+
+// sameVariants checks that a resumed layout group has the layouts given now:
+// the same number, and per index the same value and the same disks (serial,
+// model and role, in order). Device names are not compared: they can change
+// across reboots.
+func sameVariants(recorded []rungroup.GroupVariant, now []settings.Variant) error {
+	for i := range max(len(recorded), len(now)) {
+		if i >= len(recorded) {
+			return fmt.Errorf("layout %d differs (the group has %d layouts, %d are given)", i+1, len(recorded), len(now))
+		}
+		if i >= len(now) {
+			return fmt.Errorf("layout %d differs (the group has %d layouts, %d are given)", i+1, len(recorded), len(now))
+		}
+		r, v := recorded[i], now[i]
+		if r.Value != v.Value.ID {
+			return fmt.Errorf("layout %d differs (%q, now %q)", i+1, r.Value, v.Value.ID)
+		}
+		if len(r.Disks) != len(v.Disks) {
+			return fmt.Errorf("layout %d differs (%d disks, now %d)", i+1, len(r.Disks), len(v.Disks))
+		}
+		for k, d := range v.Disks {
+			m := r.Disks[k]
+			if m.Serial != d.Serial || m.Model != d.Model || m.Role != d.Role {
+				return fmt.Errorf("layout %d differs (disk %d was %s S/N %s as %s, now %s S/N %s as %s)", i+1, k+1, m.Model, m.Serial, m.Role, d.Model, d.Serial, d.Role)
+			}
+		}
+	}
+	return nil
+}
+
+// checkLayoutDisks checks the disks of every layout: each is one of the
+// group's drives, and the disks (over all layouts) can be told apart by
+// serial and model, which the recovery file uses to find them again.
+func checkLayoutDisks(cfg groupConfig) error {
+	driveOf := map[string]DriveInfo{}
+	for _, d := range cfg.Drives {
+		driveOf[d.Device.Name] = d
+	}
+	identities := map[string]string{} // serial+model -> name
+	idOf := map[string]string{}       // name -> serial+model
+	for i, v := range cfg.Variants {
+		if len(v.Disks) == 0 {
+			return fmt.Errorf("run group: layout %d (%s) has no disks", i+1, v.Value.ID)
+		}
+		for _, d := range v.Disks {
+			dr, ok := driveOf[d.Name]
+			if !ok {
+				return fmt.Errorf("run group: %s of layout %d is not among the drives of the group", d.Name, i+1)
+			}
+			if dev := dr.Device; d.Serial != dev.Serial || d.Model != dev.Model || d.Path != dev.Path {
+				return fmt.Errorf("run group: %s of layout %d is not the drive %s of the group (%s S/N %s at %s, the drive is %s S/N %s at %s)", d.Name, i+1, d.Name, d.Model, d.Serial, d.Path, dev.Model, dev.Serial, dev.Path)
+			}
+			if d.Serial == "" {
+				return fmt.Errorf("run group: %s has no serial; it could not be found again for a teardown", d.Name)
+			}
+			id := d.Serial + "\x00" + d.Model
+			if was, ok := idOf[d.Name]; ok && was != id {
+				return fmt.Errorf("run group: %s is two different disks in the layouts", d.Name)
+			}
+			if other, dup := identities[id]; dup && other != d.Name {
+				return fmt.Errorf("run group: %s and %s have the same serial and model; they cannot be told apart for a teardown", other, d.Name)
+			}
+			identities[id], idOf[d.Name] = d.Name, id
+		}
+	}
+	return nil
 }
 
 // sameDrivesPerValue checks that a recorded run gave each value to the drives
@@ -386,14 +530,51 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 	}
 	fmt.Printf("\nRun group: run %d of %d (%s)\n", idx+1, total, describeRun(plan))
 
-	applyErr := map[string]error{}
-	for _, d := range drives {
-		name := d.Device.Name
-		if err := s.Apply(ctx, cfg.Targets[name], values[valueOf[name]]); err != nil {
-			applyErr[name] = err
+	// One variant per value of the plan, its disks in drive order.
+	bench := map[string]settings.BenchTarget{} // keyed by target name
+	for _, v := range runVariants(cfg, g.ID, idx, plan, drives, values) {
+		ts, err := s.Apply(ctx, v, nil)
+		if err != nil {
+			// The whole variant failed: each of its disks carries the error.
+			ts = ts[:0]
+			for _, d := range v.Disks {
+				ts = append(ts, settings.BenchTarget{Kind: settings.TargetDrive, Target: d.Target, Want: v.Value.ID, Err: err})
+			}
+		}
+		for _, bt := range ts {
+			bench[bt.Target.Name] = bt
 		}
 	}
 
+	rb := &runBench{cfg: cfg, g: g, idx: idx, total: total, run: run, drives: drives, bench: bench, labels: labels, record: record, interrupted: interrupted, step: step}
+	return rb.verifyAndExecute(ctx)
+}
+
+// runBench is one run once its setting is applied: the drives to execute
+// (in order), their bench targets and labels (keyed by device name), and how
+// the run records itself. verifyAndExecute is the same for values and
+// layouts.
+type runBench struct {
+	cfg         groupConfig
+	g           *rungroup.GroupFile
+	idx, total  int
+	run         *rungroup.GroupRun
+	drives      []DriveInfo
+	bench       map[string]settings.BenchTarget
+	labels      map[string]rungroup.Label
+	record      func()
+	interrupted func(res *BenchmarkResult)
+	step        func(string)
+}
+
+// verifyAndExecute verifies every target before, executes the run when all
+// are effective, verifies after and labels the results (Policy). It returns
+// an error when the group must stop (interrupt, failed execution, group file
+// not saved); a run that is not started or is invalid is not an error.
+func (rb *runBench) verifyAndExecute(ctx context.Context) error {
+	cfg, g, idx, total, run := rb.cfg, rb.g, rb.idx, rb.total, rb.run
+	drives, bench, labels, record, interrupted, step := rb.drives, rb.bench, rb.labels, rb.record, rb.interrupted, rb.step
+	s := cfg.Setting
 	step(stepVerifyingBefore)
 	before := map[string]bool{}
 	for _, d := range drives {
@@ -401,13 +582,18 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 		l := labels[name]
 		var r settings.Reading
 		var ok bool
-		if aerr := applyErr[name]; aerr != nil {
-			if rr, rerr := s.Read(ctx, cfg.Targets[name]); rerr == nil {
+		bt, applied := bench[name]
+		if !applied {
+			bt = settings.BenchTarget{Kind: settings.TargetDrive, Target: cfg.Targets[name], Want: l.Value, Err: errors.New("no target to benchmark")}
+			bench[name] = bt
+		}
+		if aerr := bt.Err; aerr != nil {
+			if rr, rerr := s.Read(ctx, bt); rerr == nil {
 				r = rr
 			}
 			l.Note = fmt.Sprintf("apply failed: %v", aerr)
-		} else if r, ok = settings.Verify(ctx, s, cfg.Targets[name], values[l.Value], cfg.Settle); !ok {
-			l.Note = fmt.Sprintf("setting not effective: reads %q, want %q", r.Value, l.Value)
+		} else if r, ok = settings.Verify(ctx, s, bt, cfg.Settle); !ok {
+			l.Note = fmt.Sprintf("setting not effective: reads %q, want %q", r.Value, bt.Want)
 		}
 		if !r.At.IsZero() {
 			l.Before = &r
@@ -476,7 +662,7 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 	for _, d := range drives {
 		name := d.Device.Name
 		l := labels[name]
-		r, ok := settings.Verify(ctx, s, cfg.Targets[name], values[l.Value], cfg.Settle)
+		r, ok := settings.Verify(ctx, s, bench[name], cfg.Settle)
 		if !r.At.IsZero() {
 			l.After = &r
 		}
@@ -512,6 +698,23 @@ func runOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, idx, to
 	return nil
 }
 
+// runVariants are the variants of run idx of group id: one per value of
+// plan, named "<group id>_<run n>", with the plan's drives (in the order of
+// drives) as data disks.
+func runVariants(cfg groupConfig, id string, idx int, plan rungroup.RunPlan, drives []DriveInfo, values map[string]settings.Value) []settings.Variant {
+	out := make([]settings.Variant, 0, len(plan.Variants))
+	for _, pv := range plan.Variants {
+		var picked []DriveInfo
+		for _, d := range drives {
+			if slices.Contains(pv.Drives, d.Device.Name) {
+				picked = append(picked, d)
+			}
+		}
+		out = append(out, settings.Variant{Name: id + "_" + strconv.Itoa(idx+1), Value: values[pv.Value], Disks: groupDisks(cfg, picked)})
+	}
+	return out
+}
+
 // interruptedNote explains why the results of an interrupted run are excluded.
 const interruptedNote = "run interrupted, setting not verified after the run"
 
@@ -537,34 +740,48 @@ func describeRun(p rungroup.RunPlan) string {
 	return strings.Join(parts, "; ")
 }
 
-// finishGroup restores every drive to its original value, verifies it,
+// finishGroup undoes every record (each restored drive is verified),
 // records the result in the group file and removes the recovery file, or
-// keeps it with only the drives that failed.
-func finishGroup(cfg groupConfig, g *rungroup.GroupFile, rec *rungroup.Recovery, run, total int) error {
+// keeps it with only the records that failed. Layouts in held already failed
+// their teardown: they are not retried, and count as failed.
+func finishGroup(cfg groupConfig, g *rungroup.GroupFile, ledger *undoLedger, run, total int, held map[*settings.ArrayUndo]bool) error {
+	layouts := cfg.Setting.Lifetime() == settings.LifetimeRun
 	setGroupStatus(g, run, total, stepRestoring)
-	fmt.Println("\nRun group: restoring the original values")
-	var failed []string
-	var kept []rungroup.RecoveryDrive
-	for _, e := range rec.Drives {
-		if err := restoreOne(context.Background(), cfg.Setting, cfg.Targets, e.Name, e, cfg.Settle); err != nil {
-			failed = append(failed, e.Name)
-			kept = append(kept, e)
+	if layouts {
+		fmt.Println("\nRun group: tearing down any layout still built")
+	} else {
+		fmt.Println("\nRun group: restoring the original values")
+	}
+	isHeld := func(u settings.Undo) bool { return u.Array != nil && held[u.Array] }
+	failed, ferr := ledger.undo(context.Background(), cfg.Setting, func(u settings.Undo) bool { return !isHeld(u) })
+	var heldNames []string
+	for _, u := range ledger.pending() {
+		if isHeld(u) {
+			heldNames = append(heldNames, u.Name())
 		}
 	}
+	failed = append(heldNames, failed...)
 	var errs []error
 	if len(failed) == 0 {
 		g.Restore = rungroup.GroupRestore{Status: rungroup.RestoreDone}
-		if err := rec.Remove(cfg.RecoveryPath); err != nil {
-			errs = append(errs, fmt.Errorf("remove the recovery file: %w", err))
+		if ferr != nil {
+			errs = append(errs, fmt.Errorf("remove the recovery file: %w", ferr))
 		}
-		fmt.Println("Original values restored and verified.")
+		if layouts {
+			fmt.Println("No layout is left built.")
+		} else {
+			fmt.Println("Original values restored and verified.")
+		}
 	} else {
 		g.Restore = rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: failed}
-		left := &rungroup.Recovery{Setting: rec.Setting, Drives: kept}
-		if err := left.Save(cfg.RecoveryPath); err != nil {
-			errs = append(errs, fmt.Errorf("update the recovery file: %w", err))
+		if ferr != nil {
+			errs = append(errs, fmt.Errorf("update the recovery file: %w", ferr))
 		}
-		errs = append(errs, fmt.Errorf("restore failed on %s; the recovery file %s is kept", strings.Join(failed, ", "), cfg.RecoveryPath))
+		what := "restore"
+		if layouts {
+			what = "teardown"
+		}
+		errs = append(errs, fmt.Errorf("%s failed on %s; the recovery file %s is kept", what, strings.Join(failed, ", "), cfg.RecoveryPath))
 	}
 	if err := saveGroup(cfg, g); err != nil {
 		errs = append(errs, fmt.Errorf("save the group file: %w", err))
@@ -574,89 +791,13 @@ func finishGroup(cfg groupConfig, g *rungroup.GroupFile, rec *rungroup.Recovery,
 	return errors.Join(errs...)
 }
 
-// restoreDrive restores t to original and reads it back, within
-// restoreTimeout of parent.
-// A panic in the setting is returned as an error, so one drive cannot keep
-// the others from being restored.
-func restoreDrive(parent context.Context, s settings.Setting, t settings.Target, original settings.Reading, settle time.Duration) (err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			err = fmt.Errorf("panic while restoring: %v", p)
-		}
-	}()
-	ctx, cancel := context.WithTimeout(parent, restoreTimeout)
-	defer cancel()
-	if err := s.Restore(ctx, t, original); err != nil {
-		return err
+// groupDisks are the data disks of drives, with their targets.
+func groupDisks(cfg groupConfig, drives []DriveInfo) []settings.Disk {
+	disks := make([]settings.Disk, 0, len(drives))
+	for _, d := range drives {
+		disks = append(disks, settings.Disk{Target: cfg.Targets[d.Device.Name], Role: settings.RoleData})
 	}
-	if r, ok := settings.Verify(ctx, s, t, settings.Value{ID: original.Value}, settle); !ok {
-		return fmt.Errorf("reads %q after restoring, want %q", r.Value, original.Value)
-	}
-	return nil
-}
-
-// restoreOne restores drive name (entry e) and reports a failure. Restore
-// and report both run under one recover, so a panic in either is returned as
-// an error and the other drives are still restored.
-func restoreOne(parent context.Context, s settings.Setting, targets map[string]settings.Target, name string, e rungroup.RecoveryDrive, settle time.Duration) (err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			err = errors.Join(err, fmt.Errorf("panic while restoring or reporting %s: %v", name, p))
-		}
-	}()
-	t, ok := targets[name]
-	if !ok {
-		err = errors.New("no target for the drive")
-	} else {
-		err = restoreDrive(parent, s, t, e.Original, settle)
-	}
-	if err != nil {
-		e.Name = name
-		reportRestoreFailure(s, t, e, err)
-	}
-	return err
-}
-
-// restoreReportOut is where failed restores are reported (tests replace it).
-var restoreReportOut io.Writer = os.Stderr
-
-// reportRestoreFailure makes a failed restore impossible to miss, with the
-// command to run by hand when the setting knows it.
-func reportRestoreFailure(s settings.Setting, t settings.Target, e rungroup.RecoveryDrive, err error) {
-	logger.Error("restore failed", "setting", s.Name(), "device", e.Name, "serial", e.Serial, "original", e.Original.Value, "err", err)
-	fmt.Fprintf(restoreReportOut, "\n*** RESTORE FAILED: %s on %s (%s, S/N %s): %v\n", s.Name(), e.Name, e.Model, e.Serial, err)
-	fmt.Fprintf(restoreReportOut, "*** Set it back to %q by hand; it is volatile, so a power cycle also resets it.\n", e.Original.Value)
-	if h, ok := s.(settings.CommandHinter); ok {
-		if cmd := h.RestoreCommand(t, e.Original); cmd != "" {
-			fmt.Fprintf(restoreReportOut, "*** Command to set it back by hand: %s\n", cmd)
-		}
-	}
-}
-
-// restoreFromRecovery restores the drives of a recovery file left by an
-// earlier group, matching them by serial and model (names change across
-// reboots). It returns the drives not restored: the recorded name of an
-// entry with no matching drive, the current name of one whose restore or
-// read-back failed.
-func restoreFromRecovery(ctx context.Context, s settings.Setting, rec *rungroup.Recovery, devices []DriveInfo, targets map[string]settings.Target) (failed []string) {
-	found, _ := rec.Match(driveRefs(devices, nil))
-	current := map[string]string{} // serial+model -> current device name
-	for name, e := range found {
-		current[e.Serial+"\x00"+e.Model] = name
-	}
-	for _, e := range rec.Drives {
-		name, ok := current[e.Serial+"\x00"+e.Model]
-		if !ok {
-			logger.Warn("recovery: drive not present", "name", e.Name, "serial", e.Serial, "model", e.Model)
-			fmt.Fprintf(os.Stderr, "Recovery: %s (%s, S/N %s) is not present; not restored.\n", e.Name, e.Model, e.Serial)
-			failed = append(failed, e.Name)
-			continue
-		}
-		if err := restoreOne(ctx, s, targets, name, e, groupSettle); err != nil {
-			failed = append(failed, name)
-		}
-	}
-	return failed
+	return disks
 }
 
 // saveGroup writes the group file and tells OnSave.
@@ -696,7 +837,13 @@ func saveRunLabels(res *BenchmarkResult, labels map[string]rungroup.Label, outDi
 
 // setGroupStatus puts the group's position on the status page.
 func setGroupStatus(g *rungroup.GroupFile, run, runs int, step string) {
-	gs := &GroupStatus{ID: g.ID, Setting: g.Setting, Strategy: g.Strategy, Run: run, Runs: runs, Step: step}
+	setGroupStep(g, run, runs, step, "", 0)
+}
+
+// setGroupStep is setGroupStatus with the current layout's label and the
+// resync progress (layout groups).
+func setGroupStep(g *rungroup.GroupFile, run, runs int, step, variant string, progress float64) {
+	gs := &GroupStatus{ID: g.ID, Setting: g.Setting, Strategy: g.Strategy, Run: run, Runs: runs, Step: step, Variant: variant, Progress: progress}
 	UpdateStatus(func(s *BenchmarkStatus) { s.Group = gs })
 }
 
@@ -717,4 +864,278 @@ func copyReading(r *settings.Reading) *settings.Reading {
 	}
 	c := *r
 	return &c
+}
+
+// runLayoutOne runs layout idx: it prepares it (the in-use re-check runs
+// here, after the previous layout was torn down), records it in the recovery
+// file, builds it, waits until it is steady, benchmarks its targets like a
+// run of values (verifyAndExecute) and tears it down. The order is the
+// safety contract: nothing is built that is not recorded first, and nothing
+// else is built while a teardown failed.
+//
+// A run that cannot be built or benchmarked is not run (with the reason as
+// its note) and is torn down before the group moves on. An interrupted run
+// returns at once; the deferred finishGroup tears down what the ledger holds.
+// A failed teardown stops the group; its layout stays in the recovery file
+// and in held.
+func runLayoutOne(ctx context.Context, cfg groupConfig, g *rungroup.GroupFile, ledger *undoLedger, held map[*settings.ArrayUndo]bool, idx, total int, plan rungroup.RunPlan) error {
+	s := cfg.Setting
+	run := &g.Runs[idx]
+	v := cfg.Variants[idx]
+	v.Name = g.ID + "_" + strconv.Itoa(idx+1)
+	v.Disks = slices.Clone(v.Disks)
+	driveOf := map[string]DriveInfo{}
+	for _, d := range cfg.Drives {
+		driveOf[d.Device.Name] = d
+	}
+	diskDrives := make([]DriveInfo, 0, len(v.Disks))
+	for _, d := range v.Disks {
+		diskDrives = append(diskDrives, driveOf[d.Name])
+	}
+	stepAt := func(st string, pct float64) { setGroupStep(g, idx+1, total, st, v.Value.Label, pct) }
+	step := func(st string) { stepAt(st, 0) }
+
+	// The run records the variant's disks until there are targets, then
+	// the targets.
+	type benchRow struct {
+		di DriveInfo
+		bt settings.BenchTarget
+	}
+	var rows []benchRow
+	labels := map[string]rungroup.Label{}
+	for _, d := range v.Disks {
+		labels[d.Name] = rungroup.Label{Setting: s.Name(), Value: v.Value.ID}
+	}
+	record := func() {
+		if rows == nil {
+			run.Drives = make([]rungroup.GroupDrive, 0, len(v.Disks))
+			for _, d := range v.Disks {
+				run.Drives = append(run.Drives, rungroup.GroupDrive{Device: d.Name, Serial: d.Serial, Model: d.Model, Value: v.Value.ID, Label: labels[d.Name]})
+			}
+			return
+		}
+		run.Drives = make([]rungroup.GroupDrive, 0, len(rows))
+		for _, r := range rows {
+			name := r.di.Device.Name
+			gd := rungroup.GroupDrive{Device: name, Serial: r.di.Device.Serial, Model: r.di.Device.Model, Value: v.Value.ID, Label: labels[name]}
+			if r.bt.Kind == settings.TargetArray {
+				gd.Kind, gd.UUID, gd.Members = settings.TargetArray, r.bt.UUID, rungroup.MembersOf(r.bt.Members)
+			}
+			run.Drives = append(run.Drives, gd)
+		}
+	}
+	interrupted := func(res *BenchmarkResult) {
+		run.Status = rungroup.RunInterrupted
+		for name, l := range labels {
+			l = interruptedLabel(l)
+			labels[name] = l
+			setDriveSetting(name, l, true)
+		}
+		record()
+		if res != nil {
+			saveRunLabels(res, labels, cfg.OutDir)
+		}
+	}
+	stopped := func(what string, err error) error {
+		interrupted(nil)
+		return fmt.Errorf("run %d of %d interrupted %s: %w", idx+1, total, what, err)
+	}
+
+	run.Status = rungroup.RunRunning
+	run.Teardown = nil
+	record()
+	step(stepBuilding)
+	UpdateStatus(func(st *BenchmarkStatus) {
+		st.Running = true
+		st.Drives = newDriveStatuses(diskDrives, nil)
+	})
+	for name, l := range labels {
+		setDriveSetting(name, l, false)
+	}
+	if err := saveGroup(cfg, g); err != nil {
+		return fmt.Errorf("run %d of %d: save the group file: %w", idx+1, total, err)
+	}
+	fmt.Printf("\nRun group: run %d of %d (%s)\n", idx+1, total, describeRun(plan))
+
+	// This run's records; teardown undoes exactly these.
+	var undos []settings.Undo
+	teardown := func() error {
+		step(stepTearingDown)
+		mine := map[*settings.ArrayUndo]bool{}
+		for _, u := range undos {
+			if u.Array != nil {
+				mine[u.Array] = true
+			}
+		}
+		failed, ferr := ledger.undo(context.Background(), s, func(u settings.Undo) bool { return u.Array != nil && mine[u.Array] })
+		if len(failed) > 0 {
+			var descs []string
+			for _, u := range ledger.pending() {
+				if u.Array != nil && mine[u.Array] {
+					held[u.Array] = true
+					descs = append(descs, layoutDesc(*u.Array))
+				}
+			}
+			run.Teardown = &rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: failed}
+			var serr error
+			if err := saveGroup(cfg, g); err != nil {
+				serr = fmt.Errorf("save the group file: %w", err)
+			}
+			if ferr != nil {
+				ferr = fmt.Errorf("update the recovery file: %w", ferr)
+			}
+			return errors.Join(fmt.Errorf("run %d of %d: teardown of %s failed; the group stops so that no further layout is built on disks still assembled", idx+1, total, strings.Join(descs, ", ")), ferr, serr)
+		}
+		run.Teardown = &rungroup.GroupRestore{Status: rungroup.RestoreDone}
+		if err := saveGroup(cfg, g); err != nil {
+			return fmt.Errorf("run %d of %d: save the group file: %w", idx+1, total, err)
+		}
+		if ferr != nil {
+			// The file may still list a layout already torn down: stop
+			// before another one is recorded next to it.
+			return fmt.Errorf("run %d of %d: update the recovery file after the teardown: %w", idx+1, total, ferr)
+		}
+		return nil
+	}
+	notRun := func(note string) error {
+		for name, l := range labels {
+			l.Note, l.Valid = note, false
+			labels[name] = l
+			setDriveSetting(name, l, true)
+		}
+		run.Status = rungroup.RunNotRun
+		record()
+		fmt.Printf("  %s\nRun %d of %d not run\n", note, idx+1, total)
+		if err := saveGroup(cfg, g); err != nil {
+			return errors.Join(fmt.Errorf("run %d of %d: save the group file: %w", idx+1, total, err), teardown())
+		}
+		return teardown()
+	}
+
+	// Re-identified right before the build: a disk re-enumerated or
+	// hot-plugged since the confirmation must not be the one erased.
+	if err := reidentify(cfg.Identify, diskDrives); err != nil {
+		return notRun("not built: " + err.Error())
+	}
+	// Prepared right before the build: the in-use re-check sees the disks
+	// as they are now, after the previous layout was torn down.
+	prepared, err := s.Prepare(ctx, v)
+	if cerr := ctx.Err(); cerr != nil {
+		return stopped("before the build", cerr)
+	}
+	if err != nil {
+		return notRun("not built: " + err.Error())
+	}
+	// Recorded before the build: a crash from here on leaves the record.
+	if len(prepared) > 0 {
+		if err := ledger.add(prepared...); err != nil {
+			return fmt.Errorf("run %d of %d: record %s before building it: %w (nothing was built)", idx+1, total, v.Value.ID, err)
+		}
+		undos = prepared
+	}
+
+	ts, aerr := s.Apply(ctx, v, prepared)
+	if cerr := ctx.Err(); cerr != nil {
+		return stopped("while building", cerr)
+	}
+	if aerr != nil {
+		return notRun("build failed: " + aerr.Error())
+	}
+	if len(ts) == 0 {
+		return notRun("build failed: no target to benchmark")
+	}
+	if st, ok := s.(settings.Settler); ok {
+		step(stepResyncing)
+		werr := st.WaitSteady(ctx, ts, func(pct float64) { stepAt(stepResyncing, pct) })
+		if cerr := ctx.Err(); cerr != nil {
+			return stopped("while resyncing", cerr)
+		}
+		if werr != nil {
+			return notRun("resync failed: " + werr.Error())
+		}
+	}
+
+	// The drives to benchmark: a composite through MakeDrive, a drive as
+	// it is in the group.
+	built := make([]benchRow, 0, len(ts))
+	for _, bt := range ts {
+		name := bt.Target.Name
+		var di DriveInfo
+		var derr error
+		switch {
+		case bt.Kind == settings.TargetArray && cfg.MakeDrive == nil:
+			derr = errors.New("no way to benchmark a composite target")
+		case bt.Kind == settings.TargetArray:
+			if di, derr = cfg.MakeDrive(bt); derr == nil {
+				if di.Device.Name != name {
+					derr = fmt.Errorf("its drive is named %q", di.Device.Name)
+				}
+				if len(di.Members) == 0 {
+					di.Members = rungroup.MembersOf(bt.Members)
+				}
+				if di.UUID == "" {
+					di.UUID = bt.UUID
+				}
+			}
+		default:
+			d, ok := driveOf[name]
+			if !ok {
+				derr = errors.New("not among the drives of the group")
+			}
+			di = d
+		}
+		if derr != nil {
+			return notRun(fmt.Sprintf("cannot benchmark %s: %v", name, derr))
+		}
+		built = append(built, benchRow{di: di, bt: bt})
+	}
+	rows = built
+	drives := make([]DriveInfo, 0, len(rows))
+	bench := map[string]settings.BenchTarget{}
+	for k := range labels {
+		delete(labels, k)
+	}
+	for _, r := range rows {
+		name := r.di.Device.Name
+		labels[name] = rungroup.Label{Setting: s.Name(), Value: v.Value.ID}
+		bench[name] = r.bt
+		drives = append(drives, r.di)
+	}
+	record()
+	UpdateStatus(func(st *BenchmarkStatus) { st.Drives = newDriveStatuses(drives, nil) })
+	for name, l := range labels {
+		setDriveSetting(name, l, false)
+	}
+
+	rb := &runBench{cfg: cfg, g: g, idx: idx, total: total, run: run, drives: drives, bench: bench, labels: labels, record: record, interrupted: interrupted, step: step}
+	if err := rb.verifyAndExecute(ctx); err != nil {
+		return err
+	}
+	return teardown()
+}
+
+// reidentify reads every disk again by its kernel name and checks that it is
+// still the drive that was confirmed: same serial, model and capacity. A disk
+// that cannot be read, or reads without a serial, is refused too.
+func reidentify(identify func(string) (blockdev.Device, error), drives []DriveInfo) error {
+	if identify == nil {
+		return errors.New("no way to re-identify the disks")
+	}
+	for _, d := range drives {
+		want := d.Device
+		got, err := identify(want.Name)
+		if err != nil {
+			return fmt.Errorf("cannot re-identify %s: %v", want.Name, err)
+		}
+		if got.Serial == "" {
+			return fmt.Errorf("cannot re-identify %s: no serial", want.Name)
+		}
+		if got.Serial != want.Serial {
+			return fmt.Errorf("%s is no longer %s (found %s)", want.Name, want.Serial, got.Serial)
+		}
+		if got.Model != want.Model || got.CapacityBytes != want.CapacityBytes {
+			return fmt.Errorf("%s is no longer %s S/N %s of %d bytes (found %s of %d bytes)", want.Name, want.Model, want.Serial, want.CapacityBytes, got.Model, got.CapacityBytes)
+		}
+	}
+	return nil
 }

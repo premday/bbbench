@@ -181,14 +181,16 @@ __NAVBAR_HTML__
     let cmpChart = null;
 
     const METRICS = [
-        { key: 'iops', label: 'IOPS',            unit: 'IOPS', tsKey: 'ts_iops', source: 'fio',
+        // label names the metric without a unit: the axis title adds the
+        // base unit, the numbers the SI prefix of the chart (chartScale).
+        { key: 'iops', label: 'IOPS',          unit: 'IOPS', tsKey: 'ts_iops', source: 'fio',
           sumR: d => d.read_iops    || 0, sumW: d => d.write_iops    || 0 },
-        { key: 'bw',   label: 'Bandwidth (MB/s)', unit: 'MB/s', tsKey: 'ts_bw', source: 'fio',
+        { key: 'bw',   label: 'Bandwidth',     unit: 'MB/s', tsKey: 'ts_bw', source: 'fio',
           sumR: d => d.read_bw_mbps || 0, sumW: d => d.write_bw_mbps || 0 },
-        { key: 'lat',  label: 'Latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
+        { key: 'lat',  label: 'Latency',       unit: '\u03bcs', tsKey: 'ts_lat', source: 'fio',
           sumR: d => d.read_lat_us  || 0, sumW: d => d.write_lat_us  || 0 },
         // Device Flush latency, timed from kernel trace events (not fio).
-        { key: 'flush', label: 'Flush latency (\u03bcs)', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
+        { key: 'flush', label: 'Flush latency', unit: '\u03bcs', tsKey: 'ts_flush', source: 'ftrace',
           has:  d => !!(d.flush && d.flush.count > 0) || !!(d.ts_flush && d.ts_flush.length),
           none: d => !!d.flush && !(d.flush.count > 0),
           sumR: d => 0, sumW: d => d.flush ? (d.flush.mean_ns || 0) / 1000 : 0 },
@@ -231,7 +233,7 @@ __NAVBAR_HTML__
     let RPV = {};
 
     function getEntries() {
-        return visibleEntries(allData, SHOW_INVALID).filter(d => selDisks.has(d.disk) && selPhases.has(d.phase_name) &&
+        return visibleEntries(allData, SHOW_INVALID).filter(d => selDisks.has(diskKey(d)) && selPhases.has(d.phase_name) &&
             (!HAS_SETTING || selValues.has(d.setting_value || '')));
     }
 
@@ -302,11 +304,19 @@ __NAVBAR_HTML__
         updateCount();
     }
 
+    // diskKey tells disks apart by name and serial: successive layouts of a
+    // group can get the same kernel name (md127, dm-0), each with its own
+    // uuid (its serial) and members.
+    function diskKey(d) {
+        return (d.disk || '') + '\u0000' + (d.serial || '');
+    }
+
     function buildDiskList() {
-        // Build a map of disk name → {model, serial} from first occurrence.
+        // Build a map of disk key → {name, model, serial, members} from first occurrence.
         const info = {};
         allData.forEach(d => {
-            if (!info[d.disk]) info[d.disk] = { model: d.model || '', serial: d.serial || '' };
+            const k = diskKey(d);
+            if (!info[k]) info[k] = { name: d.disk || '', model: d.model || '', serial: d.serial || '', members: membersText(d) };
         });
         const disks = Object.keys(info).sort();
         const ul = document.getElementById('disk-list');
@@ -325,8 +335,8 @@ __NAVBAR_HTML__
             });
             lbl.appendChild(cb);
             const textWrap = document.createElement('span');
-            textWrap.appendChild(document.createTextNode('\u00a0' + v));
-            const sub = [info[v].model, info[v].serial].filter(Boolean).join('  \u00b7  ');
+            textWrap.appendChild(document.createTextNode('\u00a0' + info[v].name));
+            const sub = [info[v].model, info[v].serial, info[v].members].filter(Boolean).join('  \u00b7  ');
             if (sub) {
                 const subEl = document.createElement('span');
                 subEl.className = 'disk-sub';
@@ -369,6 +379,24 @@ __NAVBAR_HTML__
 
     __CHART_SHARED_JS__
 
+    function axisTitle(metric, sc) {
+        // "Bandwidth (bytes/s)", but just "IOPS" when the label is the unit.
+        return metric.label === sc.unit ? metric.label : metric.label + ' (' + sc.unit + ')';
+    }
+
+    // chartScale is the SI scale of one compare chart (siScale), its prefix
+    // from the largest value it plots (points {x, y} of the time series or
+    // the bars' numbers, in the metric's units); the chart then plots in the
+    // base unit (toBase).
+    function chartScale(metric, datasets) {
+        let max = 0;
+        datasets.forEach(ds => ds.data.forEach(p => {
+            const v = Math.abs(typeof p === 'number' ? p : (p && p.y) || 0);
+            if (v > max) max = v;
+        }));
+        return siScale(metric, max);
+    }
+
     function renderCompare() {
         if (cmpChart) { cmpChart.destroy(); cmpChart = null; }
         const main = document.getElementById('main');
@@ -407,7 +435,7 @@ __NAVBAR_HTML__
             return;
         }
 
-        const nDisks  = new Set(entries.map(e => e.disk)).size;
+        const nDisks  = new Set(entries.map(diskKey)).size;
         const nPhases = new Set(entries.map(e => e.phase_name)).size;
         const hasTS   = entries.some(d => { const ts = d[metric.tsKey]; return ts && ts.length > 0; });
 
@@ -485,6 +513,8 @@ __NAVBAR_HTML__
                 return;
             }
 
+            const sc = chartScale(metric, datasets), tick = v => fmtScaled(v, sc);
+            toBase(datasets, sc);
             cmpChart = new Chart(canvas, {
                 type: 'line', plugins: [rampPlugin],
                 data: { datasets },
@@ -496,8 +526,7 @@ __NAVBAR_HTML__
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: items => 'at ' + items[0].raw.x + ' s',
-                            label: ctx => ctx.dataset.label + ': ' +
-                                         (metric.key === 'flush' ? ctx.raw.y.toFixed(1) : fmtTick(ctx.raw.y)) + ' ' + metric.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                         }}
                     },
                     scales: {
@@ -505,10 +534,10 @@ __NAVBAR_HTML__
                              title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 10} },
                              ticks: { font: {size: 10}, color: '#64748b', maxTicksLimit: 8 } },
                         y: { min: 0,
-                             ticks: { callback: fmtTick, font: {size: 10}, color: '#64748b' },
+                             ticks: { callback: tick, font: {size: 10}, color: '#64748b' },
                              grid: { color: '#f1f5f9' },
                              title: { display: true,
-                                      text: metric.label + ' (' + metric.unit + ')',
+                                      text: axisTitle(metric, sc),
                                       color: '#64748b', font: {size: 10} } }
                     }
                 }
@@ -541,6 +570,8 @@ __NAVBAR_HTML__
                 };
             });
 
+            const sc = chartScale(metric, datasets), tick = v => fmtScaled(v, sc);
+            toBase(datasets, sc);
             cmpChart = new Chart(canvas, {
                 type: 'bar',
                 data: { labels: dirLabels, datasets },
@@ -550,15 +581,14 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'right',
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { callbacks: {
-                            label: ctx => ctx.dataset.label + ': ' +
-                                         fmtTick(ctx.raw) + ' ' + metric.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit,
                         }}
                     },
                     scales: {
                         y: { min: 0,
-                             ticks: { callback: fmtTick, font: {size: 10}, color: '#64748b' },
+                             ticks: { callback: tick, font: {size: 10}, color: '#64748b' },
                              title: { display: true,
-                                      text: metric.label + ' (' + metric.unit + ')',
+                                      text: axisTitle(metric, sc),
                                       color: '#64748b', font: {size: 10} } }
                     }
                 }

@@ -525,10 +525,7 @@ func pageScript(t *testing.T) string {
 // The group banner, badges and ETA run in node against sample data; the page
 // script must also pass node --check. Skipped without node.
 func TestStatusPage_GroupScript(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := requireNode(t)
 	dir := t.TempDir()
 	page := filepath.Join(dir, "page.js")
 	if err := os.WriteFile(page, []byte(pageScript(t)), 0o644); err != nil {
@@ -627,4 +624,238 @@ d = '{name:"sda",setting:{value:"<img src=x onerror=1>",before:{value:"\\"><scri
 h = run('settingBadgesHTML(' + d + ',' + group + ')');
 assert(!h.includes('<img') && !h.includes('<script') && !h.includes('<i>'), h);
 console.log('ok');
+`
+
+func TestNewDriveStatuses_ArrayMembers(t *testing.T) {
+	got := newDriveStatuses(arrayDrives(), nil)
+	if got[0].Kind != "array" || len(got[0].Members) != 2 || got[0].Members[1].Name != "sdc" || got[0].Members[1].Serial != "S2" || got[0].Members[1].Role != settings.RoleData {
+		t.Errorf("array status = %+v", got[0])
+	}
+	if got[1].Kind != "" || got[1].Members != nil {
+		t.Errorf("drive status = %+v", got[1])
+	}
+}
+
+func TestDriveInfo_JSONUnchangedForDrives(t *testing.T) {
+	data, err := json.Marshal(DriveInfo{Device: blockdev.Device{Name: "sda"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"Members"`, `"UUID"`} {
+		if strings.Contains(string(data), k) {
+			t.Errorf("drive JSON has %s: %s", k, data)
+		}
+	}
+}
+
+// /api/status carries an array target's members (with their roles) and the
+// resync progress of a layout group.
+func TestStatusAPI_CarriesMembersAndProgress(t *testing.T) {
+	ResetStatus()
+	defer ResetStatus()
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Running = true
+		s.Group = &GroupStatus{ID: "g3", Setting: "storage layout", Strategy: "sequential", Run: 1, Runs: 2,
+			Step: stepResyncing, Progress: 42.4, Variant: "raid1 · 2 disks"}
+		s.Drives = newDriveStatuses(arrayDrives()[:1], nil)
+	})
+	var got struct {
+		Group struct {
+			Step     string  `json:"step"`
+			Progress float64 `json:"progress"`
+			Variant  string  `json:"variant"`
+		} `json:"group"`
+		Drives []struct {
+			Kind    string `json:"kind"`
+			Members []struct {
+				Name string `json:"name"`
+				Role string `json:"role"`
+			} `json:"members"`
+		} `json:"drives"`
+	}
+	if err := json.Unmarshal(get(handleStatus, "/api/status").Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Group.Step != "resyncing" || got.Group.Progress != 42.4 || got.Group.Variant != "raid1 · 2 disks" {
+		t.Errorf("group = %+v", got.Group)
+	}
+	if len(got.Drives) != 1 || got.Drives[0].Kind != "array" || len(got.Drives[0].Members) != 2 ||
+		got.Drives[0].Members[0].Role != "data" || got.Drives[0].Members[1].Name != "sdc" {
+		t.Errorf("drives = %+v", got.Drives)
+	}
+}
+
+// The layout steps, the resync progress, the variant and the members of an
+// array target run in node against the real status page script. Skipped
+// without node.
+func TestStatusPage_LayoutScript(t *testing.T) {
+	node := requireNode(t)
+	dir := t.TempDir()
+	page := filepath.Join(dir, "page.js")
+	if err := os.WriteFile(page, []byte(pageScript(t)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(node, "--check", page).CombinedOutput(); err != nil {
+		t.Fatalf("node --check: %v\n%s", err, out)
+	}
+	harness := filepath.Join(dir, "harness.js")
+	if err := os.WriteFile(harness, []byte(layoutStatusHarness), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(node, harness, page).CombinedOutput()
+	if err != nil {
+		t.Fatalf("harness: %v\n%s", err, out)
+	}
+	t.Log(strings.TrimSpace(string(out)))
+}
+
+const layoutStatusHarness = `
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const byId = {};
+const ctx = {
+  document: { addEventListener() {}, getElementById(id) { return byId[id] || (byId[id] = { style: {}, innerHTML: '', textContent: '' }); } },
+  fetch: () => new Promise(() => {}), setInterval() {}, console, Date, Math, String, Set, JSON, Object, Array,
+};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx);
+const run = s => vm.runInContext(s, ctx);
+const g = step => '{id:"g3",setting:"storage layout",strategy:"sequential",run:1,runs:2,step:"' + step + '",progress:42.4,variant:"raid1 <i>x</i>"}';
+
+let b = run('groupBannerHTML(' + g('resyncing') + ', [], {})');
+assert(b.includes('resyncing 42%'), b);
+assert(b.includes('raid1 &lt;i&gt;x&lt;/i&gt;') && !b.includes('<i>x'), 'variant: ' + b);
+b = run('groupBannerHTML(' + g('building') + ', [], {})');
+assert(b.includes('building the layout') && !b.includes('resyncing'), b);
+b = run('groupBannerHTML(' + g('tearing-down') + ', [], {})');
+assert(b.includes('tearing down') && !b.includes('tearing-down'), b);
+// a write-cache group: no variant, the steps as before
+b = run('groupBannerHTML({id:"g",setting:"write_cache",strategy:"sequential",run:1,runs:2,step:"running"}, [], {})');
+assert(b.includes('Setting test: <b>write_cache</b>, run 1 of 2, running <span class="dim">'), b);
+
+// members: name, model, serial, role, interface and SMART from config
+const arr = '{name:"md127",kind:"array",members:[' +
+  '{name:"sdb",model:"<b>x</b>",serial:"S1",role:"data",config:{interface:"SATA",firmware:"FW<1>",slot:{name:"Bay 3",source:"SAS bay"},link_speed:"6.0 Gbps",link_max:"12.0 Gbps",link_below_max:true,smart:{status:"PASSED"}}},' +
+  '{name:"sdc",model:"M",serial:"S<2>",role:"spare"}]}';
+let m = run('membersHTML(' + arr + ')');
+assert(m.includes('sdb') && m.includes('sdc') && m.includes('S1') && m.includes('data') && m.includes('spare'), m);
+assert(m.includes('&lt;b&gt;x&lt;/b&gt;') && !m.includes('<b>x'), 'model not escaped: ' + m);
+assert(m.includes('S&lt;2&gt;') && !m.includes('S<2>'), 'serial not escaped: ' + m);
+assert(m.includes('SATA') && m.includes('PASSED'), 'config: ' + m);
+assert(m.includes('fw FW&lt;1&gt;') && !m.includes('FW<1>'), 'firmware: ' + m);
+assert(m.includes('slot Bay 3 <span class="dim">(SAS bay)</span>'), 'slot: ' + m);
+assert(m.includes('link 6.0 Gbps') && m.includes('max 12.0 Gbps') && m.includes('below max'), 'link: ' + m);
+assert(!m.includes('slot undefined') && m.split('slot ').length === 2, 'sdc has no slot: ' + m);
+// The 2 s poll must not undo what the user did: an expanded <details> stays
+// expanded (dm_mod list, keyed per card) and identical markup is not rebuilt.
+const dm = '{loaded:true, use_blk_mq:"Y", params:{use_blk_mq:"Y", dm_mq_queue_depth:"2048"}}';
+let dh = run('dmModHTML(' + dm + ', "md127")');
+assert(dh.includes('<details data-key="dmmod:md127">') && !dh.includes(' open>'), dh);
+run('openKeys.add("dmmod:md127")');
+dh = run('dmModHTML(' + dm + ', "md127")');
+assert(dh.includes('<details data-key="dmmod:md127" open>'), 'expanded state kept: ' + dh);
+assert(!run('dmModHTML(' + dm + ', "sda")').includes(' open>'), 'keyed per card');
+ctx.el = { innerHTML: '' };
+run('setHTML(el, "<b>a</b>")');
+ctx.el.innerHTML = 'user-changed dom';
+run('setHTML(el, "<b>a</b>")');
+assert.strictEqual(ctx.el.innerHTML, 'user-changed dom', 'same markup must not be rebuilt');
+run('setHTML(el, "<b>b</b>")');
+assert.strictEqual(ctx.el.innerHTML, '<b>b</b>');
+assert.strictEqual(run('membersHTML({name:"sda"})'), '');
+assert.strictEqual(run('membersHTML({name:"sda",members:[]})'), '');
+
+// The status card itself, rendered by updateStatusDisplay: an array target
+// shows "array", its members (not a configuration), next to a plain drive.
+run('updateStatusDisplay({running: true, total_phases: 2, completed_phases: 1, current_phase: 1, mode: "sequential", ' +
+  'group: ' + g('running') + ', drives: [' +
+  '{name:"md127",type:"SSD",kind:"array",vendor:"Linux",model:"raid1",serial:"u-1",status:"running",phase_name:"randwrite",' +
+  'members:[{name:"sdb",model:"M",serial:"S1",role:"data"},{name:"sdc",model:"M",serial:"S<2>",role:"spare"}]},' +
+  '{name:"sda",type:"SSD",vendor:"V",model:"M",serial:"S9",status:"pending"}]})');
+const cards = byId['drives-list'].innerHTML;
+assert(cards.includes('md127 (SSD) &middot; array'), 'array card title: ' + cards);
+const arrCard = cards.slice(cards.indexOf('md127'), cards.indexOf('sda (SSD)'));
+assert(arrCard.includes('sdb') && arrCard.includes('sdc') && arrCard.includes('spare') && arrCard.includes('S&lt;2&gt;') && !arrCard.includes('S<2>'), 'array card members: ' + arrCard);
+assert(arrCard.includes('Status: Running') && arrCard.includes('Phase: randwrite'), 'array card status: ' + arrCard);
+assert(cards.includes('sda (SSD)</div>') && !cards.slice(cards.indexOf('sda (SSD)')).includes('&middot; array'), 'drive card: ' + cards);
+console.log('ok: layout steps, progress, variant, members, array status card');
+`
+
+// The Queue, md and dm_mod rows of the configuration card, the queue of each
+// member and the array node's own configuration, in node against the real
+// status page script. Skipped without node.
+func TestStatusPage_QueueScript(t *testing.T) {
+	node := requireNode(t)
+	dir := t.TempDir()
+	page := filepath.Join(dir, "page.js")
+	if err := os.WriteFile(page, []byte(pageScript(t)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	harness := filepath.Join(dir, "harness.js")
+	if err := os.WriteFile(harness, []byte(queueStatusHarness), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(node, harness, page).CombinedOutput()
+	if err != nil {
+		t.Fatalf("harness: %v\n%s", err, out)
+	}
+	t.Log(strings.TrimSpace(string(out)))
+}
+
+const queueStatusHarness = `
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const byId = {};
+const ctx = {
+  document: { addEventListener() {}, getElementById(id) { return byId[id] || (byId[id] = { style: {}, innerHTML: '', textContent: '' }); } },
+  fetch: () => new Promise(() => {}), setInterval() {}, console, Date, Math, String, Set, JSON, Object, Array,
+};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx);
+const run = s => vm.runInContext(s, ctx);
+
+// An NVMe drive: blk-mq with 2 hardware queues, dm_mod with all three.
+const nvme = JSON.stringify({interface: 'NVMe (PCIe)', queue: {scheduler: 'none', schedulers: ['none', 'mq-deadline'], mq: true, nr_hw_queues: 2,
+  nr_requests: '1023', read_ahead_kb: '128', nvme_queue_count: '5',
+  dm_mod: {loaded: true, use_blk_mq: 'Y', dm_mq_nr_hw_queues: '0', dm_mq_queue_depth: '2048', params: {use_blk_mq: 'Y', reserved_bio_based_ios: '16', dm_mq_queue_depth: '2048', dm_mq_nr_hw_queues: '0'}}}});
+let h = run('configHTML(' + nvme + ')');
+assert(h.includes('<span class="k">Queue</span><span class="v">blk-mq: yes, 2 hardware queues, scheduler none'), h);
+assert(h.includes('nr_requests 1023') && h.includes('read_ahead_kb 128') && h.includes('nvme queue_count 5') && h.includes('schedulers none mq-deadline'), h);
+assert(h.includes('<span class="k">dm_mod</span><span class="v">use_blk_mq Y &middot; dm_mq_nr_hw_queues 0 &middot; dm_mq_queue_depth 2048'), h);
+assert(h.includes('all dm_mod parameters (4)') && h.includes('reserved_bio_based_ios = 16'), h);
+assert(!h.includes('<span class="k">md</span>'), 'no md row on a drive: ' + h);
+
+// A newer kernel without use_blk_mq: the row says so.
+h = run('configHTML({queue: {mq: true, nr_hw_queues: 1, scheduler: "mq-deadline", dm_mod: {loaded: true, dm_mq_nr_hw_queues: "1", dm_mq_queue_depth: "2048"}}})');
+assert(h.includes('blk-mq: yes, 1 hardware queue, scheduler mq-deadline'), h);
+assert(h.includes('use_blk_mq <span class="dim">n/a (not on this kernel)</span> &middot; dm_mq_nr_hw_queues 1 &middot; dm_mq_queue_depth 2048'), h);
+assert(!h.includes('all dm_mod parameters'), h);
+
+// A dm node with dm_mod not in sysfs, and a host without dm_mod: no row.
+h = run('configHTML({interface: "device-mapper", queue: {mq: false, dm_mod: {loaded: false}}})');
+assert(h.includes('blk-mq: no (bio-based)') && h.includes('<span class="k">dm_mod</span><span class="v"><span class="dim">not loaded</span>'), h);
+h = run('configHTML({interface: "SATA", queue: {mq: true, nr_hw_queues: 1, scheduler: "bfq"}})');
+assert(!h.includes('dm_mod'), h);
+// Old runs without queue data render as before.
+h = run('configHTML({interface: "SATA"})');
+assert(!h.includes('Queue') && !h.includes('dm_mod'), h);
+// Values are escaped.
+h = run('configHTML({queue: {mq: false, scheduler: "<b>x</b>", dm_mod: {loaded: true, use_blk_mq: "<i>", params: {"<k>": "<v>"}}}})');
+assert(!h.includes('<b>x') && !h.includes('<i>') && !h.includes('<k>') && h.includes('&lt;k&gt; = &lt;v&gt;'), h);
+
+// md row of an md node.
+h = run('configHTML({interface: "md", queue: {mq: false, scheduler: "none", md: {level: "raid1", raid_disks: "2", chunk_size: "0", sync_action: "idle", bitmap: "+8"}}})');
+assert(h.includes('<span class="k">md</span><span class="v">raid1 · 2 disks · chunk 0 · sync idle · bitmap +8'), h);
+
+// Members show their queue mode.
+const m = run('membersHTML({name: "md127", kind: "array", members: [{name: "sdb", model: "M", serial: "S1", role: "data", config: {queue: {mq: true, nr_hw_queues: 1, scheduler: "mq-deadline"}}}]})');
+assert(m.includes('queue blk-mq: yes, 1 hardware queue, scheduler mq-deadline'), m);
+
+// The array card shows its own node's configuration above the members.
+run('updateStatusDisplay({running: true, total_phases: 1, completed_phases: 0, current_phase: 0, mode: "sequential", drives: [' +
+  '{name:"md127",type:"SSD",kind:"array",vendor:"Linux",model:"raid1",status:"running",' +
+  'config:{interface:"md",queue:{mq:false,scheduler:"none",md:{level:"raid1"},dm_mod:{loaded:true,use_blk_mq:"N",dm_mq_nr_hw_queues:"0",dm_mq_queue_depth:"2048"}}},' +
+  'members:[{name:"sdb",model:"M",serial:"S1",role:"data"}]}]})');
+const card = byId['drives-list'].innerHTML;
+assert(card.includes('blk-mq: no (bio-based), scheduler none') && card.includes('raid1') && card.includes('use_blk_mq N'), card);
+assert(card.indexOf('blk-mq: no') < card.indexOf('Members'), 'node config above the members: ' + card);
+console.log('ok: queue, md, dm_mod rows, members, array node');
 `

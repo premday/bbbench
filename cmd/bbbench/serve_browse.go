@@ -128,13 +128,19 @@ func handleBrowsePage(w http.ResponseWriter, r *http.Request) {
             color: #999;
             font-size: 12px;
         }
-        .group-row { background: #fafbff; }
+        /* A group is a white line; the runs nested in it are a bright grey, indented
+           on the whole line (a bar, then the timestamp and the ID cells pushed in). */
+        .group-row { background: #fff; }
+        .group-row:hover { background: #f9f9f9; }
         .group-row .expand {
             border: 1px solid #ddd; background: #fff; border-radius: 3px;
             cursor: pointer; font-size: 11px; padding: 0 5px; margin-right: 6px;
         }
         .badge-group { background: #e8f5e9; color: #2e7d32; }
-        .member td:first-child { padding-left: 32px; }
+        .member { background: #eceff3; }
+        .member:hover { background: #e2e6ec; }
+        .member td:first-child { padding-left: 32px; border-left: 4px solid #b6bcc6; }
+        .member td:nth-child(2) { padding-left: 32px; }
         .group-of a { color: #2196f3; text-decoration: none; }
     </style>
 </head>
@@ -176,8 +182,8 @@ __NAVBAR_HTML__
     <script>
         let allResults = [];
         let allGroups = [];
-        // Run groups whose member runs are shown.
-        const EXPANDED = new Set();
+        // Run groups the user folded: every group starts expanded.
+        const COLLAPSED = new Set();
 
         function esc(s) {
             return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -235,7 +241,7 @@ __NAVBAR_HTML__
                 '<td class="stats">' + members.length + ' of ' + (g.runs || 0) + ' run(s)</td>' +
                 '<td class="stats">' + counts + '</td>' +
                 '<td class="actions">' +
-                    '<a href="/group?id=' + id + '">Group</a>' +
+                    '<a href="/group?id=' + id + '">Details</a>' +
                     '<a href="/graphs?group=' + id + '">Graphs</a>' +
                     '<a href="/compare?group=' + id + '">Compare</a>' +
                 '</td>' +
@@ -258,7 +264,7 @@ __NAVBAR_HTML__
                 if (!g) { rows.push(runRow(r, false, false)); return; }
                 if (shown.has(g.id)) return;
                 shown.add(g.id);
-                const open = EXPANDED.has(g.id);
+                const open = !COLLAPSED.has(g.id);
                 rows.push(groupRow(g, members[g.id], open));
                 members[g.id].forEach(m => rows.push(runRow(m, true, open)));
             });
@@ -266,7 +272,7 @@ __NAVBAR_HTML__
         }
 
         function toggleGroup(id) {
-            if (EXPANDED.has(id)) EXPANDED.delete(id); else EXPANDED.add(id);
+            if (COLLAPSED.has(id)) COLLAPSED.delete(id); else COLLAPSED.add(id);
             filterResults();
         }
 
@@ -496,6 +502,11 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
             </div>
         </div>
 
+        <div class="card" id="drives-card" style="display:none">
+            <h2>Drives</h2>
+            <div id="drives-block"></div>
+        </div>
+
         <div class="card" id="group-card" style="display:none">
             <h2>Run group</h2>
             <div id="group-block"></div>
@@ -520,6 +531,22 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
             if (!r) return '<span class="dim">-</span>';
             return escG(r.value) + (r.kernel ? ' <span class="dim">(kernel: ' + escG(r.kernel) + ')</span>' : '');
         }
+        // drivesHTML lists the run's drives, each array target with its member
+        // disks and their roles under it; '' when the run has no array target
+        // (a plain run's page is unchanged).
+        function drivesHTML(result) {
+            const drives = result.drives || [];
+            if (!drives.some(d => d.Members && d.Members.length)) return '';
+            return '<table class="labels"><tr><th>Drive</th><th>Model</th><th>Serial</th><th>Members</th></tr>' +
+                drives.map(d => {
+                    const dev = d.Device || {};
+                    const ms = (d.Members || []).map(m => '<div>' + escG(m.name) + ' <span class="dim">' + escG(m.model) + ' ' +
+                        escG(m.serial) + '</span> ' + escG(m.role) + '</div>').join('');
+                    return '<tr><td>' + escG(dev.Name) + (ms ? ' &middot; array' : '') + '</td><td>' + escG(dev.Model) + '</td>' +
+                        '<td>' + escG(dev.Serial) + '</td><td>' + (ms || '<span class="dim">-</span>') + '</td></tr>';
+                }).join('') + '</table>';
+        }
+
         // groupBlockHTML shows the run group of a member run and, per drive,
         // the value it ran under and the readings that verified it; '' for a
         // plain run.
@@ -550,6 +577,11 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
         fetch('/api/results/detail?id=' + resultID)
             .then(response => response.json())
             .then(result => {
+                const db = drivesHTML(result);
+                if (db) {
+                    document.getElementById('drives-block').innerHTML = db;
+                    document.getElementById('drives-card').style.display = '';
+                }
                 const gb = groupBlockHTML(result);
                 if (gb) {
                     document.getElementById('group-block').innerHTML = gb;
@@ -573,10 +605,17 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
                     const warned = Object.entries(phase.warnings || {}).map(([dev, why]) =>
                         '<div class="phase-stats" style="color:#8a5300;background:#fff3e0;border-radius:4px;padding:4px 8px;margin-top:4px;white-space:pre-line;">' +
                         '&#9888; ' + esc(why) + '</div>').join('');
+                    // Read and write latency from kernel trace events: the
+                    // source of each traced drive, or why it was not traced.
+                    const traced = Object.entries(phase.io_trace || {}).map(([dev, s]) =>
+                        '<div class="phase-stats">' + esc(dev) + ': ' + esc(s.text || '') + '</div>').join('');
+                    const untraced = Object.entries(phase.io_trace_notes || {}).map(([dev, why]) =>
+                        '<div class="phase-stats" style="color:#8a5300;background:#fff3e0;border-radius:4px;padding:4px 8px;margin-top:4px;white-space:pre-line;">' +
+                        '&#9888; ' + esc(dev) + ': ' + esc(why) + '</div>').join('');
                     return '<li class="phase-item">' +
                         '<div class="phase-name">Phase ' + (i + 1) + ': ' + esc(phase.phase_name || 'Unnamed') + '</div>' +
                         '<div class="phase-stats">Jobs: ' + jobCount + ' | Duration: ' + duration + 's</div>' +
-                        warned + skipped + '</li>';
+                        warned + skipped + traced + untraced + '</li>';
                 }).join('');
             })
             .catch(error => {

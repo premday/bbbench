@@ -49,8 +49,10 @@ import (
 	"bbbench/internal/config"
 	"bbbench/internal/diskinfo"
 	"bbbench/internal/dmi"
+	"bbbench/internal/inuse"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
+	"bbbench/internal/templating"
 	"bbbench/internal/util"
 )
 
@@ -60,7 +62,13 @@ type DriveInfo struct {
 	FioFilePath string
 	FioExists   bool
 	Selected    bool
+	// Members are the disks of a composite target (an array); none for a drive.
+	Members []rungroup.Member `json:"Members,omitempty"`
+	UUID    string            `json:"UUID,omitempty"`
 }
+
+// IsArray reports whether the target is a composite of member disks.
+func (d DriveInfo) IsArray() bool { return len(d.Members) > 0 }
 
 func runOrchestrator(args []string) error {
 	fs := flag.NewFlagSet("orchestrator", flag.ExitOnError)
@@ -68,6 +76,7 @@ func runOrchestrator(args []string) error {
 	distDir := fs.String("dist", "", "dist directory (default ./dist or BBBENCH_DIST_DIR)")
 	mode := fs.String("mode", "parallel-sync", "execution mode: parallel-sync or sequential")
 	outputDir := fs.String("output", "", "output directory for results (default: from config fioplot.output.path)")
+	webAddr := fs.String("addr", defaultWebAddr, "address to bind the web server that serves the run (all interfaces by default)")
 	dryRun := fs.Bool("dry-run", false, "show what would be executed without running fio")
 	resume := fs.Bool("resume", false, "resume from previous interrupted run")
 	verbose := fs.Bool("verbose", false, "show detailed execution information")
@@ -78,10 +87,17 @@ func runOrchestrator(args []string) error {
 	filterMaxCap := fs.Uint64("filter-max-capacity", 0, "filter drives by maximum capacity in GB (0 = no limit)")
 	skipWriteThrough := fs.Bool("skip-write-through", false, "do not run fsync (Flush-latency) phases on write-through devices, where the kernel sends no Flush (default: run them and warn)")
 	noFlushTrace := fs.Bool("no-flush-trace", false, "do not trace device Flush latency (kernel trace events) during fsync phases")
+	noIOTrace := fs.Bool("no-io-trace", false, "do not trace read and write latency (kernel trace events) during phases")
 	logAvgMsec := fs.Int("log-avg-msec", 1000, "fio log averaging interval in milliseconds (--log_avg_msec)")
+	traceBufferMB := fs.Int("trace-buffer-mb", defaultTraceBufferMB, "MiB of kernel ring buffer shared by the concurrent ftrace sessions (I/O and Flush latency). "+
+		"Each CPU of each session gets an equal share, at least 1 MiB and at most 64 MiB: kernel memory = sessions x CPUs x per-CPU size, "+
+		"at most this budget except at the 1 MiB floor. Raise it when the trace reports events lost in the ring buffer")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
 	sysBlock := fs.String("sys-block", "", "override /sys/block (tests)")
 	_ = fs.Parse(args)
+	if err := checkTraceBufferMB(*traceBufferMB); err != nil {
+		return err
+	}
 
 	if os.Geteuid() != 0 {
 		return errors.New("bbbench orchestrator must run as root")
@@ -97,6 +113,8 @@ func runOrchestrator(args []string) error {
 		return err
 	}
 	defer releaseOrchestratorLock()
+	recordOrchestratorAddr(*webAddr)
+	cleanStaleTraces(os.Stdout)
 	defer ResetStatus() // Reset web status when done
 
 	if *mode != "parallel-sync" && *mode != "sequential" {
@@ -191,9 +209,18 @@ func runOrchestrator(args []string) error {
 
 	// A drive setting left changed by an earlier setting test is offered for
 	// restoring before anything else; all discovered drives are candidates.
-	available := settings.All(settings.Env{})
+	// The disks a layout must not erase include those holding this binary
+	// and the output directory; the layout re-checks them before each build.
+	exe, err := os.Executable()
+	if err != nil {
+		exe = ""
+	}
+	scanInUse := func() (*inuse.Report, error) {
+		return inuse.Scan(inuse.Options{Paths: inUsePaths(exe, outDir)})
+	}
+	available := settings.All(settings.Env{InUse: scanInUse})
 	targets := targetsFor(allDrives, diskinfo.Options{})
-	if err := offerRecovery(context.Background(), os.Stdin, os.Stdout, groupRecoveryPath, available, allDrives, targets); err != nil {
+	if err := offerRecovery(context.Background(), os.Stdin, os.Stdout, groupRecoveryPath, available, targets); err != nil {
 		return err
 	}
 
@@ -207,7 +234,7 @@ func runOrchestrator(args []string) error {
 				if *dryRun {
 					return errors.New("a dry run cannot be combined with a setting test")
 				}
-				c, err := prepareGroupResume(os.Stdin, os.Stdout, g, available, allDrives)
+				c, err := prepareGroupResume(os.Stdin, os.Stdout, g, available, allDrives, scanInUse)
 				if err != nil {
 					return err
 				}
@@ -229,22 +256,38 @@ func runOrchestrator(args []string) error {
 			fmt.Println(note)
 		}
 
-		// Launch TUI for drive selection
-		selectedDrives, err = runDriveSelectionTUI(drives)
-		if err != nil {
-			return err
-		}
-
-		if len(selectedDrives) == 0 {
-			return errors.New("no drives selected")
-		}
-
-		if choice.Setting != nil {
-			group, err = runGroupSetupTUI(choice.Setting, selectedDrives, targets)
+		if choice.Setting != nil && choice.Setting.Input() == settings.InputVariants {
+			// A layout test picks its disks per layout: no drive selection.
+			ls, ok := choice.Setting.(settings.LayoutSetting)
+			if !ok {
+				return fmt.Errorf("%s takes layouts but has no layout screens", choice.Setting.Name())
+			}
+			busy, berr := scanInUse()
+			// x on the list destroys an existing configuration and re-runs the
+			// scan; the discovered drives stay the same disks.
+			group, err = runLayoutSetupTUI(ls, drives, targets, busy, berr, scanInUse)
 			if err != nil {
 				return err
 			}
 			selectedDrives = group.Drives
+		} else {
+			// Launch TUI for drive selection
+			selectedDrives, err = runDriveSelectionTUI(drives)
+			if err != nil {
+				return err
+			}
+
+			if len(selectedDrives) == 0 {
+				return errors.New("no drives selected")
+			}
+
+			if choice.Setting != nil {
+				group, err = runGroupSetupTUI(choice.Setting, selectedDrives, targets)
+				if err != nil {
+					return err
+				}
+				selectedDrives = group.Drives
+			}
 		}
 	}
 
@@ -324,6 +367,8 @@ func runOrchestrator(args []string) error {
 		DryRun:           *dryRun,
 		Verbose:          *verbose,
 		FlushTrace:       !*noFlushTrace,
+		IOTrace:          !*noIOTrace,
+		TraceBufferMB:    *traceBufferMB,
 		SkipWriteThrough: *skipWriteThrough,
 		LogAvgMsec:       *logAvgMsec,
 	}
@@ -335,10 +380,10 @@ func runOrchestrator(args []string) error {
 	var startOnce sync.Once
 	opts.OnStarted = func() {
 		startOnce.Do(func() {
-			srv = newWebServer("0.0.0.0:12345")
+			srv = newWebServer(*webAddr)
 			go func(srv *http.Server) {
 				logger.Info("starting web server from orchestrator", "addr", srv.Addr)
-				fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
+				fmt.Printf("Web server available at http://%s\n\n", *webAddr)
 				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					logger.Error("web server error", "err", err)
 				}
@@ -356,8 +401,29 @@ func runOrchestrator(args []string) error {
 
 	var runErr error
 	if group != nil {
-		cfg := newGroupConfig(group, targets, opts, host, resumeGroup)
-		fmt.Printf("Setting test: %s, %d values, strategy %s\n\n", group.Setting.Name(), len(group.Values), group.Strategy)
+		// A composite target built by a layout gets its fio file rendered
+		// from the same templates; they are loaded on the first composite
+		// only, so a group of drive values loads nothing more.
+		var eng *templating.Engine
+		makeDrive := func(bt settings.BenchTarget) (DriveInfo, error) {
+			if eng == nil {
+				e, err := loadTemplatesWithSearch("", dir)
+				if err != nil {
+					return DriveInfo{}, fmt.Errorf("load templates: %w", err)
+				}
+				eng = e
+			}
+			return arrayDrive(bt, drivesByName(group.Drives), *sysBlock, fioGenerator(cfg, eng, host))
+		}
+		cfg := newGroupConfig(group, targets, opts, host, resumeGroup, makeDrive)
+		cfg.Identify = func(name string) (blockdev.Device, error) {
+			return blockdev.Lookup(blockdev.OSFS{}, *sysBlock, name)
+		}
+		if group.Variants != nil {
+			fmt.Printf("Setting test: %s, %d layouts, one after the other\n\n", group.Setting.Name(), len(group.Variants))
+		} else {
+			fmt.Printf("Setting test: %s, %d values, strategy %s\n\n", group.Setting.Name(), len(group.Values), group.Strategy)
+		}
 		g, err := runGroup(context.Background(), cfg)
 		if g == nil {
 			// Setup failed before the first run: nothing to wait for.
@@ -375,7 +441,7 @@ func runOrchestrator(args []string) error {
 	}
 
 	// Keep web server running until user interrupts
-	fmt.Printf("\nWeb server still running at http://0.0.0.0:12345\n")
+	fmt.Printf("\nWeb server still running at http://%s\n", *webAddr)
 	fmt.Printf("Results available at: %s\n", outDir)
 	fmt.Printf("\nPress Ctrl+C to stop...\n\n")
 
@@ -396,6 +462,8 @@ type runOptions struct {
 	Resume           *ExecutionState
 	DryRun, Verbose  bool
 	FlushTrace       bool
+	IOTrace          bool
+	TraceBufferMB    int // --trace-buffer-mb; 0 = defaultTraceBufferMB
 	SkipWriteThrough bool
 	LogAvgMsec       int
 	// OnStarted, when non-nil, is called once the run's live result is in
@@ -455,10 +523,15 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 	coordinator.verbose = opts.Verbose
 	coordinator.logAvgMsec = opts.LogAvgMsec
 	coordinator.flushTrace = opts.FlushTrace
+	coordinator.ioTrace = opts.IOTrace
+	coordinator.traceBufferMB = opts.TraceBufferMB
 	coordinator.labels = spec.Labels
 	coordinator.groupID = spec.GroupID
 	if err := coordinator.checkEnvironment(); err != nil {
 		return nil, err
+	}
+	if coordinator.ioTrace || (coordinator.flushTrace && coordinator.hasFsyncPhase()) {
+		fmt.Println(traceBufferLine(coordinator.traceBufferMB, coordinator.maxTraceSessions(), traceCPUs()))
 	}
 	coordinator.skipWriteThrough = opts.SkipWriteThrough
 
@@ -594,18 +667,7 @@ func discoverDrivesWithFioFiles(cfg *config.Root, host, sysBlock string, verbose
 	// Match devices with fio files
 	var drives []DriveInfo
 	for _, disk := range devs {
-		manufacturer := util.SanitizeFilename(strings.TrimSpace(disk.Vendor), "_")
-		if manufacturer == "" {
-			manufacturer = "unknown"
-		}
-
-		// Construct expected fio filename (matches generate.go pattern)
-		filename := util.SanitizeFilename(fmt.Sprintf(
-			"%s_%s_%s_%s_%s_config.fio",
-			host, manufacturer, disk.Model, disk.Serial, disk.ParentSubsystem,
-		), "_")
-
-		fioPath := filepath.Join(hostDir, filename)
+		fioPath := filepath.Join(hostDir, fioFileName(host, disk))
 		fioExists := false
 		if _, err := os.Stat(fioPath); err == nil {
 			fioExists = true

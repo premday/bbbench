@@ -251,8 +251,8 @@ func TestNewGroupConfig_OnSaveRegistersGroup(t *testing.T) {
 	globalGroupStore.Clear()
 	t.Cleanup(globalGroupStore.Clear)
 	opts := runOptions{Mode: "sequential", OutDir: t.TempDir()}
-	c := &groupChoice{Setting: newFakeSetting(nil), Values: fakeValues, Strategy: rungroup.Sequential}
-	cfg := newGroupConfig(c, nil, opts, "h", nil)
+	c := &groupChoice{Setting: perDrive(newFakeSetting(nil)), Values: fakeValues, Strategy: rungroup.Sequential}
+	cfg := newGroupConfig(c, nil, opts, "h", nil, nil)
 	if cfg.OnSave == nil {
 		t.Fatal("OnSave not wired")
 	}
@@ -334,8 +334,115 @@ func TestHandleGroupDetail_NotRunValueHasRow(t *testing.T) {
 }
 
 func TestNewGroupConfig_HasPrecheck(t *testing.T) {
-	c := &groupChoice{Setting: newFakeSetting(nil), Values: fakeValues, Strategy: rungroup.Sequential}
-	if cfg := newGroupConfig(c, nil, runOptions{Mode: "sequential", OutDir: t.TempDir()}, "h", nil); cfg.Precheck == nil {
+	c := &groupChoice{Setting: perDrive(newFakeSetting(nil)), Values: fakeValues, Strategy: rungroup.Sequential}
+	if cfg := newGroupConfig(c, nil, runOptions{Mode: "sequential", OutDir: t.TempDir()}, "h", nil, nil); cfg.Precheck == nil {
 		t.Error("no precheck: fio and the fio files would only be checked after the first apply")
+	}
+}
+
+// layoutResult is one run of a layout group on the array target dev built
+// from members, labelled with value.
+func layoutResult(id, dev, value string, ts time.Time, members []rungroup.Member) *BenchmarkResult {
+	return &BenchmarkResult{
+		ID: id, GroupID: "g3", Timestamp: ts, Mode: "sequential",
+		Drives: []DriveInfo{{Device: blockdev.Device{Name: dev, Path: "/dev/" + dev, Model: "array", Serial: "u-" + dev}, UUID: "u-" + dev, Members: members}},
+		Phases: []PhaseResult{{PhaseNumber: 1, PhaseName: "randwrite",
+			Jobs: []JobResult{{Device: dev, WriteStats: &IOStats{IOPS: 500, Bandwidth: 2048, AvgLatNS: 1000}}}}},
+		Labels: map[string]rungroup.Label{dev: {Setting: "storage layout", Value: value, Valid: true,
+			Before: &settings.Reading{Value: value, Kernel: "array_state=clean"},
+			After:  &settings.Reading{Value: value, Kernel: "array_state=<i>clean</i>"}}},
+	}
+}
+
+// seedLayoutGroup stores a layout group g3 with two runs: a raid1 array
+// md127 (sdb, sdc data, sdd spare; sdb's model has markup) torn down, and a
+// striped volume dm-3 (sdb, sdc) whose teardown failed.
+func seedLayoutGroup(t *testing.T) {
+	t.Helper()
+	globalGroupStore.Clear()
+	globalResultsStore.Clear()
+	t.Cleanup(func() { globalGroupStore.Clear(); globalResultsStore.Clear() })
+	md := []rungroup.Member{
+		{Name: "sdb", Serial: "S1", Model: "<b>x</b>", Role: settings.RoleData},
+		{Name: "sdc", Serial: "S2", Model: "M", Role: settings.RoleData},
+		{Name: "sdd", Serial: "S3", Model: "M", Role: settings.RoleSpare},
+	}
+	dm := md[:2]
+	v1, v2 := "mdadm raid1 · 2 data + 1 spare", "lvm striped · 2 disks"
+	drive := func(dev, value string, ms []rungroup.Member) rungroup.GroupDrive {
+		return rungroup.GroupDrive{Device: dev, Serial: "u-" + dev, Model: "array", Value: value, Kind: settings.TargetArray, UUID: "u-" + dev, Members: ms,
+			Label: rungroup.Label{Setting: "storage layout", Value: value, Valid: true,
+				After: &settings.Reading{Value: value, Kernel: "array_state=<i>clean</i>"}}}
+	}
+	globalGroupStore.AddGroup(&rungroup.GroupFile{
+		ID: "g3", Created: time.Unix(9000, 0), Host: "h", Plan: []string{"randwrite"},
+		Setting: "storage layout", Strategy: rungroup.Sequential, Values: []string{v1, v2},
+		Variants: []rungroup.GroupVariant{{Value: v1, Disks: md}, {Value: v2, Disks: dm}},
+		Runs: []rungroup.GroupRun{
+			{RunID: "r20", Status: rungroup.RunDone, Drives: []rungroup.GroupDrive{drive("md127", v1, md)},
+				Teardown: &rungroup.GroupRestore{Status: rungroup.RestoreDone}},
+			{RunID: "r21", Status: rungroup.RunDone, Drives: []rungroup.GroupDrive{drive("dm-3", v2, dm)},
+				Teardown: &rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: []string{"bbbench_g3_2"}}},
+		},
+		Restore: rungroup.GroupRestore{Status: rungroup.RestoreFailed, Failed: []string{"bbbench_g3_2"}},
+	})
+	globalResultsStore.AddResult(layoutResult("r20", "md127", v1, time.Unix(9100, 0), md))
+	globalResultsStore.AddResult(layoutResult("r21", "dm-3", v2, time.Unix(9200, 0), dm))
+}
+
+// The detail of a layout group carries its variants, each run's array
+// target with its members, and the run's teardown.
+func TestHandleGroupDetail_Arrays(t *testing.T) {
+	seedLayoutGroup(t)
+	var out struct {
+		Variants []struct {
+			Value string `json:"value"`
+			Disks []struct {
+				Name string `json:"name"`
+				Role string `json:"role"`
+			} `json:"disks"`
+		} `json:"variants"`
+		Runs []struct {
+			Drives []struct {
+				Device  string `json:"device"`
+				Kind    string `json:"kind"`
+				Members []struct {
+					Name string `json:"name"`
+					Role string `json:"role"`
+				} `json:"members"`
+			} `json:"drives"`
+			Kernel   map[string]string `json:"kernel"`
+			Teardown *struct {
+				Status string   `json:"status"`
+				Failed []string `json:"failed"`
+			} `json:"teardown"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(get(handleGroupDetail, "/api/groups/detail?id=g3").Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Variants) != 2 || len(out.Variants[0].Disks) != 3 || out.Variants[0].Disks[2].Role != "spare" {
+		t.Errorf("variants = %+v", out.Variants)
+	}
+	if len(out.Runs) != 2 {
+		t.Fatalf("runs = %+v", out.Runs)
+	}
+	d := out.Runs[0].Drives[0]
+	if d.Device != "md127" || d.Kind != "array" || len(d.Members) != 3 || d.Members[0].Name != "sdb" || d.Members[0].Role != "data" {
+		t.Errorf("run 1 drive = %+v", d)
+	}
+	if out.Runs[0].Kernel["md127"] != "array_state=<i>clean</i>" {
+		t.Errorf("kernel = %v", out.Runs[0].Kernel)
+	}
+	if td := out.Runs[0].Teardown; td == nil || td.Status != "done" {
+		t.Errorf("run 1 teardown = %+v", td)
+	}
+	if td := out.Runs[1].Teardown; td == nil || td.Status != "failed" || len(td.Failed) != 1 || td.Failed[0] != "bbbench_g3_2" {
+		t.Errorf("run 2 teardown = %+v", td)
+	}
+	// A write-cache group's detail has no variants key (its page is unchanged).
+	seedGroup(t)
+	if body := get(handleGroupDetail, "/api/groups/detail?id=g1").Body.String(); strings.Contains(body, `"variants"`) || strings.Contains(body, `"teardown"`) {
+		t.Errorf("write-cache detail carries layout fields: %s", body)
 	}
 }

@@ -16,16 +16,24 @@ import (
 	"time"
 )
 
+// defaultWebAddr is where the web server listens unless -addr says otherwise
+// (serve and orchestrator).
+const defaultWebAddr = "0.0.0.0:12345"
+
 // runServe starts the web server for the bbbench GUI.
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", "0.0.0.0:12345", "address to bind web server (all interfaces by default)")
+	addr := fs.String("addr", defaultWebAddr, "address to bind web server (all interfaces by default)")
 	outputDir := fs.String("output", "~/.bbbench/output", "output directory containing benchmark results")
 	_ = fs.Parse(args)
 
-	// Check if orchestrator is running
-	if isOrchestratorRunning() {
-		return errors.New("orchestrator is already running with web interface enabled\nConnect to http://0.0.0.0:12345 to view status")
+	// An orchestrator serves its own web UI: only the same address collides.
+	note, err := checkServeAddr(*addr)
+	if err != nil {
+		return err
+	}
+	if note != "" {
+		fmt.Println(note)
 	}
 
 	// Load existing benchmark results from output directory
@@ -320,6 +328,8 @@ func loadBenchmarkSummary(path string) error {
 		// series from them (also for runs saved before the series existed).
 		for device, fioPath := range phase.FioFiles {
 			applyFlushLog(phase, device, strings.TrimSuffix(fioPath, ".json")+"_log")
+			applyMembersLog(phase, device, strings.TrimSuffix(fioPath, ".json")+"_log")
+			applyIOLatLog(phase, device, strings.TrimSuffix(fioPath, ".json")+"_log")
 		}
 		// Backfill time-series from log files if not already present
 		if phase.LogSeries == nil && len(phase.FioFiles) > 0 {

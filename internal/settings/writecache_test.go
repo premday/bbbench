@@ -71,7 +71,7 @@ func find(vs []Value, id string) Value {
 
 func TestWriteCache_NVMe(t *testing.T) {
 	f := &fake{answers: map[string]string{"nvme get-feature /dev/nvme0 -f 6": "get-feature:0x06 (Volatile Write Cache), Current value:0x000001"}}
-	s := NewWriteCache(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "nvme0n1", "write back")})
+	s := newWriteCacheOps(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "nvme0n1", "write back")})
 	tg := Target{Name: "nvme0n1", Path: "/dev/nvme0n1", Interface: "NVMe (PCIe)"}
 	r, err := s.Read(context.Background(), tg)
 	if err != nil || r.Value != "enabled" || r.Kernel != "write back" || r.At.IsZero() {
@@ -96,7 +96,7 @@ func TestWriteCache_NVMe(t *testing.T) {
 
 func TestWriteCache_SATA(t *testing.T) {
 	f := &fake{answers: map[string]string{"hdparm -W /dev/sdb": "\n/dev/sdb:\n write-caching =  1 (on)\n"}}
-	s := NewWriteCache(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
+	s := newWriteCacheOps(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
 	tg := Target{Name: "sdb", Path: "/dev/sdb", Interface: "SATA"}
 	r, err := s.Read(context.Background(), tg)
 	if err != nil || r.Value != "enabled" {
@@ -117,7 +117,7 @@ func TestWriteCache_SATA(t *testing.T) {
 func TestWriteCache_SAS(t *testing.T) {
 	f := &fake{}
 	wce := true
-	s := NewWriteCache(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdc", "write back"),
+	s := newWriteCacheOps(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdc", "write back"),
 		GetWCE: func(p string) (bool, error) {
 			if p != "/dev/sdc" {
 				t.Errorf("path %s", p)
@@ -155,7 +155,7 @@ func TestWriteCache_ScopeAndInput(t *testing.T) {
 	if v := s.Values(); len(v) != 2 || v[0].ID != "enabled" || v[1].ID != "disabled" {
 		t.Errorf("%+v", v)
 	}
-	if len(All(Env{})) != 1 {
+	if all := All(Env{}); len(all) != 2 || all[0].Name() != s.Name() {
 		t.Error("All")
 	}
 }
@@ -198,7 +198,7 @@ func TestWriteCache_Applicable(t *testing.T) {
 
 func TestWriteCache_RestoreWritesOnlyWhenDifferent(t *testing.T) {
 	f := &fake{answers: map[string]string{"hdparm -W /dev/sdb": " write-caching =  1 (on)"}}
-	s := NewWriteCache(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
+	s := newWriteCacheOps(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
 	tg := Target{Name: "sdb", Path: "/dev/sdb", Interface: "SATA"}
 	if err := s.Restore(context.Background(), tg, Reading{Value: "enabled"}); err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestWriteCache_RestoreWritesOnlyWhenDifferent(t *testing.T) {
 
 func TestWriteCache_RestoreWithoutOriginalDoesNothing(t *testing.T) {
 	f := &fake{answers: map[string]string{"hdparm -W /dev/sdb": " write-caching =  1 (on)"}}
-	s := NewWriteCache(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
+	s := newWriteCacheOps(Env{Run: f.run, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
 	err := s.Restore(context.Background(), Target{Name: "sdb", Path: "/dev/sdb", Interface: "SATA"}, Reading{})
 	if err == nil || !strings.Contains(err.Error(), "sdb") {
 		t.Errorf("err = %v", err)
@@ -231,12 +231,12 @@ func TestWriteCache_ReadToleratesExitStatusWithOutput(t *testing.T) {
 	withOut := func(context.Context, string, ...string) ([]byte, error) {
 		return []byte(" write-caching =  0 (off)"), errors.New("exit status 25")
 	}
-	s := NewWriteCache(Env{Run: withOut, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
+	s := newWriteCacheOps(Env{Run: withOut, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
 	if r, err := s.Read(context.Background(), tg); err != nil || r.Value != "disabled" {
 		t.Errorf("%+v %v", r, err)
 	}
 	noOut := func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("exit status 1") }
-	s = NewWriteCache(Env{Run: noOut, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
+	s = newWriteCacheOps(Env{Run: noOut, LookPath: lookAll, Sys: sysWith(t, "sdb", "write back")})
 	if _, err := s.Read(context.Background(), tg); err == nil {
 		t.Error("want an error without output")
 	}
@@ -253,20 +253,16 @@ func TestWriteCache_RestoreCommandMatchesApply(t *testing.T) {
 	for _, tg := range targets {
 		for _, v := range []string{"enabled", "disabled"} {
 			f := &fake{}
-			s := NewWriteCache(Env{Run: f.run, LookPath: lookAll, Sys: t.TempDir()})
+			s := newWriteCacheOps(Env{Run: f.run, LookPath: lookAll, Sys: t.TempDir()})
 			if err := s.Apply(context.Background(), tg, Value{ID: v}); err != nil {
 				t.Fatalf("%s %s: %v", tg.Name, v, err)
 			}
-			h, ok := s.(CommandHinter)
-			if !ok {
-				t.Fatal("write cache setting is not a CommandHinter")
-			}
-			if got, want := h.RestoreCommand(tg, Reading{Value: v}), f.ran[len(f.ran)-1]; got != want {
+			if got, want := s.RestoreCommand(tg, Reading{Value: v}), f.ran[len(f.ran)-1]; got != want {
 				t.Errorf("%s %s: RestoreCommand %q, Apply ran %q", tg.Name, v, got, want)
 			}
 		}
 	}
-	h := NewWriteCache(Env{LookPath: lookAll}).(CommandHinter)
+	h := newWriteCacheOps(Env{LookPath: lookAll})
 	if c := h.RestoreCommand(targets[1], Reading{Value: ""}); c != "" {
 		t.Errorf("unknown value: %q", c)
 	}

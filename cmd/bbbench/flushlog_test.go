@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func TestFlushLog_RoundTrip(t *testing.T) {
 		t.Fatalf("log must sit next to the fio logs as <prefix>_flush.1.log: %v", err)
 	}
 	got, series, ok := loadFlushLog(prefix)
-	if !ok || *got != sum {
+	if !ok || !reflect.DeepEqual(*got, sum) {
 		t.Fatalf("loaded %+v ok=%v, want %+v", got, ok, sum)
 	}
 	// 1s windows, stamped at their start: [0,1s) mean 200us at t=0, [1s,2s)
@@ -177,5 +178,51 @@ func TestPhaseRampMs(t *testing.T) {
 	}
 	if got := phaseRampMs(&FioWorkload{}, []FioJob{{Section: "[a]\n"}}); got != 0 {
 		t.Errorf("no ramp = %d", got)
+	}
+}
+
+// windowStartSec stamps a log window at its start and drops the windows
+// that ended inside the ramp-up (shared by the Flush and I/O latency logs).
+func TestWindowStartSec(t *testing.T) {
+	for _, c := range []struct {
+		end         int64
+		avg, offset int
+		want        float64
+		keep        bool
+	}{
+		{3000, 1000, 0, 2, true},
+		{1000, 1000, 1000, 0, false}, // ended at the ramp end: ramp
+		{1500, 500, 1000, 1, true},
+		{2000, 0, 0, float64(2000-defaultLogAvgMsec) / 1000, true}, // default window
+	} {
+		got, keep := windowStartSec(c.end, c.avg, c.offset)
+		if got != c.want || keep != c.keep {
+			t.Errorf("windowStartSec(%d, %d, %d) = %v, %v; want %v, %v", c.end, c.avg, c.offset, got, keep, c.want, c.keep)
+		}
+	}
+}
+
+// A traceRun is safe on nil (tracing off) and stops its session once.
+func TestTraceRunNilAndOnce(t *testing.T) {
+	var none *flushTraceRun
+	none.MarkStart()
+	none.Close()
+	if none.Stop() != nil {
+		t.Error("nil run: Stop() != nil")
+	}
+	marks, stops, closes := 0, 0, 0
+	sum := &flushtrace.Summary{Count: 3}
+	r := &flushTraceRun{
+		markStart: func() { marks++ },
+		stop:      func() *flushtrace.Summary { stops++; return sum },
+		close:     func() error { closes++; return nil },
+	}
+	r.MarkStart()
+	if r.Stop() != sum || r.Stop() != sum || stops != 1 {
+		t.Errorf("Stop: stops = %d", stops)
+	}
+	r.Close()
+	if marks != 1 || closes != 1 {
+		t.Errorf("marks = %d, closes = %d", marks, closes)
 	}
 }

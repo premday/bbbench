@@ -2,6 +2,7 @@ package flushtrace
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestLogRoundTripKeepsSummaryAndWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("summary after round trip = %+v, want %+v", got, want)
 	}
 	// 100 samples every 10 ms (10..1000 ms) in 500 ms windows: [0,500) has 49,
@@ -78,6 +79,20 @@ func TestLogBlockSourceKeepsInexactSummary(t *testing.T) {
 	}
 }
 
+// A bio-based node's Flush log keeps its source and tracepoints.
+func TestLogBioSourceRoundTrip(t *testing.T) {
+	all := []Sample{{TimeNs: 1e6, LatencyNs: 400_000}}
+	var buf bytes.Buffer
+	_ = WriteLog(&buf, Finish(Summary{Source: "bio"}, all), all)
+	got, _, err := ReadLog(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != "bio" || got.Exact || len(got.Events) != 1 || got.Events[0] != "block_bio_queue -> block_bio_complete" {
+		t.Errorf("%+v", got)
+	}
+}
+
 func TestReadLogRejectsGarbage(t *testing.T) {
 	for _, in := range []string{
 		"", "hello\n",
@@ -108,6 +123,23 @@ func TestWindows(t *testing.T) {
 	if len(w) != 2 || w[0].EndMs != 1000 || w[0].MeanNs != 200 || w[0].Count != 2 || w[0].MinNs != 100 || w[0].MaxNs != 300 ||
 		w[1].EndMs != 3000 || w[1].MeanNs != 1000 {
 		t.Errorf("%+v", w)
+	}
+}
+
+// A Flush that completed before the last start marker (a session opened
+// before a start gate) has a negative time: it is in no window and not in the
+// summary, with or without a ramp.
+func TestNegativeTimesLeftOut(t *testing.T) {
+	all := []Sample{{TimeNs: -200e6, LatencyNs: 9000}, {TimeNs: 100e6, LatencyNs: 100}}
+	w := Windows(all, 1000)
+	if len(w) != 1 || w[0].Count != 1 || w[0].MeanNs != 100 {
+		t.Errorf("windows = %+v", w)
+	}
+	for _, off := range []int{0, 50} {
+		sum := Finish(Summary{Source: "nvme", Exact: true, OffsetMs: off}, all)
+		if sum.Count != 1 || sum.MaxNs != 100 {
+			t.Errorf("offset %d: summary = %+v", off, sum)
+		}
 	}
 }
 

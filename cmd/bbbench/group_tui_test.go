@@ -17,7 +17,7 @@ import (
 	"bbbench/internal/settings"
 )
 
-// ifaceSetting is a fake setting that does not apply to USB drives.
+// ifaceSetting is fake drive ops that do not apply to USB drives.
 type ifaceSetting struct{ *fakeSetting }
 
 func (s ifaceSetting) Applicable(t settings.Target) (bool, string) {
@@ -28,7 +28,7 @@ func (s ifaceSetting) Applicable(t settings.Target) (bool, string) {
 }
 
 // variantSetting is a fake layout-style setting.
-type variantSetting struct{ *fakeSetting }
+type variantSetting struct{ settings.Setting }
 
 func (variantSetting) Name() string          { return "raid layout" }
 func (variantSetting) Input() settings.Input { return settings.InputVariants }
@@ -41,6 +41,10 @@ func keyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
 	case "esc":
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	case " ":
@@ -58,7 +62,7 @@ func press(m tea.Model, keys ...string) tea.Model {
 
 func TestMode_SingleRunReturnsNilSetting(t *testing.T) {
 	drives, targets := testDrives("sda", "sdb")
-	m := press(newModeModel([]settings.Setting{newFakeSetting(nil)}, drives, targets), "enter").(modeModel)
+	m := press(newModeModel([]settings.Setting{perDrive(newFakeSetting(nil))}, drives, targets), "enter").(modeModel)
 	if !m.done || m.cancelled || m.choice.Setting != nil {
 		t.Fatalf("done=%v cancelled=%v setting=%v, want a finished single run", m.done, m.cancelled, m.choice.Setting)
 	}
@@ -67,8 +71,8 @@ func TestMode_SingleRunReturnsNilSetting(t *testing.T) {
 func TestMode_ListsSettingsWithDriveCounts(t *testing.T) {
 	drives, targets := testDrives("sda", "sdb", "usb1")
 	targets["usb1"] = settings.Target{Name: "usb1", Serial: "SN-usb1", Model: "M1", Interface: "USB"}
-	fs := ifaceSetting{newFakeSetting(nil)}
-	avail := []settings.Setting{fs, variantSetting{newFakeSetting(nil)}}
+	fs := perDrive(ifaceSetting{newFakeSetting(nil)})
+	avail := []settings.Setting{fs, variantSetting{perDrive(newFakeSetting(nil))}}
 	mm := press(newModeModel(avail, drives, targets), "down", "enter")
 	v := mm.View()
 	if !strings.Contains(v, "fake cache") || !strings.Contains(v, "2 of 3 drives") {
@@ -77,8 +81,9 @@ func TestMode_ListsSettingsWithDriveCounts(t *testing.T) {
 	if !strings.Contains(v, "no controllable write cache on USB") {
 		t.Fatalf("view lacks the reason for the drive it does not apply to:\n%s", v)
 	}
-	if strings.Contains(v, "raid layout") {
-		t.Fatalf("a variants setting must not be listed:\n%s", v)
+	// A variants setting is listed too (it is set up by the layout screens).
+	if !strings.Contains(v, "raid layout: applies to 3 of 3 drives") {
+		t.Fatalf("a variants setting must be listed with its count:\n%s", v)
 	}
 	m := press(mm, "enter").(modeModel)
 	if !m.done || m.choice.Setting == nil || m.choice.Setting.Name() != "fake cache" {
@@ -89,7 +94,7 @@ func TestMode_ListsSettingsWithDriveCounts(t *testing.T) {
 func TestMode_SettingAppliesToNoDriveCannotBePicked(t *testing.T) {
 	drives, targets := testDrives("usb1")
 	targets["usb1"] = settings.Target{Name: "usb1", Interface: "USB"}
-	m := press(newModeModel([]settings.Setting{ifaceSetting{newFakeSetting(nil)}}, drives, targets), "down", "enter", "enter").(modeModel)
+	m := press(newModeModel([]settings.Setting{perDrive(ifaceSetting{newFakeSetting(nil)})}, drives, targets), "down", "enter", "enter").(modeModel)
 	if m.done {
 		t.Fatal("a setting that applies to no drive must not be selectable")
 	}
@@ -99,7 +104,7 @@ func TestMode_SettingAppliesToNoDriveCannotBePicked(t *testing.T) {
 func setupFor(names ...string) (setupModel, *fakeSetting) {
 	drives, targets := testDrives(names...)
 	fs := newFakeSetting(nil)
-	return newSetupModel(ifaceSetting{fs}, drives, targets, nil), fs
+	return newSetupModel(perDrive(ifaceSetting{fs}), drives, targets, nil), fs
 }
 
 func TestSetup_ValuesBothTickedByDefault(t *testing.T) {
@@ -137,7 +142,7 @@ func usbSetup(names ...string) setupModel {
 			targets[n] = tg
 		}
 	}
-	return newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, nil)
+	return newSetupModel(perDrive(ifaceSetting{newFakeSetting(nil)}), drives, targets, nil)
 }
 
 func TestSetup_ExcludedDrivesListedWithReason(t *testing.T) {
@@ -208,7 +213,7 @@ func TestSetup_ConfirmShowsRunCountAndEstimate(t *testing.T) {
 	for i := range drives {
 		drives[i].FioFilePath = writeFio(t, dir, drives[i].Device.Name+".fio", fioTwoMinutes)
 	}
-	m := newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, nil)
+	m := newSetupModel(perDrive(ifaceSetting{newFakeSetting(nil)}), drives, targets, nil)
 
 	seq := press(m, "enter", "enter")
 	if v := seq.View(); !strings.Contains(v, "2 runs") || !strings.Contains(v, "4m0s") {
@@ -227,7 +232,7 @@ func TestSetup_ConfirmShowsRunCountAndEstimate(t *testing.T) {
 	for i := range drives {
 		drives[i].FioFilePath = writeFio(t, dir, drives[i].Device.Name+"-open.fio", fioTwoMinutes+"\n[c]\nstonewall\nrw=trim\nruntime=0\n")
 	}
-	m = newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, nil)
+	m = newSetupModel(perDrive(ifaceSetting{newFakeSetting(nil)}), drives, targets, nil)
 	if v := press(m, "enter", "enter").View(); !strings.Contains(v, "unknown length") {
 		t.Fatalf("confirm lacks the note about unknown phases:\n%s", v)
 	}
@@ -236,7 +241,7 @@ func TestSetup_ConfirmShowsRunCountAndEstimate(t *testing.T) {
 func TestSetup_FirmwareMismatchWarns(t *testing.T) {
 	drives, targets := testDrives("sda", "sdb")
 	fw := map[string]string{"sda": "FW1", "sdb": "FW2"}
-	m := newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, fw)
+	m := newSetupModel(perDrive(ifaceSetting{newFakeSetting(nil)}), drives, targets, fw)
 	strat := press(m, "enter").(setupModel)
 	if v := strat.View(); !strings.Contains(v, "different firmware") {
 		t.Fatalf("strategy view lacks the firmware warning:\n%s", v)
@@ -278,13 +283,13 @@ func TestSetup_FirmwareWarningUsesTheDrivesOwnRevision(t *testing.T) {
 	drives, targets := testDrives("sda", "sdb")
 	// Different disk revisions on the same HBA: warn.
 	o := fwTree(t, map[string]string{"sda": "1B6Q", "sdb": "1B7Q"}, map[string]string{"host0": "HBA"})
-	m := newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, firmwareFor(drives, o))
+	m := newSetupModel(perDrive(ifaceSetting{newFakeSetting(nil)}), drives, targets, firmwareFor(drives, o))
 	if v := press(m, "enter").View(); !strings.Contains(v, "different firmware") {
 		t.Fatalf("different rev must warn:\n%s", v)
 	}
 	// Same disk revision behind two HBAs with different firmware: no warning.
 	o = fwTree(t, map[string]string{"sda": "1B6Q", "sdb": "1B6Q"}, map[string]string{"host0": "HBA-1", "host1": "HBA-2"})
-	m = newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, firmwareFor(drives, o))
+	m = newSetupModel(perDrive(ifaceSetting{newFakeSetting(nil)}), drives, targets, firmwareFor(drives, o))
 	if v := press(m, "enter").View(); strings.Contains(v, "different firmware") {
 		t.Fatalf("same rev must not warn:\n%s", v)
 	}
@@ -301,7 +306,7 @@ func TestMode_TargetsNeedNoCommand(t *testing.T) {
 
 func TestSetup_ConfirmShowsValueToDrivesPerRun(t *testing.T) {
 	drives, targets := testDrives("sda", "sdb", "sdc", "sdd")
-	m := newSetupModel(ifaceSetting{newFakeSetting(nil)}, drives, targets, nil)
+	m := newSetupModel(perDrive(ifaceSetting{newFakeSetting(nil)}), drives, targets, nil)
 	par := press(m, "enter", "down", "enter").View()
 	if !strings.Contains(par, "Run 1: on -> sda, sdb; off -> sdc, sdd") {
 		t.Fatalf("parallel confirm lacks the mapping:\n%s", par)
@@ -341,7 +346,7 @@ func TestSetup_QuitCancels(t *testing.T) {
 	}
 }
 
-func recoveryFor(t *testing.T, names ...string) (string, *fakeSetting, []DriveInfo, map[string]settings.Target) {
+func recoveryFor(t *testing.T, names ...string) (string, *fakeSetting, map[string]settings.Target) {
 	t.Helper()
 	quietLogger(t)
 	drives, targets := testDrives(names...)
@@ -355,13 +360,13 @@ func recoveryFor(t *testing.T, names ...string) (string, *fakeSetting, []DriveIn
 	if err := rec.Save(path); err != nil {
 		t.Fatal(err)
 	}
-	return path, newFakeSetting(cur), drives, targets
+	return path, newFakeSetting(cur), targets
 }
 
 func TestRecoveryOffer_YesRestoresAndRemovesFile(t *testing.T) {
-	path, fs, drives, targets := recoveryFor(t, "sda", "sdb")
+	path, fs, targets := recoveryFor(t, "sda", "sdb")
 	var out strings.Builder
-	if err := offerRecovery(context.Background(), strings.NewReader("y\n"), &out, path, []settings.Setting{fs}, drives, targets); err != nil {
+	if err := offerRecovery(context.Background(), strings.NewReader("y\n"), &out, path, []settings.Setting{perDrive(fs)}, targets); err != nil {
 		t.Fatal(err)
 	}
 	if fs.get("sda") != "enabled" || fs.get("sdb") != "enabled" {
@@ -373,9 +378,9 @@ func TestRecoveryOffer_YesRestoresAndRemovesFile(t *testing.T) {
 }
 
 func TestRecoveryOffer_NoLeavesEverything(t *testing.T) {
-	path, fs, drives, targets := recoveryFor(t, "sda")
+	path, fs, targets := recoveryFor(t, "sda")
 	var out strings.Builder
-	if err := offerRecovery(context.Background(), strings.NewReader("n\n"), &out, path, []settings.Setting{fs}, drives, targets); err != nil {
+	if err := offerRecovery(context.Background(), strings.NewReader("n\n"), &out, path, []settings.Setting{perDrive(fs)}, targets); err != nil {
 		t.Fatal(err)
 	}
 	if len(fs.callsOf("restore")) != 0 || fs.get("sda") != "disabled" {
@@ -387,13 +392,13 @@ func TestRecoveryOffer_NoLeavesEverything(t *testing.T) {
 }
 
 func TestRecoveryOffer_FailureKeepsFileAndStops(t *testing.T) {
-	path, fs, drives, targets := recoveryFor(t, "sda", "sdb")
+	path, fs, targets := recoveryFor(t, "sda", "sdb")
 	fs.restoreErr["sdb"] = true
 	old := restoreReportOut
 	restoreReportOut = io.Discard
 	t.Cleanup(func() { restoreReportOut = old })
 	var out strings.Builder
-	err := offerRecovery(context.Background(), strings.NewReader("yes\n"), &out, path, []settings.Setting{fs}, drives, targets)
+	err := offerRecovery(context.Background(), strings.NewReader("yes\n"), &out, path, []settings.Setting{perDrive(fs)}, targets)
 	if err == nil || !strings.Contains(err.Error(), "sdb") {
 		t.Fatalf("err = %v, want a failure naming sdb", err)
 	}
@@ -406,7 +411,7 @@ func TestRecoveryOffer_FailureKeepsFileAndStops(t *testing.T) {
 }
 
 func TestRecoveryOffer_NoFileDoesNothing(t *testing.T) {
-	if err := offerRecovery(context.Background(), strings.NewReader(""), io.Discard, filepath.Join(t.TempDir(), "none.json"), nil, nil, nil); err != nil {
+	if err := offerRecovery(context.Background(), strings.NewReader(""), io.Discard, filepath.Join(t.TempDir(), "none.json"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -431,7 +436,7 @@ func TestResume_FindsUnfinishedGroupAndRebuildsChoice(t *testing.T) {
 	if got == nil || got.ID != "2" {
 		t.Fatalf("found %v, want group 2", got)
 	}
-	c, err := resumeChoice(got, []settings.Setting{newFakeSetting(nil)}, drives)
+	c, err := resumeChoice(got, []settings.Setting{perDrive(newFakeSetting(nil))}, drives, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +444,7 @@ func TestResume_FindsUnfinishedGroupAndRebuildsChoice(t *testing.T) {
 		t.Fatalf("choice = %+v", c)
 	}
 	// A drive that is gone stops the resume.
-	if _, err := resumeChoice(got, []settings.Setting{newFakeSetting(nil)}, drives[:1]); err == nil {
+	if _, err := resumeChoice(got, []settings.Setting{perDrive(newFakeSetting(nil))}, drives[:1], nil); err == nil {
 		t.Fatal("a missing drive must be an error")
 	}
 	// All runs finished: nothing to resume.
@@ -463,8 +468,8 @@ func TestResume_FindsUnfinishedGroupAndRebuildsChoice(t *testing.T) {
 
 func TestNewGroupConfig_Defaults(t *testing.T) {
 	opts := runOptions{Mode: "sequential", OutDir: t.TempDir(), Resume: &ExecutionState{}}
-	c := &groupChoice{Setting: newFakeSetting(nil), Values: fakeValues, Strategy: rungroup.Sequential}
-	cfg := newGroupConfig(c, nil, opts, "h", nil)
+	c := &groupChoice{Setting: perDrive(newFakeSetting(nil)), Values: fakeValues, Strategy: rungroup.Sequential}
+	cfg := newGroupConfig(c, nil, opts, "h", nil, nil)
 	if cfg.Execute == nil || cfg.RecoveryPath != groupRecoveryPath || cfg.Settle != groupSettle {
 		t.Fatalf("cfg = %+v", cfg)
 	}
@@ -526,7 +531,7 @@ func TestResume_AnsweringNoAppliesNothing(t *testing.T) {
 	drives, _ := testDrives("sda")
 	fs := newFakeSetting(map[string]string{"sda": "enabled"})
 	var out strings.Builder
-	c, err := prepareGroupResume(strings.NewReader("n\n"), &out, unfinishedGroup(), []settings.Setting{fs}, drives)
+	c, err := prepareGroupResume(strings.NewReader("n\n"), &out, unfinishedGroup(), []settings.Setting{perDrive(fs)}, drives, nil)
 	if err == nil || c != nil {
 		t.Fatalf("choice %v err %v, want a refusal", c, err)
 	}
@@ -536,14 +541,23 @@ func TestResume_AnsweringNoAppliesNothing(t *testing.T) {
 	if !strings.Contains(out.String(), "Runs still to do: 1 of 2") || !strings.Contains(out.String(), "restored") {
 		t.Fatalf("confirmation text incomplete:\n%s", out.String())
 	}
-	if c, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{fs}, drives); err != nil || len(c.Drives) != 1 {
+	if c, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{perDrive(fs)}, drives, nil); err != nil || len(c.Drives) != 1 {
 		t.Fatalf("yes: %v %v", c, err)
 	}
 }
 
 func TestResume_UnresumableGroupNamesTheFile(t *testing.T) {
-	_, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{newFakeSetting(nil)}, nil)
+	_, err := prepareGroupResume(strings.NewReader("y\n"), io.Discard, unfinishedGroup(), []settings.Setting{perDrive(newFakeSetting(nil))}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "group_9_group.json") || !strings.Contains(err.Error(), "--resume") {
 		t.Fatalf("err = %v, want the file name and the way out", err)
+	}
+}
+
+func TestTargetsFor_Rotational(t *testing.T) {
+	drives, _ := testDrives("sda")
+	drives[0].Device.Rotational = true
+	o := fwTree(t, nil, nil)
+	if !targetsFor(drives, o)["sda"].Rotational {
+		t.Error("Rotational not carried to the target")
 	}
 }

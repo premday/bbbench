@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -21,23 +23,12 @@ func getLockFilePath() string {
 func acquireOrchestratorLock() error {
 	lockPath := getLockFilePath()
 
-	// Check if lock file exists
-	if data, err := os.ReadFile(lockPath); err == nil {
-		// Lock file exists, check if process is still running
-		if pid, err := strconv.Atoi(string(data)); err == nil {
-			// Check if process exists
-			process, err := os.FindProcess(pid)
-			if err == nil {
-				// Send signal 0 to check if process is alive
-				err = process.Signal(syscall.Signal(0))
-				if err == nil {
-					return fmt.Errorf("orchestrator is already running (PID %d)", pid)
-				}
-			}
-		}
-		// Stale lock file, remove it
-		os.Remove(lockPath)
+	// A lock file of a live process (with or without a recorded web address)
+	// refuses; anything else is stale and replaced.
+	if pid, _, running := runningOrchestrator(); running {
+		return fmt.Errorf("orchestrator is already running (PID %d)", pid)
 	}
+	os.Remove(lockPath)
 
 	// Create new lock file with current PID
 	pid := os.Getpid()
@@ -54,27 +45,71 @@ func releaseOrchestratorLock() {
 	os.Remove(lockPath)
 }
 
-// isOrchestratorRunning checks if an orchestrator instance is currently running.
-func isOrchestratorRunning() bool {
-	lockPath := getLockFilePath()
+// recordOrchestratorAddr adds the address of the orchestrator's web server to
+// its lock file (second line), so a `serve` can tell whether it would collide.
+func recordOrchestratorAddr(addr string) {
+	_ = os.WriteFile(getLockFilePath(), []byte(strconv.Itoa(os.Getpid())+"\n"+addr+"\n"), 0644)
+}
 
-	data, err := os.ReadFile(lockPath)
+// runningOrchestrator reads the lock file: the pid, the recorded web address
+// ("" when the lock predates it) and whether that process is alive.
+func runningOrchestrator() (pid int, addr string, running bool) {
+	data, err := os.ReadFile(getLockFilePath())
 	if err != nil {
-		return false
+		return 0, "", false
 	}
-
-	pid, err := strconv.Atoi(string(data))
+	lines := strings.Fields(string(data))
+	if len(lines) == 0 {
+		return 0, "", false
+	}
+	pid, err = strconv.Atoi(lines[0])
 	if err != nil {
-		return false
+		return 0, "", false
 	}
-
-	// Check if process exists
+	if len(lines) > 1 {
+		addr = lines[1]
+	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		return false
+		return pid, addr, false
 	}
-
 	// Send signal 0 to check if process is alive
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	return pid, addr, process.Signal(syscall.Signal(0)) == nil
+}
+
+// isOrchestratorRunning checks if an orchestrator instance is currently running.
+func isOrchestratorRunning() bool {
+	_, _, running := runningOrchestrator()
+	return running
+}
+
+// sameListener reports whether two listen addresses would collide: the same
+// port on the same host, or on a wildcard (0.0.0.0, ::, empty) that covers it.
+func sameListener(a, b string) bool {
+	ha, pa, errA := net.SplitHostPort(a)
+	hb, pb, errB := net.SplitHostPort(b)
+	if errA != nil || errB != nil || pa != pb {
+		return errA != nil || errB != nil // unparsable: assume the worst
+	}
+	wild := func(h string) bool { return h == "" || h == "0.0.0.0" || h == "::" || h == "[::]" }
+	return ha == hb || wild(ha) || wild(hb)
+}
+
+// checkServeAddr is serve's look at a running orchestrator, which serves its
+// own web UI for the run: refuse only when `serve` would listen on the same
+// address (the orchestrator's recorded one, else the default); on another one
+// it may run next to it (saved results only, no live status). The returned
+// note is printed when it does.
+func checkServeAddr(addr string) (note string, err error) {
+	pid, orchAddr, running := runningOrchestrator()
+	if !running {
+		return "", nil
+	}
+	if orchAddr == "" {
+		orchAddr = defaultWebAddr
+	}
+	if sameListener(addr, orchAddr) {
+		return "", fmt.Errorf("an orchestrator (PID %d) is already serving the web interface on %s\nConnect to http://%s to view its status, or give serve another -addr", pid, orchAddr, orchAddr)
+	}
+	return fmt.Sprintf("Note: an orchestrator (PID %d) is running with its own web interface on %s; this server shows saved results only, not the live run.", pid, orchAddr), nil
 }

@@ -62,9 +62,17 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
   drives can be traced in parallel. It enables those two events with the
   kernel-side filter `opcode == 0 && qid > 0` (Flush commands only, no admin
   queue).
-- **Reading:** it reads `trace_pipe` while the phase runs. A start marker and a
-  stop marker written to `trace_marker` bracket the phase (a live `trace_pipe`
-  never reports end of file, so the stop marker ends the reader).
+- **Reading:** it reads the instance's binary per-CPU pipes
+  (`per_cpu/cpuN/trace_pipe_raw`, one reader per CPU, fields at the offsets of
+  the kernel's format files, merged back into time order) while the phase runs,
+  on the instance's `mono` trace clock (`global` when `mono` is missing). A
+  start marker written to `trace_marker` sets time zero. At the end tracing is
+  switched off and each CPU's pipe is read until it is empty, which proves
+  every recorded Flush was delivered. Without the raw pipes, or when a format
+  file cannot be used, it reads the text `trace_pipe` as before, where a stop
+  marker ends the reader (a live `trace_pipe` never reports end of file). The
+  raw reader is verified only against pages built by the tests, not on a real
+  kernel (see the README, "I/O latency tracing").
 - **Pairing:** each `nvme_setup_cmd` is matched to its `nvme_complete_rq` by
   controller, queue and command id, so the pairing is exact even with many
   Flushes in flight. Latency = completion time - setup time, per Flush.
@@ -88,6 +96,7 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
 - **Other devices:** non-NVMe devices use `block_rq_issue` / `block_rq_complete`
   for requests that are Flushes. Pairing is first-in first-out, so only the mean
   is exact and no percentiles are reported.
+- **Reads and writes:** the same private tracefs instance mechanism (`flushtrace.Instance`) carries a sibling session that times every read and write, at the device and in the block layer, in every phase (`<fio log prefix>_iolat.1.log`, `bbbench-iolat-*` instances, `--no-io-trace` to turn it off). It is documented in the README, "I/O latency tracing"; this page covers only the Flush.
 
 ## What is included in the number
 
@@ -125,9 +134,11 @@ cache at all, and `nvme set-feature /dev/nvme0 -f 6 -V 1` enables it (capital
 Flush tracing and a plain run only **read** the drive's state (`queue/write_cache`,
 tracefs): they do not enable or disable the write cache, set NVMe features,
 or touch queue settings or the I/O scheduler. The Flush numbers describe the
-drive as you left it. The one exception is a *setting test* of the write cache
-policy (see the README): after an explicit confirmation it applies each value,
-verifies it before and after each run and restores the original. The only kernel state Flush tracing creates is its
+drive as you left it. The one exception is a *setting test* (see the README):
+of the write cache policy, after an explicit confirmation it applies each value,
+verifies it before and after each run and restores the original; a *layout*
+setting test builds md arrays or LVM volumes on the chosen disks and erases them
+(also after one confirmation, with the arrays torn down on every exit). The only kernel state Flush tracing creates is its
 private ftrace instance, removed when the phase ends.
 
 So before a run, put the device in the state you want to measure, and note it
@@ -135,6 +146,15 @@ next to the results: write cache enabled or disabled, kernel (stock or patched),
 firmware. To compare setups, change them yourself and run once per setup, or let a
 setting test do it for the write cache. The warning for write-through devices
 lists the commands, but runs nothing for you.
+
+## Arrays and logical volumes
+
+In a layout setting test (md array or LVM logical volume) the generic block
+collector runs on the md or dm device: the mean is exact and no percentiles are
+reported, as for any non-NVMe device. This is not verified on hardware yet: md
+and dm devices are bio-based, so the block request events may never fire for
+them, and a phase can show 0 Flushes ("ftrace saw 0 Flush commands") even
+though the array's member disks received Flushes.
 
 ## Limits
 

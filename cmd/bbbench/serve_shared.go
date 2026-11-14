@@ -2,7 +2,7 @@ package main
 
 // chartSharedJS is the chart code the graphs and compare pages have in common,
 // spliced into each page's script at __CHART_SHARED_JS__. The pages keep their
-// own X_MAX (the graphs page spans all charts, the compare page one chart).
+// own x maximum (the graphs page one per phase, the compare page one chart).
 //
 // Time axis: every series counts seconds from the start of the phase. fio's
 // own logs start when its ramp-up ends, so fioShift moves their points by the
@@ -11,9 +11,12 @@ package main
 // window starts. The ramp-up is shaded by rampPlugin.
 //
 // It must not contain backticks (raw string). It also holds the run-group
-// helpers both pages use (setting values, rounds, invalid results) and esc.
+// helpers both pages use (setting values, rounds, invalid results, the
+// members of an array target) and esc.
 const chartSharedJS = `function rampOf(d) {
-        return d.ramp_sec || (d.flush && d.flush.offset_ms ? d.flush.offset_ms / 1000 : 0);
+        if (d.ramp_sec) return d.ramp_sec;
+        if (d.flush && d.flush.offset_ms) return d.flush.offset_ms / 1000;
+        return d.io_trace && d.io_trace.offset_ms ? d.io_trace.offset_ms / 1000 : 0;
     }
     // fio stamps a log point at the END of its averaging window; moving it back
     // one window (to the window start) puts the first point right where the
@@ -56,7 +59,7 @@ const chartSharedJS = `function rampOf(d) {
     function seriesMaxT(d, metric) {
         const ts = d[metric.tsKey];
         if (!ts || ts.length === 0) return 0;
-        const shift = metric.key === 'flush' ? 0 : fioShift(d);
+        const shift = metric.key === 'flush' || metric.key === 'iolat' || metric.key === 'iolatblk' ? 0 : fioShift(d);
         return Math.max(...ts.map(p => p.t)) + shift;
     }
 
@@ -64,6 +67,65 @@ const chartSharedJS = `function rampOf(d) {
         const a = Math.abs(v);
         if (a === 0) return '0';
         return a >= 1000 ? (a/1000).toFixed(1)+'k' : a.toFixed(0);
+    }
+
+    // SI scale of the chart axes and tooltips. The data stays in the units of
+    // the JSON (MB/s, IOPS, us); a chart plots it in the metric's base unit
+    // (toBase) and prints the number with an SI prefix letter, the base unit
+    // after it: 2.41G bytes/s, 1.2M IOPS, 2.5m s. Bandwidth values are fio's
+    // KiB/s divided by 1024 (MiB/s, labelled MB/s), so bytes/s = value *
+    // 1048576 and the axis is true decimal SI bytes/s: 2300 MiB/s = 2.41G.
+    //
+    // siScale returns {mul, prefix, div, unit}: mul converts a value of the
+    // metric to its base unit, unit is that base unit, and prefix/div put the
+    // maximum maxData (in the metric's units) in [1, 1000). bytes/s and IOPS
+    // never take a prefix below none, seconds take n, \u03bc, m or none. maxData
+    // 0 or not a number gives no prefix; a unit without a base is kept as it
+    // is (no conversion).
+    function siScale(metric, maxData) {
+        const base = {
+            'MB/s':    {mul: 1048576, unit: 'bytes/s', lo: 3, hi: 8},
+            'IOPS':    {mul: 1,       unit: 'IOPS',    lo: 3, hi: 8},
+            '\u03bcs': {mul: 1e-6,    unit: 's',       lo: 0, hi: 3},
+        }[metric.unit] || {mul: 1, unit: metric.unit, lo: 3, hi: 8};
+        const P = [['n', 1e-9], ['\u03bc', 1e-6], ['m', 1e-3], ['', 1], ['k', 1e3], ['M', 1e6], ['G', 1e9], ['T', 1e12], ['P', 1e15]];
+        const sc = {mul: base.mul, prefix: '', div: 1, unit: base.unit};
+        const max = maxData * base.mul;
+        if (!(max > 0)) return sc;
+        let k = base.lo;
+        for (let i = base.lo; i <= base.hi; i++) if (P[i][1] <= max * (1 + 1e-9)) k = i;
+        sc.prefix = P[k][0];
+        sc.div = P[k][1];
+        return sc;
+    }
+    // fmtScaled formats |v|, a value in the base unit of sc (writes are drawn
+    // below zero, their ticks show the magnitude), as the number and the
+    // prefix letter, no space: no decimals from 100, one from 10, two from 1,
+    // two significant digits below 1, trailing zeros trimmed ('2G', '1.5M',
+    // '800\u03bc'); 0 is '0'.
+    // With fixed (tooltips) there are always at least two digits after the
+    // dot and zeros are kept ('2.00G', '950.00', '0.0033').
+    function fmtScaled(v, sc, fixed) {
+        const x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
+        if (fixed) {
+            const pre = sc && sc.prefix ? sc.prefix : '';
+            if (!isFinite(x) || x === 0) return '0.00';
+            return x.toFixed(Math.min(20, Math.max(2, 1 - Math.floor(Math.log10(x))))) + pre;
+        }
+        if (!isFinite(x) || x === 0) return '0';
+        let s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toPrecision(2);
+        if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
+        return s + (sc && sc.prefix ? sc.prefix : '');
+    }
+    // toBase converts the datasets' values ({x, y} points or bar numbers) to
+    // the base unit of sc, in place; null stays null. Chart.js then places
+    // its ticks at round base-unit values (500M, 1G), not at round MB/s.
+    function toBase(datasets, sc) {
+        datasets.forEach(ds => {
+            ds.data = ds.data.map(p => typeof p === 'number' ? p * sc.mul
+                : (p && p.y !== null && p.y !== undefined ? Object.assign({}, p, {y: p.y * sc.mul}) : p));
+        });
+        return datasets;
     }
 
     function esc(s) {
@@ -103,5 +165,12 @@ const chartSharedJS = `function rampOf(d) {
         if (d.round && rpv && rpv[d.setting_value] > 1) s += ' · round ' + d.round;
         if (d.invalid) s += ' (invalid)';
         return s;
+    }
+    // membersText names the member disks of an array target and their roles:
+    // 'members: sdb (data), sdc (spare)'; '' for a drive. Plain text: escape
+    // it before putting it into HTML.
+    function membersText(d) {
+        if (!d.members || d.members.length === 0) return '';
+        return 'members: ' + d.members.map(m => m.name + ' (' + m.role + ')').join(', ');
     }
 `

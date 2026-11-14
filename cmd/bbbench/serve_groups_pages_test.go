@@ -168,10 +168,7 @@ func inlineScript(t *testing.T, name, body string) string {
 // their handlers, pass node --check and behave in node (fake DOM) as the
 // run-group UI requires; plain-run data is unaffected. Skipped without node.
 func TestGroupPages_Scripts(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := requireNode(t)
 	seedSwapGroup(t)
 	dir := t.TempDir()
 	write := func(name, s string) string {
@@ -337,19 +334,20 @@ case 'results': {
   let rows = run('buildRows(__r, __g)');
   assert(rows.includes('<tr class="group-row">'), rows);
   assert(rows.includes('href="/group?id=g2"') && rows.includes('href="/graphs?group=g2"') && rows.includes('href="/compare?group=g2"'), rows);
+  assert(rows.includes('<a href="/group?id=g2">Details</a>') && !rows.includes('>Group</a>'), 'group row action is Details: ' + rows);
   assert(rows.includes('write_cache: on, &lt;b&gt;off&lt;/b&gt;'), 'group setting/values: ' + rows);
-  assert((rows.match(/class="member" data-group="g2" style="display:none"/g) || []).length === 2, 'members not collapsed: ' + rows);
+  assert((rows.match(/class="member" data-group="g2"/g) || []).length === 2 && !rows.includes('display:none') && rows.includes('\u25be'), 'groups start expanded: ' + rows);
   assert(rows.includes('group <a href="/group?id=g2">g2</a> · &lt;b&gt;off&lt;/b&gt;, on'), 'member group link/value: ' + rows);
   assert(!rows.includes('<b>off'), 'unescaped value');
   const plainRow = '<tr><td class="timestamp">' + run('formatTimestamp(__r.find(r => r.id === "p1").timestamp)') + '</td><td><code>p1</code></td>' +
     '<td><span class="badge badge-sequential">Sequential</span></td><td class="stats">1 drive(s)</td><td class="stats">1 phase(s)</td>' +
     '<td class="actions"><a href="/result?id=p1">Details</a><a href="/summary?id=p1">Summary</a><a href="/graphs?id=p1">Graphs</a><a href="/compare?id=p1">Compare</a></td></tr>';
   assert(rows.startsWith(plainRow), 'plain row changed: ' + rows.slice(0, 400));
-  run('EXPANDED.add("g2")');
+  run('COLLAPSED.add("g2")');
   rows = run('buildRows(__r, __g)');
-  assert(!rows.includes('display:none') && rows.includes('▾'), 'expanded group still collapsed');
+  assert((rows.match(/class="member" data-group="g2" style="display:none"/g) || []).length === 2 && rows.includes('\u25b8'), 'folded group still shown: ' + rows);
   // without the group API every run is a row of its own
-  rows = run('EXPANDED.clear(); buildRows(__r, [])');
+  rows = run('COLLAPSED.clear(); buildRows(__r, [])');
   assert(!rows.includes('group-row') && !rows.includes('class="member"') && rows.includes('href="/group?id=g2"'), rows);
   console.log('results ok: group row, collapsed members, links, escaped values, plain row unchanged');
   break;
@@ -364,6 +362,269 @@ case 'result': {
   assert(!h.includes('<b>off') && !h.includes('<i>k') && !h.includes('<b>changed'), 'unescaped: ' + h);
   assert.strictEqual(run('groupBlockHTML(__p)'), '', 'plain run shows a group block');
   console.log('result ok: group link, per-drive value, readings, validity, escaped');
+  break;
+}
+default: throw new Error('unknown check ' + check);
+}
+`
+
+// layoutPages dumps the real pages of the seeded layout group (status,
+// group, graphs, compare, run details of the mdadm and the lvm run), checks
+// each is a page (never an error page) whose inline script passes
+// node --check, and returns the script paths and the JSON the pages read.
+func layoutPages(t *testing.T, node, dir string) (map[string]string, string) {
+	t.Helper()
+	seedLayoutGroup(t)
+	globalGroupStore.AddGroup(serveTestGroup()) // a write-cache group next to it
+	write := func(name, s string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	scripts := map[string]string{}
+	for _, p := range []struct {
+		name string
+		h    http.HandlerFunc
+		u    string
+	}{
+		{"status", handleStatusPage, "/status"},
+		{"group", handleGroupPage, "/group?id=g3"},
+		{"graphs", handleGraphsPage, "/graphs?group=g3"},
+		{"compare", handleComparePage, "/compare?group=g3"},
+		{"result", handleResultDetailPage, "/result?id=r20"},
+		{"result_lv", handleResultDetailPage, "/result?id=r21"},
+	} {
+		w := get(p.h, p.u)
+		body := w.Body.String()
+		if w.Code != 200 || !strings.HasPrefix(body, "<!DOCTYPE html>") || strings.Contains(body, "%!") {
+			t.Fatalf("%s %s: %d %.200s", p.name, p.u, w.Code, body)
+		}
+		s := write(p.name+".js", inlineScript(t, p.name, body))
+		if out, err := exec.Command(node, "--check", s).CombinedOutput(); err != nil {
+			t.Fatalf("node --check %s: %v\n%s", p.name, err, out)
+		}
+		scripts[p.name] = s
+	}
+	data := map[string]json.RawMessage{
+		"group":    get(handleGroupDetail, "/api/groups/detail?id=g3").Body.Bytes(),
+		"groupWC":  get(handleGroupDetail, "/api/groups/detail?id=g1").Body.Bytes(),
+		"graphs":   get(handleGroupGraphs, "/api/groups/graphs?id=g3").Body.Bytes(),
+		"detail":   get(handleResultDetail, "/api/results/detail?id=r20").Body.Bytes(),
+		"detailLV": get(handleResultDetail, "/api/results/detail?id=r21").Body.Bytes(),
+	}
+	for k, v := range data {
+		if !json.Valid(v) {
+			t.Fatalf("%s is not JSON: %s", k, v)
+		}
+	}
+	dj, _ := json.Marshal(data)
+	return scripts, write("data.json", string(dj))
+}
+
+// runLayoutHarness runs one check of layoutPagesHarness on script.
+func runLayoutHarness(t *testing.T, check string) {
+	t.Helper()
+	node := requireNode(t)
+	dir := t.TempDir()
+	scripts, dataPath := layoutPages(t, node, dir)
+	harness := filepath.Join(dir, "harness.js")
+	if err := os.WriteFile(harness, []byte(layoutPagesHarness), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := map[string]string{"group": "group", "group_wc": "group", "graphs": "graphs", "compare": "compare", "result": "result", "result_lv": "result_lv", "compare_same_name": "compare", "graphs_same_name": "graphs"}[check]
+	out, err := exec.Command(node, harness, check, scripts[script], dataPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("harness %s: %v\n%s", check, err, out)
+	}
+	t.Logf("%s: %s", check, strings.TrimSpace(string(out)))
+}
+
+// The group page draws an array target with its members, the layout reading
+// as 'layout:', the variants and each run's teardown; a write-cache group's
+// page is as before.
+func TestGroupPage_ArrayScript(t *testing.T) {
+	runLayoutHarness(t, "group")
+	runLayoutHarness(t, "group_wc")
+}
+
+// The graphs and compare pages name an array target's members.
+func TestGraphsPage_MembersSubtitle(t *testing.T) {
+	runLayoutHarness(t, "graphs")
+	runLayoutHarness(t, "compare")
+}
+
+// Two layouts that got the same kernel name (md127 twice) are two entries of
+// the compare disk list, each with its own members, and two graph cards.
+func TestComparePage_SameKernelNameTwoLayouts(t *testing.T) {
+	runLayoutHarness(t, "compare_same_name")
+	runLayoutHarness(t, "graphs_same_name")
+}
+
+// The run details JSON carries the members of an array target and the
+// details page lists them under it.
+func TestResultDetail_ShowsArrayMembers(t *testing.T) {
+	seedLayoutGroup(t)
+	var out struct {
+		Drives []struct {
+			Device  struct{ Name string }
+			Members []struct {
+				Name string `json:"name"`
+				Role string `json:"role"`
+			}
+		} `json:"drives"`
+	}
+	if err := json.Unmarshal(get(handleResultDetail, "/api/results/detail?id=r20").Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Drives) != 1 || out.Drives[0].Device.Name != "md127" || len(out.Drives[0].Members) != 3 || out.Drives[0].Members[2].Role != "spare" {
+		t.Errorf("drives = %+v", out.Drives)
+	}
+	runLayoutHarness(t, "result")
+	runLayoutHarness(t, "result_lv")
+}
+
+const layoutPagesHarness = `
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const [check, scriptPath, dataPath] = process.argv.slice(2);
+const DATA = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+const HTML = [], ELS = [], CHARTS = [], byId = {};
+function el(tag) {
+  const e = { tag, children: [], style: {}, dataset: {}, className: '', _t: '', _h: '',
+    classList: { add() {}, remove() {}, toggle() { return false; } },
+    appendChild(c) { this.children.push(c); return c; },
+    removeChild(c) { this.children = this.children.filter(x => x !== c); },
+    replaceChild() {}, addEventListener() {},
+    querySelector() { return el('div'); },
+    querySelectorAll() { return []; },
+    set innerHTML(v) { this._h = String(v); this.children = []; HTML.push(String(v)); }, get innerHTML() { return this._h; },
+    set textContent(v) { this._t = String(v); this.children = []; },
+    get textContent() { return this._t + this.children.map(c => c.textContent || '').join(''); },
+  };
+  ELS.push(e);
+  return e;
+}
+const ctx = {
+  document: {
+    getElementById(id) { return byId[id] || (byId[id] = el('div')); },
+    createElement: el, createTextNode(t) { return { textContent: String(t) }; },
+    addEventListener() {}, querySelector() { return el('div'); },
+  },
+  fetch: () => new Promise(() => {}), setInterval() {}, setTimeout() {}, console,
+  Chart: class { constructor(c, cfg) { CHARTS.push(cfg); } destroy() {} },
+};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(scriptPath, 'utf8'), ctx);
+const run = s => vm.runInContext(s, ctx);
+ctx.__data = DATA;
+const noRaw = s => assert(!s.includes('<b>x') && !s.includes('<i>clean'), 'unescaped: ' + s);
+const one = i => JSON.stringify(Object.assign({}, DATA.group, {runs: [DATA.group.runs[i]]}));
+
+switch (check) {
+case 'group': {
+  // mdadm sample (md127) and lvm sample (dm-3)
+  [[0, 'md127', ['sdb', 'sdc', 'sdd']], [1, 'dm-3', ['sdb', 'sdc']]].forEach(([i, dev, names]) => {
+    const h = run('renderRuns(' + one(i) + ')');
+    assert(h.includes(dev + ' · array'), dev + ': ' + h);
+    names.forEach(n => assert(h.includes(n), dev + ' lacks ' + n + ': ' + h));
+    assert(h.includes('layout: array_state=&lt;i&gt;clean&lt;/i&gt;'), dev + ' reading: ' + h);
+    assert(!h.includes('write_cache:'), dev + ': ' + h);
+    noRaw(h);
+  });
+  let h = run('renderRuns(__data.group)');
+  assert(h.includes('torn down') && h.includes('teardown failed on bbbench_g3_2'), 'teardown in runs: ' + h);
+  h = run('renderVariants(__data.group)');
+  assert(h.includes('mdadm raid1 · 2 data + 1 spare') && h.includes('lvm striped · 2 disks'), h);
+  ['sdb', 'sdc', 'sdd', 'spare', 'data', '&lt;b&gt;x&lt;/b&gt;'].forEach(s => assert(h.includes(s), 'variants lack ' + s + ': ' + h));
+  noRaw(h);
+  assert.strictEqual(run('renderTeardown(__data.group.runs[0])'), '<span class="ok">torn down</span>');
+  h = run('renderTeardown(__data.group.runs[1])');
+  assert(h.includes('teardown failed on bbbench_g3_2'), h);
+  assert.strictEqual(run('renderTeardown({status: "done"})'), '');
+  h = run('renderRestore(__data.group)');
+  assert(h.includes('Teardown failed on: bbbench_g3_2') && !h.includes('Restore'), h);
+  h = run('renderRestore(Object.assign({}, __data.group, {restore: {status: "done"}}))');
+  assert(h.includes('Torn down') && !h.includes('restored'), h);
+  run('render(__data.group)');
+  assert.strictEqual(byId['restore-title'].textContent, 'Teardown');
+  assert(byId['variants'].innerHTML.includes('lvm striped'), 'variants not rendered');
+  assert.strictEqual(byId['variants-card'].style.display, '');
+  HTML.forEach(noRaw);
+  console.log('group ok: array drive cells, layout reading, variants, teardown');
+  break;
+}
+case 'group_wc': {
+  const g = DATA.groupWC;
+  assert(!('variants' in g));
+  const h = run('renderRuns(__data.groupWC)');
+  assert(h.includes('write_cache: write back') && !h.includes('layout:') && !h.includes('· array'), h);
+  assert.strictEqual(run('renderRestore(__data.groupWC)'), '<span class="ok">Original values restored.</span>');
+  assert.strictEqual(run('renderVariants(__data.groupWC)'), '');
+  run('render(__data.groupWC)');
+  assert(!byId['restore-title'] && !byId['variants-card'], 'write-cache page touches the layout elements');
+  console.log('group_wc ok: write-cache page as before');
+  break;
+}
+case 'graphs': {
+  const arr = DATA.graphs.find(d => d.disk === 'md127');
+  ctx.__arr = arr;
+  assert.strictEqual(run('membersText(__arr)'), 'members: sdb (data), sdc (data), sdd (spare)');
+  assert.strictEqual(run('membersText({disk: "sda"})'), '');
+  assert.strictEqual(run('membersText({disk: "sda", members: []})'), '');
+  run('allData = __data.graphs; initFilters(); renderAll()');
+  const subs = ELS.filter(e => e.className === 'card-subtitle').map(e => e.textContent);
+  assert(subs.some(s => s.includes('members: sdb (data), sdc (data), sdd (spare)')), 'subtitles: ' + subs);
+  assert(subs.some(s => s.includes('members: sdb (data), sdc (data)') && !s.includes('sdd')), 'lv subtitle: ' + subs);
+  run('openModal(__arr, METRICS[0], 0, 1)');
+  assert(byId['modal-title'].textContent.includes('members: sdb (data), sdc (data), sdd (spare)'), 'modal: ' + byId['modal-title'].textContent);
+  console.log('graphs ok: membersText, card subtitle, modal title');
+  break;
+}
+case 'compare': {
+  ctx.__arr = DATA.graphs.find(d => d.disk === 'dm-3');
+  assert.strictEqual(run('membersText(__arr)'), 'members: sdb (data), sdc (data)');
+  assert.strictEqual(run('membersText({disk: "sda"})'), '');
+  run('allData = __data.graphs; initSidebar()');
+  const subs = ELS.filter(e => e.className === 'disk-sub').map(e => e.textContent);
+  assert(subs.some(s => s.includes('members: sdb (data), sdc (data), sdd (spare)')), 'disk list: ' + subs);
+  console.log('compare ok: membersText in the disk list');
+  break;
+}
+case 'compare_same_name': case 'graphs_same_name': {
+  // A second layout of the group was built as md127 too: other uuid, other members.
+  const a = DATA.graphs.find(d => d.disk === 'md127');
+  const b = Object.assign({}, a, {serial: 'u-second', setting_value: 'mdadm raid0 · 2 disks',
+    members: [{name: 'sde', role: 'data'}, {name: 'sdf', role: 'data'}]});
+  ctx.__two = [a, b];
+  if (check === 'compare_same_name') {
+    run('allData = __two; initSidebar()');
+    const subs = ELS.filter(e => e.className === 'disk-sub').map(e => e.textContent);
+    assert.strictEqual(byId['disk-list'].children.length, 2, 'disk list: ' + subs);
+    assert(subs.some(s => s.includes('members: sdb (data), sdc (data), sdd (spare)')), 'first layout: ' + subs);
+    assert(subs.some(s => s.includes('u-second') && s.includes('members: sde (data), sdf (data)')), 'second layout: ' + subs);
+    assert.strictEqual(run('getEntries().length'), 2, 'both layouts selected');
+    console.log('compare_same_name ok: one disk-list entry per layout', JSON.stringify(subs));
+  } else {
+    run('allData = __two; initFilters(); renderAll()');
+    const subs = ELS.filter(e => e.className === 'card-subtitle').map(e => e.textContent);
+    assert(subs.some(s => s.includes('members: sdb (data), sdc (data), sdd (spare)')), 'first card: ' + subs);
+    assert(subs.some(s => s.includes('members: sde (data), sdf (data)')), 'second card: ' + subs);
+    console.log('graphs_same_name ok: each card its own members');
+  }
+  break;
+}
+case 'result': case 'result_lv': {
+  const d = check === 'result' ? DATA.detail : DATA.detailLV;
+  ctx.__d = d;
+  const h = run('drivesHTML(__d)');
+  const dev = check === 'result' ? 'md127' : 'dm-3';
+  assert(h.includes(dev) && h.includes('sdb') && h.includes('sdc') && h.includes('data'), h);
+  if (check === 'result') assert(h.includes('sdd') && h.includes('spare') && h.includes('&lt;b&gt;x&lt;/b&gt;'), h);
+  noRaw(h);
+  assert.strictEqual(run('drivesHTML({drives: [{Device: {Name: "sda", Model: "M"}}]})'), '', 'plain run gets a drives block');
+  assert.strictEqual(run('drivesHTML({})'), '');
+  console.log(check + ' ok: drives with members');
   break;
 }
 default: throw new Error('unknown check ' + check);

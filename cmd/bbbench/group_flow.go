@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"bbbench/internal/inuse"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 )
@@ -44,7 +47,8 @@ func settingByName(available []settings.Setting, name string) settings.Setting {
 // restore its drives, and offers to restore them (answer read from in). The
 // file is removed only after every drive was restored. An error means the
 // run must stop: the file could not be read, or a drive was not restored.
-func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string, available []settings.Setting, drives []DriveInfo, targets map[string]settings.Target) error {
+// A file with layouts goes to offerLayoutCleanup, where declining also stops.
+func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string, available []settings.Setting, targets map[string]settings.Target) error {
 	rec, err := rungroup.LoadRecovery(path)
 	if err != nil {
 		return fmt.Errorf("read the recovery file %s: %w (check it by hand: it lists drive settings bbbench changed)", path, err)
@@ -56,6 +60,9 @@ func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string
 	if s == nil {
 		return fmt.Errorf("the recovery file %s is for the unknown setting %q; restore the drives by hand and remove it", path, rec.Setting)
 	}
+	if len(rec.Arrays) > 0 {
+		return offerLayoutCleanup(ctx, in, out, path, s, rec, targets)
+	}
 	fmt.Fprintf(out, "\nA previous setting test changed the %s of %d drive(s) and did not restore them:\n", s.Name(), len(rec.Drives))
 	for _, e := range rec.Drives {
 		fmt.Fprintf(out, "  %s (%s, S/N %s): original value %q\n", e.Name, e.Model, e.Serial, e.Original.Value)
@@ -64,15 +71,56 @@ func offerRecovery(ctx context.Context, in io.Reader, out io.Writer, path string
 		fmt.Fprintf(out, "Not restored. A setting test will refuse to start while %s exists; a single run is not affected.\n\n", path)
 		return nil
 	}
-	failed := restoreFromRecovery(ctx, s, rec, drives, targets)
+	failed := restoreFromRecovery(ctx, s, rec, path, targets)
 	if len(failed) > 0 {
 		fmt.Fprintf(out, "\nNot restored: %s. The recovery file %s is kept. Set them back by hand (the command is printed above when known); a power cycle also resets a volatile setting.\n", strings.Join(failed, ", "), path)
 		return fmt.Errorf("could not restore %s on %s", s.Name(), strings.Join(failed, ", "))
 	}
-	if err := rec.Remove(path); err != nil {
+	// restoreFromRecovery removed the file once nothing was left to undo.
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			err = errors.New("it is still there")
+		}
 		return fmt.Errorf("restored, but could not remove the recovery file %s: %w", path, err)
 	}
 	fmt.Fprintf(out, "Restored the original values.\n\n")
+	return nil
+}
+
+// offerLayoutCleanup offers to tear down the layouts of rec (and to restore
+// any drive it lists). Declining is an error: bbbench does not start while a
+// layout it built is left, since its members' superblocks are still there.
+// Only the recorded layouts are touched, found by their members' serials.
+func offerLayoutCleanup(ctx context.Context, in io.Reader, out io.Writer, path string, s settings.Setting, rec *rungroup.Recovery, targets map[string]settings.Target) error {
+	fmt.Fprintf(out, "\nA previous setting test (%s) built %d layout(s) and did not tear them down:\n", s.Name(), len(rec.Arrays))
+	descs := make([]string, 0, len(rec.Arrays))
+	for _, a := range rec.Arrays {
+		d := layoutDesc(settings.ArrayUndo{Backend: a.Backend, Name: a.Name, UUID: a.UUID})
+		ms := make([]rungroup.Member, 0, len(a.Members))
+		for _, m := range a.Members {
+			ms = append(ms, rungroup.Member{Name: m.Name, Serial: m.Serial, Model: m.Model, Role: m.Role})
+		}
+		fmt.Fprintf(out, "  %s: members %s\n", d, membersDesc(ms))
+		descs = append(descs, d)
+	}
+	for _, e := range rec.Drives {
+		fmt.Fprintf(out, "  %s (%s, S/N %s): original value %q\n", e.Name, e.Model, e.Serial, e.Original.Value)
+	}
+	if !askYes(in, out, "Tear down these layouts and wipe their members now? [y/n] ") {
+		return fmt.Errorf("not cleaned up: bbbench does not start while layouts it built are left (%s); run it again and accept, or tear them down and wipe their members by hand, then remove %s", strings.Join(descs, ", "), path)
+	}
+	failed := restoreFromRecovery(ctx, s, rec, path, targets)
+	if len(failed) > 0 {
+		fmt.Fprintf(out, "\nNot cleaned up: %s. The recovery file %s is kept. Tear them down and wipe their members by hand (the command is printed above when known), then remove it.\n", strings.Join(failed, ", "), path)
+		return fmt.Errorf("could not clean up %s", strings.Join(failed, ", "))
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			err = errors.New("it is still there")
+		}
+		return fmt.Errorf("cleaned up, but could not remove the recovery file %s: %w", path, err)
+	}
+	fmt.Fprintf(out, "Tore down the layouts and wiped their members.\n\n")
 	return nil
 }
 
@@ -95,11 +143,16 @@ func findResumableGroup(dir string) *rungroup.GroupFile {
 }
 
 // resumeChoice rebuilds what the user chose for group g: the setting, the
-// values in their order, and the drives (matched by serial and model).
-func resumeChoice(g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo) (*groupChoice, error) {
+// values in their order, and the drives (matched by serial and model). A
+// layout group gets its layouts back from g.Variants (see
+// resumeLayoutChoice); inUse is called for it only.
+func resumeChoice(g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo, inUse func() (*inuse.Report, error)) (*groupChoice, error) {
 	s := settingByName(available, g.Setting)
 	if s == nil {
 		return nil, fmt.Errorf("group %s is for the unknown setting %q", g.ID, g.Setting)
+	}
+	if s.Input() == settings.InputVariants || len(g.Variants) > 0 {
+		return resumeLayoutChoice(g, s, drives, inUse)
 	}
 	known := map[string]settings.Value{}
 	for _, v := range s.Values() {
@@ -140,8 +193,98 @@ func resumeChoice(g *rungroup.GroupFile, available []settings.Setting, drives []
 	return c, nil
 }
 
+// resumeLayoutChoice rebuilds the layouts of group g from g.Variants: each
+// disk is found again by serial and model (its name may have changed) and
+// must not be in use now; each value must parse. The values are layout
+// strings, so the known-values check of a value group does not apply.
+func resumeLayoutChoice(g *rungroup.GroupFile, s settings.Setting, drives []DriveInfo, inUse func() (*inuse.Report, error)) (*groupChoice, error) {
+	ls, ok := s.(settings.LayoutSetting)
+	if !ok {
+		return nil, fmt.Errorf("cannot resume group %s: %s does not take layouts", g.ID, s.Name())
+	}
+	if len(g.Variants) == 0 {
+		return nil, fmt.Errorf("cannot resume group %s: it recorded no layouts; start a new setting test", g.ID)
+	}
+	if inUse == nil {
+		return nil, fmt.Errorf("cannot resume group %s: cannot check which disks are in use", g.ID)
+	}
+	rep, err := inUse()
+	if err == nil && rep == nil {
+		err = errors.New("no report")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cannot resume group %s: cannot check which disks are in use: %v", g.ID, err)
+	}
+	c := &groupChoice{Setting: s, Strategy: g.Strategy, Excluded: map[string]string{}}
+	seen := map[string]bool{}
+	for i, gv := range g.Variants {
+		if _, err := ls.ParseLayout(gv.Value); err != nil {
+			return nil, fmt.Errorf("cannot resume group %s: layout %d: %v", g.ID, i+1, err)
+		}
+		v := settings.Variant{Value: settings.Value{ID: gv.Value, Label: gv.Value}}
+		for _, m := range gv.Disks {
+			var found *DriveInfo
+			for k := range drives {
+				if drives[k].Device.Serial == m.Serial && drives[k].Device.Model == m.Model {
+					found = &drives[k]
+					break
+				}
+			}
+			if found == nil {
+				return nil, fmt.Errorf("cannot resume group %s: disk %s (%s, S/N %s) of layout %d is not present", g.ID, m.Name, m.Model, m.Serial, i+1)
+			}
+			name := found.Device.Name
+			if why := rep.Reason(name); why != "" {
+				return nil, fmt.Errorf("cannot resume group %s: %s is in use: %s", g.ID, name, why)
+			}
+			dev := found.Device
+			v.Disks = append(v.Disks, settings.Disk{
+				Target: settings.Target{Name: name, Path: dev.Path, Serial: dev.Serial, Model: dev.Model, Vendor: dev.Vendor, Rotational: dev.Rotational},
+				Role:   m.Role,
+			})
+			if !seen[name] {
+				seen[name] = true
+				c.Drives = append(c.Drives, *found)
+			}
+		}
+		c.Variants = append(c.Variants, v)
+		c.Values = append(c.Values, v.Value)
+	}
+	return c, nil
+}
+
+// inUsePaths are the paths whose disks must not be erased: the bbbench
+// binary (exe, skipped when "") and the output directory, through its
+// nearest existing ancestor since it may not be created yet.
+func inUsePaths(exe, outDir string) map[string]string {
+	paths := map[string]string{}
+	if exe != "" {
+		paths[exe] = "the bbbench binary"
+	}
+	if outDir != "" {
+		d := filepath.Clean(outDir)
+		if abs, err := filepath.Abs(d); err == nil {
+			d = abs
+		}
+		for {
+			if _, err := os.Stat(d); err == nil {
+				break
+			}
+			parent := filepath.Dir(d)
+			if parent == d {
+				break
+			}
+			d = parent
+		}
+		paths[d] = "the output directory"
+	}
+	return paths
+}
+
 // newGroupConfig builds the group to run from the confirmed choice.
-func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts runOptions, host string, resume *rungroup.GroupFile) groupConfig {
+// makeDrive turns a composite target built by a layout into the drive a run
+// benchmarks (arrayDrive in production); nil refuses composite targets.
+func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts runOptions, host string, resume *rungroup.GroupFile, makeDrive func(settings.BenchTarget) (DriveInfo, error)) groupConfig {
 	return groupConfig{
 		Setting:      c.Setting,
 		Values:       c.Values,
@@ -154,7 +297,12 @@ func newGroupConfig(c *groupChoice, targets map[string]settings.Target, opts run
 		Settle:       groupSettle,
 		Resume:       resume,
 		// fio, the fio files and the engines, checked before the first apply.
-		Precheck: func() error { return precheckRun(opts, c.Drives) },
+		// For layouts c.Drives is the union of the disks: a composite's fio
+		// file does not exist before its build, but it is rendered from the
+		// same templates and carries the same workloads as its members'.
+		Precheck:  func() error { return precheckRun(opts, c.Drives) },
+		Variants:  c.Variants,
+		MakeDrive: makeDrive,
 		// A running group shows up on the web pages live.
 		OnSave: globalGroupStore.AddGroup,
 		Execute: func(ctx context.Context, spec runSpec) (*BenchmarkResult, error) {
@@ -203,14 +351,38 @@ func printGroupSummary(w io.Writer, g *rungroup.GroupFile) {
 				state = "not verified"
 			}
 			fmt.Fprintf(w, "    %-10s %-12s %s\n", d.Device, d.Value, state)
+			if d.Kind == settings.TargetArray && len(d.Members) > 0 {
+				fmt.Fprintf(w, "      members: %s\n", membersDesc(d.Members))
+			}
 		}
+		if r.Teardown != nil && r.Teardown.Status == rungroup.RestoreFailed {
+			fmt.Fprintf(w, "  run %d teardown FAILED on: %s\n", i+1, strings.Join(r.Teardown.Failed, ", "))
+		}
+	}
+	done, failed := "  original values restored", "  RESTORE FAILED on: %s\n"
+	if isLayoutGroup(g) {
+		done, failed = "  layouts torn down", "  TEARDOWN FAILED on: %s\n"
 	}
 	switch g.Restore.Status {
 	case rungroup.RestoreDone:
-		fmt.Fprintln(w, "  original values restored")
+		fmt.Fprintln(w, done)
 	case rungroup.RestoreFailed:
-		fmt.Fprintf(w, "  RESTORE FAILED on: %s\n", strings.Join(g.Restore.Failed, ", "))
+		fmt.Fprintf(w, failed, strings.Join(g.Restore.Failed, ", "))
 	}
+}
+
+// isLayoutGroup reports whether g builds layouts (its end is a teardown, not
+// a restore of original values).
+func isLayoutGroup(g *rungroup.GroupFile) bool {
+	if len(g.Variants) > 0 {
+		return true
+	}
+	for _, r := range g.Runs {
+		if r.Teardown != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // groupFileName is the file name of group g in the output directory.
@@ -239,8 +411,8 @@ func stateIfAny(path string) *ExecutionState {
 // prepareGroupResume rebuilds the choice for the unfinished group g and asks
 // the user to confirm it: resuming applies settings. An error stops the
 // run; nothing has been applied then.
-func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo) (*groupChoice, error) {
-	c, err := resumeChoice(g, available, drives)
+func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, available []settings.Setting, drives []DriveInfo, inUse func() (*inuse.Report, error)) (*groupChoice, error) {
+	c, err := resumeChoice(g, available, drives, inUse)
 	if err != nil {
 		return nil, fmt.Errorf("%w\nThe unfinished group is %s in the output directory; removing or renaming it unblocks --resume", err, groupFileName(g))
 	}
@@ -249,6 +421,20 @@ func prepareGroupResume(in io.Reader, out io.Writer, g *rungroup.GroupFile, avai
 		if !r.Status.Finished() {
 			todo++
 		}
+	}
+	if c.Variants != nil {
+		fmt.Fprintf(out, "\nResume setting test %s (%s, %s): THE DISKS BELOW WILL BE ERASED\n", g.ID, g.Setting, g.Strategy)
+		for i, v := range c.Variants {
+			fmt.Fprintf(out, "  Run %d: %s\n", i+1, v.Value.Label)
+			for _, d := range v.Disks {
+				fmt.Fprintf(out, "      %s  %s %s (S/N %s)  %s\n", d.Name, d.Vendor, d.Model, d.Serial, d.Role)
+			}
+		}
+		fmt.Fprintf(out, "  Runs still to do: %d of %d\n", todo, len(g.Runs))
+		if !askYes(in, out, "  Each layout still to run is built again and torn down after its run, its members wiped.\nContinue and erase these disks? [y/n] ") {
+			return nil, errors.New("setting test not resumed; nothing was built")
+		}
+		return c, nil
 	}
 	fmt.Fprintf(out, "\nResume setting test %s (%s, %s)\n", g.ID, g.Setting, g.Strategy)
 	var labels []string

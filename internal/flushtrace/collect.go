@@ -10,15 +10,17 @@ import (
 
 // Summary is the Flush latency measured for one device during a phase.
 type Summary struct {
-	Source string  `json:"source"`           // "nvme" or "block"
-	Count  int     `json:"count"`            // completed Flushes
-	MeanNs float64 `json:"mean_ns"`          // exact for both sources
-	MinNs  int64   `json:"min_ns,omitempty"` // only when Exact
-	MaxNs  int64   `json:"max_ns,omitempty"` // only when Exact
-	P50Ns  int64   `json:"p50_ns,omitempty"` // only when Exact
-	P99Ns  int64   `json:"p99_ns,omitempty"` // only when Exact
-	Exact  bool    `json:"exact"`            // per-Flush pairing is exact
-	Lost   int     `json:"lost,omitempty"`   // issued but never seen completing
+	Source string `json:"source"` // "nvme" or "block"
+	// Events are the tracepoint pairs the Flushes were timed from (EventsOf(Source)).
+	Events []string `json:"events,omitempty"`
+	Count  int      `json:"count"`            // completed Flushes
+	MeanNs float64  `json:"mean_ns"`          // exact for both sources
+	MinNs  int64    `json:"min_ns,omitempty"` // only when Exact
+	MaxNs  int64    `json:"max_ns,omitempty"` // only when Exact
+	P50Ns  int64    `json:"p50_ns,omitempty"` // only when Exact
+	P99Ns  int64    `json:"p99_ns,omitempty"` // only when Exact
+	Exact  bool     `json:"exact"`            // per-Flush pairing is exact
+	Lost   int      `json:"lost,omitempty"`   // issued but never seen completing
 	// WriteCache is the kernel's view of the device cache while tracing
 	// ("write back" or "write through"; empty = unknown). A write-through
 	// device is sent no Flush commands at all, so zero Flushes is expected.
@@ -67,7 +69,7 @@ func (s *samples) summary(source string, exact bool, lost int) Summary {
 // re-summarized later (and pick up improvements) without re-running a test.
 // lost is the number of Flushes issued but never seen completing.
 func Summarize(source string, exact bool, lost int, all []Sample) Summary {
-	out := Summary{Source: source, Count: len(all), Exact: exact, Lost: lost}
+	out := Summary{Source: source, Events: EventsOf(source), Count: len(all), Exact: exact, Lost: lost}
 	if len(all) == 0 {
 		return out
 	}
@@ -121,6 +123,10 @@ func NewNVMe(disk string) *NVMe {
 }
 
 func (c *NVMe) Feed(ev Event) {
+	if ev.F.Decoded {
+		c.feedDecoded(ev)
+		return
+	}
 	switch ev.Name {
 	case "nvme_setup_cmd":
 		m := nvmeSetupRe.FindStringSubmatch(ev.Payload)
@@ -141,6 +147,32 @@ func (c *NVMe) Feed(ev Event) {
 	}
 }
 
+// feedDecoded is Feed for an event of the raw reader: the same pairing on
+// the decoded fields. A Flush is opcode 0 on an I/O queue (the text shows
+// it as cmd=(nvme_cmd_flush ...); opcode 0 on the admin queue is another
+// command).
+func (c *NVMe) feedDecoded(ev Event) {
+	f := &ev.F
+	switch ev.Name {
+	case "nvme_setup_cmd":
+		if f.Opcode != 0 || f.QID <= 0 || f.Disk != c.disk {
+			return
+		}
+		c.pending[nvmeKeyOf(f)] = ev.TimeNs
+	case "nvme_complete_rq":
+		key := nvmeKeyOf(f)
+		if t0, ok := c.pending[key]; ok {
+			delete(c.pending, key)
+			c.s.add(ev.TimeNs, ev.TimeNs-t0)
+		}
+	}
+}
+
+// nvmeKeyOf is the pending key of the text path ("ctrl/qid/cmdid").
+func nvmeKeyOf(f *Fields) string {
+	return strconv.Itoa(int(f.CtrlID)) + "/" + strconv.Itoa(int(f.QID)) + "/" + strconv.Itoa(int(f.CID))
+}
+
 func (c *NVMe) Summary() Summary  { return c.s.summary("nvme", true, len(c.pending)) }
 func (c *NVMe) Samples() []Sample { return c.s.all }
 
@@ -153,20 +185,43 @@ var (
 	blockDoneRe = regexp.MustCompile(`^(\d+),(\d+) (\S+) \(.*?\) \d+ \+ (\d+)`)
 )
 
+// "9,127 FWS 0 + 0 [fio]" (block_bio_queue) and "9,127 FWS 0 + 0 [0]"
+// (block_bio_complete): rwbs, sector + nr_sector.
+var bioRe = regexp.MustCompile(`^(\d+),(\d+) (\S+) \d+ \+ (\d+)`)
+
 // Block times Flush requests of one block device identified by its
 // major:minor, using block_rq_issue / block_rq_complete. A request is a pure
 // Flush when its rwbs string starts with 'F' and it covers no sectors.
+// NewBio makes the same collector for a bio-based node over the bio events.
 type Block struct {
-	major, minor int
-	pending      []int64 // issue times, oldest first
-	s            samples
+	major, minor    int
+	source          string // "block" or "bio"
+	issueEv, doneEv string
+	issueRe, doneRe *regexp.Regexp
+	pending         []int64 // issue times, oldest first
+	s               samples
 }
 
 // NewBlock returns a collector for the device with the given major:minor.
-func NewBlock(major, minor int) *Block { return &Block{major: major, minor: minor} }
+func NewBlock(major, minor int) *Block {
+	return &Block{major: major, minor: minor, source: "block",
+		issueEv: "block_rq_issue", doneEv: "block_rq_complete", issueRe: blockIssueRe, doneRe: blockDoneRe}
+}
 
-func (c *Block) isFlush(re *regexp.Regexp, payload string) bool {
-	m := re.FindStringSubmatch(payload)
+// NewBio returns a collector for a bio-based node (md, most dm), which has
+// no request events: its Flushes are the empty flush bios submitted to it,
+// block_bio_queue -> block_bio_complete, paired first-in first-out. The time
+// covers the node's handling, its members' flushes included.
+func NewBio(major, minor int) *Block {
+	return &Block{major: major, minor: minor, source: "bio",
+		issueEv: "block_bio_queue", doneEv: "block_bio_complete", issueRe: bioRe, doneRe: bioRe}
+}
+
+func (c *Block) isFlush(re *regexp.Regexp, ev Event) bool {
+	if f := &ev.F; f.Decoded {
+		return strings.HasPrefix(f.RWBS, "F") && f.NrSector == 0 && f.Major() == c.major && f.Minor() == c.minor
+	}
+	m := re.FindStringSubmatch(ev.Payload)
 	if m == nil || !strings.HasPrefix(m[3], "F") || m[4] != "0" {
 		return false
 	}
@@ -177,12 +232,12 @@ func (c *Block) isFlush(re *regexp.Regexp, payload string) bool {
 
 func (c *Block) Feed(ev Event) {
 	switch ev.Name {
-	case "block_rq_issue":
-		if c.isFlush(blockIssueRe, ev.Payload) {
+	case c.issueEv:
+		if c.isFlush(c.issueRe, ev) {
 			c.pending = append(c.pending, ev.TimeNs)
 		}
-	case "block_rq_complete":
-		if c.isFlush(blockDoneRe, ev.Payload) && len(c.pending) > 0 {
+	case c.doneEv:
+		if c.isFlush(c.doneRe, ev) && len(c.pending) > 0 {
 			t0 := c.pending[0]
 			c.pending = c.pending[1:]
 			c.s.add(ev.TimeNs, ev.TimeNs-t0)
@@ -190,5 +245,21 @@ func (c *Block) Feed(ev Event) {
 	}
 }
 
-func (c *Block) Summary() Summary  { return c.s.summary("block", false, len(c.pending)) }
+func (c *Block) Summary() Summary  { return c.s.summary(c.source, false, len(c.pending)) }
 func (c *Block) Samples() []Sample { return c.s.all }
+
+// EventsOf names the tracepoint pair a Flush source times: "nvme" nvme_setup_cmd
+// -> nvme_complete_rq (flush opcode), "block" block_rq_issue -> block_rq_complete
+// (rwbs F, 0 sectors), "bio" block_bio_queue -> block_bio_complete (the same,
+// on a bio-based node); nil for an unknown source.
+func EventsOf(source string) []string {
+	switch source {
+	case "nvme":
+		return []string{"nvme_setup_cmd -> nvme_complete_rq"}
+	case "block":
+		return []string{"block_rq_issue -> block_rq_complete"}
+	case "bio":
+		return []string{"block_bio_queue -> block_bio_complete"}
+	}
+	return nil
+}
