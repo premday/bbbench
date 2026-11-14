@@ -52,6 +52,8 @@
 
 ### Changed
 
+- The I/O latency trace pairs and aggregates each device's events on its own goroutine (one collector per device; NVMe namespaces of one controller share one) instead of one for the whole session, so the event rate it can keep up with grows with the number of devices traced. Not verified on a real kernel.
+
 - Graphs and compare pages show values with an SI prefix on the number and the base unit after it: `2.4G bytes/s`, `1.2M IOPS`, `2.5m s` (ticks `2.4G`, `1.2M`, `2.5m`, `800μ`; the y axis is titled `bytes/s`, `IOPS` or `s`) instead of thousands of MB/s or μs. The prefix is chosen from the data maximum of the phase (all cards of a phase share it, the axis headroom is left out) or of the compare chart. Bandwidth is plotted in bytes/s (fio's KiB/s * 1024), so `2.4G` is 2.4 * 10^9 bytes/s (2300 MiB/s reads 2.41G); latency in seconds. The data and JSON are unchanged
 - The orchestrator drops the template's `log_avg_msec=30000` from the fio files it runs, so `--log-avg-msec` (default 1 s) is the only polling interval. The file's value could override the flag, giving 30 s points and a 30 s blank after the ramp-up on the graphs; hand-run fio on a generated file keeps the 30 s
 - CI workflows use Node 24 action versions (`checkout@v7`, `setup-go@v7`, `upload-artifact@v7`) and run on `ubuntu-26.04` instead of `ubuntu-latest`

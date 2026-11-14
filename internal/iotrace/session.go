@@ -148,7 +148,7 @@ type Result struct {
 // Session is one running I/O latency trace of a set of devices.
 type Session struct {
 	inst    *flushtrace.Instance
-	col     *collector
+	fan     *fanout
 	devices []DeviceSummary // in the given order; Stats and Unpaired filled at Stop
 	traced  map[string]*device
 	summary Summary
@@ -183,7 +183,7 @@ func Start(devices []string, opts Options) (*Session, error) {
 	hasBio := flushtrace.HasEvents(root, evBioQueue, evBioDone)
 
 	s := &Session{traced: map[string]*device{}}
-	col := newCollector(opts.AvgMsec, opts.OffsetMs)
+	var traced []*device
 	var reasons []string
 	var anyNVMe, anyBlock bool
 	var devFilter, bioFilter, ctrls []string
@@ -231,7 +231,7 @@ func Start(devices []string, opts Options) (*Session, error) {
 				}
 			}
 		}
-		col.addDevice(d)
+		traced = append(traced, d)
 		s.traced[name] = d
 		anyNVMe = anyNVMe || d.source == SourceNVMe
 		if d.usesBlock() {
@@ -301,12 +301,16 @@ func Start(devices []string, opts Options) (*Session, error) {
 	if buf == 0 {
 		buf = 16384
 	}
-	inst, err := flushtrace.OpenInstanceStart(root, name, buf, enable, filters, col.feed)
+	// One collector per device (per controller for NVMe namespaces), each on
+	// its own goroutine, so pairing scales with the devices traced.
+	fan := newFanout(traced, opts.AvgMsec, opts.OffsetMs)
+	inst, err := flushtrace.OpenInstanceStart(root, name, buf, enable, filters, fan.feed)
 	if err != nil {
+		fan.stop()
 		return nil, err
 	}
-	s.inst, s.col = inst, col
-	s.summary = Summary{AvgMsec: int(col.agg.windowMs), OffsetMs: opts.OffsetMs}
+	s.inst, s.fan = inst, fan
+	s.summary = Summary{AvgMsec: int(fan.shards[0].col.agg.windowMs), OffsetMs: opts.OffsetMs}
 	return s, nil
 }
 
@@ -317,7 +321,8 @@ func (s *Session) Stop() (Result, error) {
 	var res Result
 	var stats map[string]map[Kind]map[Dir]Stats
 	s.inst.Locked(func() {
-		res.Windows, stats = s.col.finish()
+		s.fan.stop()
+		res.Windows, stats = s.fan.finish()
 		sum := s.summary
 		sum.Devices = make([]DeviceSummary, len(s.devices))
 		for i, ds := range s.devices {
@@ -343,7 +348,11 @@ func (s *Session) MarkStart() { s.inst.MarkStart() }
 
 // Close ends the trace quickly without a result, for a force quit; a later
 // Stop still returns what was collected.
-func (s *Session) Close() error { return s.inst.Close() }
+func (s *Session) Close() error {
+	err := s.inst.Close()
+	s.inst.Locked(s.fan.stop)
+	return err
+}
 
 // nvmeControllers returns the controllers ("nvme1") of an NVMe namespace,
 // from sysfs: <sysBlock>/<name>/device links to the controller, or, for a
