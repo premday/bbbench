@@ -118,8 +118,15 @@ type Summary struct {
 	// Late counts the events the raw reader's merge received after a newer
 	// one had been fed: they were fed out of order. A pair one broke is in
 	// Unpaired, so Late is not added to Lost.
-	Late int64  `json:"late,omitempty"`
-	Text string `json:"text"` // SourceLine
+	Late int64 `json:"late,omitempty"`
+	// Kernel is the kernel's own view of the trace instance at stop: the
+	// filters it applied, the buffer size and each CPU's counters (entries,
+	// overrun, read events). Overrun above is bbbench's count from the pages;
+	// the two should agree.
+	Kernel *flushtrace.KernelInfo `json:"kernel,omitempty"`
+	// KernelNote is KernelNote(), set by Fill, not stored in the log.
+	KernelNote string `json:"kernel_note,omitempty"`
+	Text       string `json:"text"` // SourceLine
 	// TextDevice and TextBlockLayer are SourceLineOf for each kind: the
 	// source lines of the Device and the Block-layer latency cards (a
 	// bio-based node's bio series is on the Device latency card).
@@ -134,6 +141,7 @@ func (s *Summary) Fill() {
 		s.Lost += s.Devices[i].Unpaired
 		s.Devices[i].BlockLayerNote = blockLayerNote(s.Devices[i])
 	}
+	s.KernelNote = s.kernelNote()
 	s.Text = SourceLine(s)
 	s.TextDevice = SourceLineOf(s, KindDevice)
 	s.TextBlockLayer = SourceLineOf(s, KindBlockLayer)
@@ -337,6 +345,7 @@ func (s *Session) Stop() (Result, error) {
 	res.Summary.Overrun = s.inst.Overrun()
 	res.Summary.Reader, res.Summary.ReaderNote = s.inst.Reader(), s.inst.ReaderNote()
 	res.Summary.Clock, res.Summary.Late = s.inst.Clock(), s.inst.Late()
+	res.Summary.Kernel = s.inst.Kernel()
 	res.Summary.StartMissing = s.inst.StartNs() == 0
 	res.Summary.Fill()
 	return res, err
@@ -385,4 +394,33 @@ func nvmeControllers(sysBlock, name string) []string {
 // isController reports whether name is "nvme<N>".
 func isController(name string) bool {
 	return strings.HasPrefix(name, "nvme") && len(name) > len("nvme") && skipDigits(name, len("nvme")) == len(name)
+}
+
+// kernel returns Kernel, created on first use (reading a log).
+func (s *Summary) kernel() *flushtrace.KernelInfo {
+	if s.Kernel == nil {
+		s.Kernel = &flushtrace.KernelInfo{}
+	}
+	return s.Kernel
+}
+
+// kernelNote says what the kernel's own counters add to the loss figures:
+// filters it did not apply (every device's events then fill the buffer) and
+// its overrun against bbbench's count. "" when nothing was recorded or all
+// agree.
+func (s *Summary) kernelNote() string {
+	k := s.Kernel
+	if k == nil {
+		return ""
+	}
+	var parts []string
+	for _, f := range k.Unfiltered() {
+		parts = append(parts, fmt.Sprintf("the kernel did not apply the filter of %s (wanted %q, shows %q): events of other devices fill the buffer", f.Event, f.Wanted, f.Applied))
+	}
+	if len(k.CPUs) > 0 {
+		if ko := k.Overrun(); ko != s.Overrun {
+			parts = append(parts, fmt.Sprintf("kernel overrun %d, bbbench counted %d", ko, s.Overrun))
+		}
+	}
+	return strings.Join(parts, "; ")
 }

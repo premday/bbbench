@@ -920,6 +920,9 @@ __NAVBAR_HTML__
             lines.push('Unpaired (a request or bio that never completed within the trace, or whose start or end event was lost; counted per device): ' +
                 unp.map(e => e.dev + ': ' + fmtCount(e.n) + ' unpaired: ' + e.labels.join(', ')).join('; ') + '.');
         }
+        // the kernel's own counters and filters (io_trace.kernel_note): where
+        // they disagree with the count above, one of the two is wrong
+        if (t.kernel_note) lines.push('Kernel check: ' + t.kernel_note + '.');
         // requests timed in the card's devices (the phase summary counts of
         // the card's kinds; the kinds of a device time the same requests,
         // so the largest one counts)

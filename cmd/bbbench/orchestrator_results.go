@@ -268,6 +268,9 @@ func formatIOTraceSummary(s *iotrace.Summary) string {
 	case s.Lost > 0:
 		lost = fmt.Sprintf(" (%d events lost)", s.Lost)
 	}
+	if s.KernelNote != "" {
+		lost += " [" + s.KernelNote + "]"
+	}
 	target := s.Devices[0]
 	if parts := ioTraceDirParts(target.Stats[iotrace.KindDevice], true); len(parts) > 0 {
 		return "ftrace device (" + target.Source + "): " + strings.Join(parts, ", ") + lost
