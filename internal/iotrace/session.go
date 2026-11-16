@@ -74,7 +74,7 @@ type Options struct {
 	AvgMsec      int    // window length (fio's --log-avg-msec); 0 = flushtrace.DefaultWindowMs
 	OffsetMs     int    // fio's ramp_time: completions before it are left out of the summary
 	BufferKB     int    // per-CPU ring buffer; 0 = 16384
-	Mode         Mode   // how to collect; "" = ModeAuto
+	Mode         Mode   // how to collect; "" = ModeFtrace (the flag defaults to auto)
 }
 
 // DeviceSummary is what was traced on one device and its phase statistics.
@@ -156,13 +156,15 @@ type Result struct {
 	Windows []Window
 }
 
-// Session is one running I/O latency trace of a set of devices.
-type Session struct {
+// ftraceSession is one running ftrace I/O latency trace of a set of devices.
+type ftraceSession struct {
 	inst    *flushtrace.Instance
 	fan     *fanout
 	devices []DeviceSummary // in the given order; Stats and Unpaired filled at Stop
 	traced  map[string]*device
 	summary Summary
+	// modeNote says why the ftrace collector runs when another was asked for.
+	modeNote string
 }
 
 const (
@@ -182,10 +184,7 @@ const (
 // tracepoints for a bio-based node (no request events by construction), else
 // the block_rq_* tracepoints. A device that cannot be traced is listed with a
 // Note; when none can, the error wraps ErrUnsupported with the reasons.
-func Start(devices []string, opts Options) (*Session, error) {
-	if opts.Mode == ModeEBPF {
-		return nil, errors.New("the ebpf I/O trace mode is not available in this build")
-	}
+func startFtrace(devices []string, opts Options) (*ftraceSession, error) {
 	root, err := flushtrace.FindTracefs(flushtrace.Options{TracefsRoot: opts.TracefsRoot})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnsupported, err)
@@ -196,7 +195,7 @@ func Start(devices []string, opts Options) (*Session, error) {
 	hasMerge := hasInsert && flushtrace.HasEvents(root, evBlockMerge)
 	hasBio := flushtrace.HasEvents(root, evBioQueue, evBioDone)
 
-	s := &Session{traced: map[string]*device{}}
+	s := &ftraceSession{traced: map[string]*device{}}
 	var traced []*device
 	var reasons []string
 	var anyNVMe, anyBlock bool
@@ -330,7 +329,7 @@ func Start(devices []string, opts Options) (*Session, error) {
 
 // Stop ends tracing and returns the result. The Result is valid even when
 // the error is non-nil; the error then describes a cleanup problem.
-func (s *Session) Stop() (Result, error) {
+func (s *ftraceSession) Stop() (Result, error) {
 	err := s.inst.Stop()
 	var res Result
 	var stats map[string]map[Kind]map[Dir]Stats
@@ -349,7 +348,7 @@ func (s *Session) Stop() (Result, error) {
 		res.Summary = sum
 	})
 	res.Summary.Overrun = s.inst.Overrun()
-	res.Summary.Mode = ModeFtrace
+	res.Summary.Mode, res.Summary.ModeNote = ModeFtrace, s.modeNote
 	res.Summary.Reader, res.Summary.ReaderNote = s.inst.Reader(), s.inst.ReaderNote()
 	res.Summary.Clock, res.Summary.Late = s.inst.Clock(), s.inst.Late()
 	res.Summary.Kernel = s.inst.Kernel()
@@ -360,11 +359,11 @@ func (s *Session) Stop() (Result, error) {
 
 // MarkStart moves time zero to now, e.g. once a start gate opens: windows
 // count from the last start marker (flushtrace.Instance.MarkStart).
-func (s *Session) MarkStart() { s.inst.MarkStart() }
+func (s *ftraceSession) MarkStart() { s.inst.MarkStart() }
 
 // Close ends the trace quickly without a result, for a force quit; a later
 // Stop still returns what was collected.
-func (s *Session) Close() error {
+func (s *ftraceSession) Close() error {
 	err := s.inst.Close()
 	s.inst.Locked(s.fan.stop)
 	return err
