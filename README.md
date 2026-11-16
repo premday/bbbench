@@ -143,6 +143,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--dmi-path`, `--sys-block` — override `/sys/class/dmi/id` and `/sys/block` (for tests)
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--no-io-trace` — do not trace read and write latency from kernel trace events (see [I/O latency tracing](#io-latency-tracing))
+- `--io-trace auto|ebpf|ftrace` — how read and write latency is collected: `ebpf` times requests in the kernel (no events lost at high IOPS, root + BTF, amd64/arm64), `ftrace` reads every trace event, `auto` (default) uses eBPF when it loads and says why when it falls back (see [I/O latency tracing](#io-latency-tracing))
 - `--trace-buffer-mb N` — MiB of kernel ring buffer shared by the concurrent trace sessions (default 1024; see [I/O latency tracing](#io-latency-tracing), "Cost and opt-out"); raise it when the trace reports events lost in the ring buffer
 - `--config` — path to config file
 - `--dist` — override dist path
@@ -442,7 +443,30 @@ the time spent before it. It is **on by default** and needs root and a mounted
 tracefs; if tracing is unavailable the phase still runs, a warning is printed
 once and the phase carries a note saying why. Use `--no-io-trace` to turn it
 off. The terminal prints a line such as
-`ftrace device (nvme): read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only, with its source, `nvme` or `block`; the rest is in the log and the web UI). For an md or dm target, which has no request events of its own, it gives the node's bio-level latency and then the members' device mean over all their requests, e.g. `ftrace bio (md0, block_bio_queue -> block_bio_complete): read avg 310.2 us p99 920.0 us, write avg 640.8 us p99 1800.0 us; 4 members traced (block), members' device read avg 95.2 us, write avg 130.4 us`; without the bio tracepoints it says `target bio-based` and gives the members' mean only.
+`ftrace device (nvme): read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only, with its source, `nvme` or `block`; the rest is in the log and the web UI).
+
+**Collectors (`--io-trace`).** The events can be read two ways, and the summary
+line, the `_iolat.1.log` header (`mode=`, and `mode_note=` when a requested
+mode was not used) and the run log say which one produced a result.
+`ftrace` copies every trace event out of the kernel (per-CPU ring buffers,
+read, merged and paired by bbbench): exact per-I/O pairing of NVMe commands and
+percentiles, but one reader pipeline that handles roughly 0.3-0.85 M events per
+second, so at about 1 M IOPS on several drives most events overrun the ring
+buffers. `ebpf` keeps the work in the kernel: a small program stores each
+request's (or bio's) start under its pointer, and its completion adds the
+latency to a log-bucketed histogram per device, kind and direction;
+bbbench reads the histograms once per `--log-avg-msec` window. Nothing is
+copied per I/O, so nothing is lost to a ring buffer at any IOPS; the mean and
+count are exact, the percentiles keep the same 1.6 % bound, and min and max
+are the edges of the lowest and highest bucket used. The eBPF mode times NVMe
+devices from `block_rq_issue` (not `nvme_setup_cmd`), needs root, a kernel with
+BTF and the block tracepoints, and is built for amd64 and arm64; `auto` (the
+default) falls back to ftrace otherwise. Start map overflow (a very deep queue)
+is counted and shown as unpaired. **The eBPF mode has not been run on a real
+kernel yet:** if the program is rejected, the run continues on ftrace and the
+reason is in the run log.
+
+Every run also writes everything it prints to `<output>/run_<id>.log`. For an md or dm target, which has no request events of its own, it gives the node's bio-level latency and then the members' device mean over all their requests, e.g. `ftrace bio (md0, block_bio_queue -> block_bio_complete): read avg 310.2 us p99 920.0 us, write avg 640.8 us p99 1800.0 us; 4 members traced (block), members' device read avg 95.2 us, write avg 130.4 us`; without the bio tracepoints it says `target bio-based` and gives the members' mean only.
 
 **What is measured** (reads and writes only; Flush, discard and admin commands
 are left out, Flush has its own tracing above):

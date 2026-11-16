@@ -62,3 +62,32 @@ func TestSourceLineNamesTheMode(t *testing.T) {
 		t.Errorf("no mode: %q", got)
 	}
 }
+
+func TestEBPFLogRoundTripAndNote(t *testing.T) {
+	r := Result{Summary: Summary{AvgMsec: 1000, Mode: ModeEBPF, EBPF: &EBPFInfo{
+		Started: 100, Completed: 98, NoStart: 3, Full: 7, Programs: []string{"block_rq_issue", "block_rq_complete"}}}}
+	r.Summary.Fill()
+	var b bytes.Buffer
+	if err := WriteLog(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "# ebpf started=100 completed=98 no_start=3 full=7 programs=block_rq_issue,block_rq_complete\n") {
+		t.Errorf("log lacks the ebpf line:\n%s", b.String())
+	}
+	got, err := ReadLog(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Summary.EBPF == nil || got.Summary.EBPF.Full != 7 ||
+		strings.Join(got.Summary.EBPF.Programs, ",") != "block_rq_issue,block_rq_complete" {
+		t.Errorf("ebpf info %+v", got.Summary.EBPF)
+	}
+	if !strings.Contains(got.Summary.KernelNote, "start map") || !strings.Contains(got.Summary.KernelNote, "7") {
+		t.Errorf("kernel note %q does not say the start map overflowed", got.Summary.KernelNote)
+	}
+	clean := Summary{Mode: ModeEBPF, EBPF: &EBPFInfo{Started: 5, Completed: 5}}
+	clean.Fill()
+	if clean.KernelNote != "" {
+		t.Errorf("note %q without loss", clean.KernelNote)
+	}
+}

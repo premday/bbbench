@@ -428,6 +428,9 @@ func (s *Summary) kernel() *flushtrace.KernelInfo {
 // its overrun against bbbench's count. "" when nothing was recorded or all
 // agree.
 func (s *Summary) kernelNote() string {
+	if e := s.EBPF; e != nil && e.Full > 0 {
+		return fmt.Sprintf("the eBPF start map filled up: %d requests were not timed", e.Full)
+	}
 	k := s.Kernel
 	if k == nil {
 		return ""

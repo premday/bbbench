@@ -85,6 +85,9 @@ func WriteLog(w io.Writer, r Result) error {
 				c.CPU, c.Entries, c.Overrun, c.CommitOverrun, c.Bytes, c.Dropped, c.Read)
 		}
 	}
+	if e := s.EBPF; e != nil {
+		fmt.Fprintf(bw, "# ebpf started=%d completed=%d no_start=%d full=%d programs=%s\n", e.Started, e.Completed, e.NoStart, e.Full, strings.Join(e.Programs, ","))
+	}
 	for _, d := range s.Devices {
 		fmt.Fprintf(bw, "# device %s", d.Name)
 		if d.Source != "" {
@@ -188,6 +191,29 @@ func ReadLog(rd io.Reader) (Result, error) {
 			}
 			k := res.Summary.kernel()
 			k.Filters = append(k.Filters, fs)
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "# ebpf "); ok {
+			e := &EBPFInfo{}
+			for _, kv := range strings.Fields(rest) {
+				k, v, _ := strings.Cut(kv, "=")
+				n, _ := strconv.ParseUint(v, 10, 64)
+				switch k {
+				case "started":
+					e.Started = n
+				case "completed":
+					e.Completed = n
+				case "no_start":
+					e.NoStart = n
+				case "full":
+					e.Full = n
+				case "programs":
+					if v != "" {
+						e.Programs = strings.Split(v, ",")
+					}
+				}
+			}
+			res.Summary.EBPF = e
 			continue
 		}
 		if rest, ok := strings.CutPrefix(line, "# kernel_cpu "); ok {
