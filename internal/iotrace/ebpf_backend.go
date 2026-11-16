@@ -48,7 +48,7 @@ type ebpfSession struct {
 
 // openEBPF loads the program and starts the session; it is the real startEBPF.
 func openEBPF(devices []string, opts Options) (Session, error) {
-	prog, err := kbpf.Open()
+	prog, err := kbpf.Open(len(devices))
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +185,9 @@ func (s *ebpfSession) sample(endMs int64) error {
 }
 
 func (s *ebpfSession) sampleLocked(endMs int64) error {
+	if s.closed {
+		return nil
+	}
 	snap, err := s.prog.Read()
 	if err != nil {
 		return fmt.Errorf("read the eBPF histograms: %w", err)
@@ -273,8 +276,10 @@ func (s *ebpfSession) Stop() (Result, error) {
 	defer s.mu.Unlock()
 	if !s.stopped {
 		s.stopped = true
-		if err := s.sampleLocked(s.lastEnd + s.windowMs); err != nil && s.err == nil {
-			s.err = err
+		if !s.closed { // after Close the program is gone: keep what was collected
+			if err := s.sampleLocked(s.lastEnd + s.windowMs); err != nil && s.err == nil {
+				s.err = err
+			}
 		}
 	}
 	var res Result
@@ -313,6 +318,14 @@ func (s *ebpfSession) Stop() (Result, error) {
 	}
 	sum.Fill()
 	res.Summary = sum
+	// Detach now: an attached program times every I/O of the machine until it
+	// is closed, and the next phase would stack another one on top.
+	if !s.closed {
+		s.closed = true
+		if err := s.prog.Close(); err != nil && s.err == nil {
+			s.err = err
+		}
+	}
 	return res, s.err
 }
 

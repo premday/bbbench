@@ -462,7 +462,14 @@ are the edges of the lowest and highest bucket used. The eBPF mode times NVMe
 devices from `block_rq_issue` (not `nvme_setup_cmd`), needs root, a kernel with
 BTF and the block tracepoints, and is built for amd64 and arm64; `auto` (the
 default) falls back to ftrace otherwise. Start map overflow (a very deep queue)
-is counted and shown as unpaired. **The eBPF mode has not been run on a real
+is counted and shown as unpaired. Only reads and writes that carry data are
+timed (Flushes and discards are not: the Flush phases have their own
+trace), a request that completes in several parts is timed once, at its last
+part, and the disk is taken from the request queue, so it works with
+`queue/iostats` at 0. Each session holds about 18 KB x 2 x 2 histograms per
+traced device and CPU (a device timed through requests has a device and a
+block-layer series) and a 262144-entry start map, and detaches when its phase
+ends. **The eBPF mode has not been run on a real
 kernel yet:** if the program is rejected, the run continues on ftrace and the
 reason is in the run log.
 

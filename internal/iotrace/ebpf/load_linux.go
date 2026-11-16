@@ -28,12 +28,13 @@ type prog struct {
 	links    []link.Link
 	attached []string
 	devs     int
+	sources  map[int]Source // device index -> how it is timed
 }
 
-// Open loads the program against the running kernel's BTF and attaches it.
+// Open loads the program (histograms for ndevs devices, at most MaxDevs) against the running kernel's BTF and attaches it.
 // Without root, BTF or the tracepoints it fails with a reason; nothing is
 // left attached then.
-func Open() (Program, error) {
+func Open(ndevs int) (Program, error) {
 	spec, err := loadIolat()
 	if err != nil {
 		return nil, fmt.Errorf("load ebpf object: %w", err)
@@ -45,6 +46,8 @@ func Open() (Program, error) {
 	if err := selectPrograms(spec, kspec); err != nil {
 		return nil, err
 	}
+	// The per-CPU histograms are 18 KB each: only as many as the devices need.
+	spec.Maps["hists"].MaxEntries = uint32(min(max(ndevs, 1), MaxDevs) * Kinds * 2)
 	// Older kernels count BPF memory against RLIMIT_MEMLOCK.
 	_ = rlimit.RemoveMemlock()
 	coll, err := cebpf.NewCollectionWithOptions(spec, cebpf.CollectionOptions{})
@@ -142,19 +145,28 @@ func (p *prog) SetDevices(specs []DevSpec) error {
 			return fmt.Errorf("set device %d: %w", d.Dev, err)
 		}
 	}
-	p.devs = len(specs)
+	p.devs = 0
+	p.sources = map[int]Source{}
 	for _, d := range specs {
 		p.devs = max(p.devs, d.Idx+1)
+		p.sources[d.Idx] = d.Source
 	}
 	return nil
 }
 
 func (p *prog) Read() (Snapshot, error) {
 	snap := Snapshot{Slots: map[SlotKey]*Slot{}}
+	if p.coll == nil {
+		return Snapshot{}, errors.New("the eBPF program is closed")
+	}
 	hists := p.coll.Maps["hists"]
 	per := make([]iolatHist, cebpf.MustPossibleCPU())
 	for idx := 0; idx < p.devs; idx++ {
 		for kind := 0; kind < Kinds; kind++ {
+			// A request-timed device has no bio histogram and the reverse.
+			if (p.sources[idx] == SourceBio) != (kind == KindBio) {
+				continue
+			}
 			for w := 0; w < 2; w++ {
 				slot := uint32((idx*Kinds+kind)*2 + w)
 				if err := hists.Lookup(slot, &per); err != nil {

@@ -98,3 +98,20 @@ func TestRunLogUnwritableDirIsAnError(t *testing.T) {
 		t.Fatal("want an error for an unwritable directory")
 	}
 }
+
+func TestCloseRunLogFlushesBeforeExit(t *testing.T) {
+	dir := t.TempDir()
+	_, _, restore := swapStd(t)
+	_, path, err := startRunLog(dir, "run_44", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("Force quitting...")
+	closeRunLog() // what the force-quit path calls before exit
+	closeRunLog() // nothing left to close
+	restore()
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "Force quitting...") {
+		t.Errorf("run log lost the last line: %q", data)
+	}
+}

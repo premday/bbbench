@@ -24,21 +24,36 @@ enum { ST_STARTED, ST_COMPLETED, ST_NOSTART, ST_FULL, ST_MAX };
 
 typedef __u32 dev_t;
 
+struct gendisk;
+
 struct block_device {
 	dev_t bd_dev;
+	struct gendisk *bd_disk;
+} __attribute__((preserve_access_index));
+
+struct gendisk {
+	struct block_device *part0;
+} __attribute__((preserve_access_index));
+
+struct request_queue {
+	struct gendisk *disk;
 } __attribute__((preserve_access_index));
 
 struct request {
-	struct block_device *part;
+	struct request_queue *q;
 	unsigned int cmd_flags;
+	unsigned int __data_len;
+} __attribute__((preserve_access_index));
+
+struct bvec_iter {
+	unsigned int bi_size;
 } __attribute__((preserve_access_index));
 
 struct bio {
 	struct block_device *bi_bdev;
 	unsigned int bi_opf;
+	struct bvec_iter bi_iter;
 } __attribute__((preserve_access_index));
-
-struct request_queue;
 
 struct devinfo {
 	__u32 idx;
@@ -118,16 +133,29 @@ static __always_inline void record(__u32 slot, __u64 ns)
 	h->sum += ns;
 }
 
+// The whole disk's number: a request's part is set only while the disk keeps
+// I/O statistics (queue/iostats), so it is taken from the queue's disk; a
+// bio's bdev may be a partition. NULL links read as 0, which is in no map.
+static __always_inline dev_t rq_dev(struct request *rq)
+{
+	return rq->q->disk->part0->bd_dev;
+}
+
+static __always_inline dev_t bio_dev(struct bio *bio)
+{
+	return bio->bi_bdev->bd_disk->part0->bd_dev;
+}
+
 // slot_of is the histogram of (device, kind, direction).
 static __always_inline __u32 slot_of(__u32 idx, __u32 kind, __u32 write)
 {
 	return (idx * KINDS + kind) * 2 + write;
 }
 
-static __always_inline int begin(__u64 key, dev_t dev, unsigned int opf, int bio, int issue)
+static __always_inline int begin(__u64 key, dev_t dev, unsigned int opf, unsigned int bytes, int bio, int issue)
 {
 	unsigned int op = opf & 0xff;
-	if (op > 1) // reads and writes only
+	if (op > 1 || bytes == 0) // reads and writes that carry data (not flushes)
 		return 0;
 	struct devinfo *di = bpf_map_lookup_elem(&devs, &dev);
 	if (!di || (di->source == SRC_BIO) != bio)
@@ -158,13 +186,13 @@ static __always_inline int begin(__u64 key, dev_t dev, unsigned int opf, int bio
 SEC("tp_btf/block_rq_insert")
 int BPF_PROG(rq_insert, struct request *rq)
 {
-	return begin((__u64)rq, rq->part->bd_dev, rq->cmd_flags, 0, 0);
+	return begin((__u64)rq, rq_dev(rq), rq->cmd_flags, rq->__data_len, 0, 0);
 }
 
 SEC("tp_btf/block_rq_issue")
 int BPF_PROG(rq_issue, struct request *rq)
 {
-	return begin((__u64)rq, rq->part->bd_dev, rq->cmd_flags, 0, 1);
+	return begin((__u64)rq, rq_dev(rq), rq->cmd_flags, rq->__data_len, 0, 1);
 }
 
 SEC("tp_btf/block_rq_complete")
@@ -173,11 +201,16 @@ int BPF_PROG(rq_complete, struct request *rq, int error, unsigned int nr_bytes)
 	__u64 key = (__u64)rq;
 	struct start *s = bpf_map_lookup_elem(&starts, &key);
 	if (!s) {
-		dev_t dev = rq->part->bd_dev;
-		if (bpf_map_lookup_elem(&devs, &dev))
+		// A read or write of a traced disk completing without a stored
+		// start: it began before the program attached. Flushes, discards
+		// and the other bookkeeping completions are not counted.
+		dev_t dev = rq_dev(rq);
+		if ((rq->cmd_flags & 0xff) <= 1 && rq->__data_len > 0 && bpf_map_lookup_elem(&devs, &dev))
 			stat(ST_NOSTART);
 		return 0;
 	}
+	if (nr_bytes < rq->__data_len) // partial completion: the request goes on
+		return 0;
 	__u64 now = bpf_ktime_get_ns();
 	__u32 write = (rq->cmd_flags & 0xff) == 1;
 	__u32 base = s->slot_base;
@@ -193,7 +226,7 @@ int BPF_PROG(rq_complete, struct request *rq, int error, unsigned int nr_bytes)
 SEC("tp_btf/block_bio_queue")
 int BPF_PROG(bio_queue, struct bio *bio)
 {
-	return begin((__u64)bio, bio->bi_bdev->bd_dev, bio->bi_opf, 1, 0);
+	return begin((__u64)bio, bio_dev(bio), bio->bi_opf, bio->bi_iter.bi_size, 1, 0);
 }
 
 // The tracepoint has a request_queue argument first (kernels up to at least
@@ -203,12 +236,8 @@ int BPF_PROG(bio_complete, struct request_queue *q, struct bio *bio)
 {
 	__u64 key = (__u64)bio;
 	struct start *s = bpf_map_lookup_elem(&starts, &key);
-	if (!s) {
-		dev_t dev = bio->bi_bdev->bd_dev;
-		if (bpf_map_lookup_elem(&devs, &dev))
-			stat(ST_NOSTART);
+	if (!s) // flushes, bios in flight at attach: expected, not counted
 		return 0;
-	}
 	__u64 now = bpf_ktime_get_ns();
 	__u32 write = (bio->bi_opf & 0xff) == 1;
 	__u32 base = s->slot_base;
@@ -224,12 +253,8 @@ int BPF_PROG(bio_complete1, struct bio *bio)
 {
 	__u64 key = (__u64)bio;
 	struct start *s = bpf_map_lookup_elem(&starts, &key);
-	if (!s) {
-		dev_t dev = bio->bi_bdev->bd_dev;
-		if (bpf_map_lookup_elem(&devs, &dev))
-			stat(ST_NOSTART);
+	if (!s) // flushes, bios in flight at attach: expected, not counted
 		return 0;
-	}
 	__u64 now = bpf_ktime_get_ns();
 	__u32 write = (bio->bi_opf & 0xff) == 1;
 	__u32 base = s->slot_base;

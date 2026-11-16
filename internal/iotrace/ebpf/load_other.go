@@ -8,6 +8,6 @@ import (
 )
 
 // Open reports that this platform has no eBPF collector.
-func Open() (Program, error) {
+func Open(ndevs int) (Program, error) {
 	return nil, fmt.Errorf("%w on %s/%s", ErrUnsupported, runtime.GOOS, runtime.GOARCH)
 }

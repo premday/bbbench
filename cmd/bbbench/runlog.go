@@ -86,6 +86,11 @@ func startRunLog(outDir, runID, header string) (stop func(), path string, err er
 	var once sync.Once
 	stop = func() {
 		once.Do(func() {
+			runLogMu.Lock()
+			if activeRunLogStop != nil {
+				activeRunLogStop = nil
+			}
+			runLogMu.Unlock()
 			os.Stdout, os.Stderr = origOut, origErr
 			logger = prevLogger
 			slog.SetDefault(prevDefault)
@@ -100,7 +105,27 @@ func startRunLog(outDir, runID, header string) (stop func(), path string, err er
 			_ = f.Close()
 		})
 	}
+	runLogMu.Lock()
+	activeRunLogStop = stop
+	runLogMu.Unlock()
 	return stop, path, nil
+}
+
+var (
+	runLogMu         sync.Mutex
+	activeRunLogStop func()
+)
+
+// closeRunLog ends the run log in progress, if any: what is still in the
+// pipes reaches the file and the terminal. A force quit calls it before
+// exiting the process, which would otherwise drop the end of the log.
+func closeRunLog() {
+	runLogMu.Lock()
+	stop := activeRunLogStop
+	runLogMu.Unlock()
+	if stop != nil {
+		stop()
+	}
 }
 
 // runLogHeader is the first line of a run log: what produced it.

@@ -16,12 +16,19 @@ type fakeProg struct {
 	attached  []string
 	readErr   error
 	closeCall int
+	// readAfterClose is set by a test once the program is closed; a Read
+	// after that records panicked (the real program would dereference nil).
+	readAfterClose bool
+	panicked       bool
 }
 
 func (f *fakeProg) SetDevices(s []kbpf.DevSpec) error { f.specs = s; return nil }
 func (f *fakeProg) Attached() []string                { return f.attached }
 func (f *fakeProg) Close() error                      { f.closeCall++; return nil }
 func (f *fakeProg) Read() (kbpf.Snapshot, error) {
+	if f.readAfterClose {
+		f.panicked = true
+	}
 	if f.readErr != nil {
 		return kbpf.Snapshot{}, f.readErr
 	}
@@ -314,4 +321,35 @@ func TestEBPFLoopSamplesOncePerWindow(t *testing.T) {
 			t.Errorf("window end %d is not a multiple of the window", e)
 		}
 	}
+}
+
+func TestEBPFStopDetachesTheProgram(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"sdb": "8:16"})
+	fp := &fakeProg{snaps: []kbpf.Snapshot{snap(nil)}, attached: allAttached}
+	s, _ := newEBPFSession(fp, []string{"sdb"}, Options{SysBlock: sys})
+	if _, err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if fp.closeCall != 1 {
+		t.Errorf("the program was closed %d times by Stop, want 1 (it stays attached otherwise)", fp.closeCall)
+	}
+}
+
+func TestEBPFStopAfterCloseKeepsWhatWasCollected(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"sdb": "8:16"})
+	k := kbpf.SlotKey{Idx: 0, Kind: kbpf.KindDevice}
+	cum := map[kbpf.SlotKey]*kbpf.Slot{k: lats(nil, 1000, 1000)}
+	fp := &fakeProg{snaps: []kbpf.Snapshot{snap(map[kbpf.SlotKey]*kbpf.Slot{}), snap(cum)}, attached: allAttached}
+	s, _ := newEBPFSession(fp, []string{"sdb"}, Options{SysBlock: sys, AvgMsec: 1000})
+	_ = s.sample(1000)
+	_ = s.Close()
+	fp.readAfterClose = true // a Read now would be a nil dereference in the real program
+	res, err := s.Stop()
+	if err != nil {
+		t.Errorf("Stop after Close: %v", err)
+	}
+	if fp.panicked {
+		t.Fatal("Stop read the program after Close")
+	}
+	wantBuckets(t, dev(t, res.Summary, "sdb"), KindDevice, DirRead, 2, 1000, 1000, 1000)
 }

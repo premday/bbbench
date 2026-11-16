@@ -347,6 +347,7 @@ func (ec *ExecutionCoordinator) onSecondSignal(exit func(int)) {
 	}
 	fmt.Println("\nForce quitting...")
 	ec.cleanup()
+	closeRunLog()
 	exit(exitCodeSIGINT)
 }
 
