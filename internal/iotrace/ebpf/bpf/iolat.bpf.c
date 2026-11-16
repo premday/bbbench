@@ -63,6 +63,8 @@ struct devinfo {
 struct start {
 	__u64 ins_ts; // block_rq_insert (or bio queue); 0 when issued directly
 	__u64 iss_ts; // block_rq_issue; 0 for a bio
+	__u64 nvme_ts; // nvme_setup_cmd; 0 when the device is not NVMe
+	__u64 nvme_end; // nvme_complete_rq, which fires before block_rq_complete
 	__u32 slot_base;
 	__u32 source;
 };
@@ -152,7 +154,12 @@ static __always_inline __u32 slot_of(__u32 idx, __u32 kind, __u32 write)
 	return (idx * KINDS + kind) * 2 + write;
 }
 
-static __always_inline int begin(__u64 key, dev_t dev, unsigned int opf, unsigned int bytes, int bio, int issue)
+enum { AT_INSERT, AT_ISSUE, AT_NVME };
+
+// begin stores or updates the start of a request or bio. nvme_setup_cmd fires
+// before block_rq_issue (the driver builds the command, then starts the
+// request), so it may be the first event of a request.
+static __always_inline int begin(__u64 key, dev_t dev, unsigned int opf, unsigned int bytes, int bio, int at)
 {
 	unsigned int op = opf & 0xff;
 	if (op > 1 || bytes == 0) // reads and writes that carry data (not flushes)
@@ -163,15 +170,20 @@ static __always_inline int begin(__u64 key, dev_t dev, unsigned int opf, unsigne
 	__u64 now = bpf_ktime_get_ns();
 	struct start *s = bpf_map_lookup_elem(&starts, &key);
 	if (s) {
-		if (issue)
-			s->iss_ts = now; // a requeue restarts the device time
-		else
+		if (at == AT_NVME) {
+			s->nvme_ts = now; // a retry restarts the device time
+			s->nvme_end = 0;
+		} else if (at == AT_ISSUE) {
+			s->iss_ts = now;
+		} else {
 			s->ins_ts = now;
+		}
 		return 0;
 	}
 	struct start n = {
-		.ins_ts = issue ? 0 : now,
-		.iss_ts = issue ? now : 0,
+		.ins_ts = at == AT_INSERT ? now : 0,
+		.iss_ts = at == AT_ISSUE ? now : 0,
+		.nvme_ts = at == AT_NVME ? now : 0,
 		.slot_base = slot_of(di->idx, 0, 0),
 		.source = di->source,
 	};
@@ -186,13 +198,32 @@ static __always_inline int begin(__u64 key, dev_t dev, unsigned int opf, unsigne
 SEC("tp_btf/block_rq_insert")
 int BPF_PROG(rq_insert, struct request *rq)
 {
-	return begin((__u64)rq, rq_dev(rq), rq->cmd_flags, rq->__data_len, 0, 0);
+	return begin((__u64)rq, rq_dev(rq), rq->cmd_flags, rq->__data_len, 0, AT_INSERT);
 }
 
 SEC("tp_btf/block_rq_issue")
 int BPF_PROG(rq_issue, struct request *rq)
 {
-	return begin((__u64)rq, rq_dev(rq), rq->cmd_flags, rq->__data_len, 0, 1);
+	return begin((__u64)rq, rq_dev(rq), rq->cmd_flags, rq->__data_len, 0, AT_ISSUE);
+}
+
+// The NVMe tracepoints are defined in the nvme-core module: the loader finds
+// them in the module's BTF, and drops these two programs when there are none
+// (the device is then timed from block_rq_issue).
+SEC("tp_btf/nvme_setup_cmd")
+int BPF_PROG(nvme_setup, struct request *rq)
+{
+	return begin((__u64)rq, rq_dev(rq), rq->cmd_flags, rq->__data_len, 0, AT_NVME);
+}
+
+SEC("tp_btf/nvme_complete_rq")
+int BPF_PROG(nvme_done, struct request *rq)
+{
+	__u64 key = (__u64)rq;
+	struct start *s = bpf_map_lookup_elem(&starts, &key);
+	if (s && s->nvme_ts)
+		s->nvme_end = bpf_ktime_get_ns();
+	return 0;
 }
 
 SEC("tp_btf/block_rq_complete")
@@ -216,8 +247,15 @@ int BPF_PROG(rq_complete, struct request *rq, int error, unsigned int nr_bytes)
 	__u32 base = s->slot_base;
 	__u64 iss = s->iss_ts ? s->iss_ts : s->ins_ts;
 	__u64 ins = s->ins_ts ? s->ins_ts : s->iss_ts;
+	if (!ins)
+		ins = s->nvme_ts;
+	__u64 dev_ns = now - iss;
+	if (s->nvme_ts && s->nvme_end >= s->nvme_ts) // exact NVMe command time
+		dev_ns = s->nvme_end - s->nvme_ts;
+	else if (!iss)
+		dev_ns = now - s->nvme_ts;
 	bpf_map_delete_elem(&starts, &key);
-	record(base + KIND_DEVICE * 2 + write, now - iss);
+	record(base + KIND_DEVICE * 2 + write, dev_ns);
 	record(base + KIND_BLOCKLAYER * 2 + write, now - ins);
 	stat(ST_COMPLETED);
 	return 0;

@@ -12,11 +12,16 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
+// nvmeModule defines the nvme_setup_cmd and nvme_complete_rq tracepoints.
+const nvmeModule = "nvme_core"
+
 // program names in bpf/iolat.bpf.c and the tracepoint each attaches to.
 var progTracepoints = map[string]string{
 	"rq_insert":     "block_rq_insert",
 	"rq_issue":      "block_rq_issue",
 	"rq_complete":   "block_rq_complete",
+	"nvme_setup":    "nvme_setup_cmd",   // (void *, request *, nvme_command *), nvme-core module
+	"nvme_done":     "nvme_complete_rq", // (void *, request *), nvme-core module
 	"bio_queue":     "block_bio_queue",
 	"bio_complete":  "block_bio_complete", // (void *, request_queue *, bio *)
 	"bio_complete1": "block_bio_complete", // (void *, bio *)
@@ -77,16 +82,31 @@ func Open(ndevs int) (Program, error) {
 func selectPrograms(spec *cebpf.CollectionSpec, kspec *btf.Spec) error {
 	have := func(tp string) (btf.Type, bool) {
 		var td *btf.Typedef
-		if err := kspec.TypeByName("btf_trace_"+tp, &td); err != nil {
-			return nil, false
+		if err := kspec.TypeByName("btf_trace_"+tp, &td); err == nil {
+			return td, true
 		}
-		return td, true
+		if tp == "nvme_setup_cmd" || tp == "nvme_complete_rq" {
+			// Defined by the nvme-core module (not built in on most distributions).
+			if mspec, err := btf.LoadKernelModuleSpec(nvmeModule); err == nil {
+				if err := mspec.TypeByName("btf_trace_"+tp, &td); err == nil {
+					return td, true
+				}
+			}
+		}
+		return nil, false
 	}
+	// The two NVMe programs go together: one alone cannot time a command.
+	_, setup := have("nvme_setup_cmd")
+	_, done := have("nvme_complete_rq")
+	nvme := setup && done
 	for name, tp := range progTracepoints {
 		if _, ok := spec.Programs[name]; !ok {
 			return fmt.Errorf("ebpf object has no program %s", name)
 		}
 		td, ok := have(tp)
+		if (tp == "nvme_setup_cmd" || tp == "nvme_complete_rq") && !nvme {
+			ok = false
+		}
 		if !ok {
 			if tp == "block_rq_issue" || tp == "block_rq_complete" {
 				return fmt.Errorf("%w: the kernel has no %s tracepoint in its BTF", ErrUnsupported, tp)

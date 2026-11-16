@@ -65,9 +65,10 @@ func openEBPF(devices []string, opts Options) (Session, error) {
 // It reads nothing in the background: startLoop does that, tests call sample.
 func newEBPFSession(prog kbpf.Program, devices []string, opts Options) (*ebpfSession, error) {
 	attached := prog.Attached()
-	hasInsert := false
+	hasInsert, hasNVMe := false, false
 	for _, a := range attached {
 		hasInsert = hasInsert || a == "block_rq_insert"
+		hasNVMe = hasNVMe || a == "nvme_setup_cmd"
 	}
 	s := &ebpfSession{
 		prog: prog, attached: attached, windowMs: int64(opts.AvgMsec), offsetMs: int64(opts.OffsetMs),
@@ -110,11 +111,15 @@ func newEBPFSession(prog kbpf.Program, devices []string, opts Options) (*ebpfSes
 			s.devices = append(s.devices, ds)
 			continue
 		}
-		if ds.Source == SourceBlock {
+		if ds.Source == SourceBlock && hasNVMe && strings.HasPrefix(name, "nvme") {
+			// The command's own time: nvme_setup_cmd -> nvme_complete_rq.
+			ds.Source = SourceNVMe
+			ds.Events = []string{"nvme_setup_cmd -> nvme_complete_rq"}
+		} else if ds.Source == SourceBlock {
 			ds.Events = []string{"block_rq_issue -> block_rq_complete"}
-			if ds.BlockLayer {
-				ds.Events = append(ds.Events, "block_rq_insert -> block_rq_complete")
-			}
+		}
+		if ds.BlockLayer {
+			ds.Events = append(ds.Events, "block_rq_insert -> block_rq_complete")
 		}
 		s.names = append(s.names, name)
 		s.devices = append(s.devices, ds)

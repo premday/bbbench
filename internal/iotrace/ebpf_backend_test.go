@@ -353,3 +353,31 @@ func TestEBPFStopAfterCloseKeepsWhatWasCollected(t *testing.T) {
 	}
 	wantBuckets(t, dev(t, res.Summary, "sdb"), KindDevice, DirRead, 2, 1000, 1000, 1000)
 }
+
+func TestEBPFTimesNVMeFromTheNVMeTracepointsWhenAttached(t *testing.T) {
+	sys := fakeSys(t, map[string]string{"nvme0n1": "259:0", "sdb": "8:16"})
+	withNVMe := append(append([]string{}, allAttached...), "nvme_setup_cmd", "nvme_complete_rq")
+	for _, c := range []struct {
+		name     string
+		attached []string
+		want     string // device source and first event of nvme0n1
+		event    string
+	}{
+		{"with", withNVMe, SourceNVMe, "nvme_setup_cmd -> nvme_complete_rq"},
+		{"without", allAttached, SourceBlock, "block_rq_issue -> block_rq_complete"},
+	} {
+		fp := &fakeProg{snaps: []kbpf.Snapshot{snap(nil)}, attached: c.attached}
+		s, err := newEBPFSession(fp, []string{"nvme0n1", "sdb"}, Options{SysBlock: sys})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, _ := s.Stop()
+		nv, sd := dev(t, res.Summary, "nvme0n1"), dev(t, res.Summary, "sdb")
+		if nv.Source != c.want || len(nv.Events) == 0 || nv.Events[0] != c.event {
+			t.Errorf("%s: nvme0n1 source %q events %v, want %q %q", c.name, nv.Source, nv.Events, c.want, c.event)
+		}
+		if sd.Source != SourceBlock || sd.Events[0] != "block_rq_issue -> block_rq_complete" {
+			t.Errorf("%s: sdb source %q events %v, want block", c.name, sd.Source, sd.Events)
+		}
+	}
+}

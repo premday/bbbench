@@ -30,6 +30,8 @@ type iolatStart struct {
 	_        structs.HostLayout
 	InsTs    uint64
 	IssTs    uint64
+	NvmeTs   uint64
+	NvmeEnd  uint64
 	SlotBase uint32
 	Source   uint32
 }
@@ -79,6 +81,8 @@ type iolatProgramSpecs struct {
 	BioComplete  *ebpf.ProgramSpec `ebpf:"bio_complete"`
 	BioComplete1 *ebpf.ProgramSpec `ebpf:"bio_complete1"`
 	BioQueue     *ebpf.ProgramSpec `ebpf:"bio_queue"`
+	NvmeDone     *ebpf.ProgramSpec `ebpf:"nvme_done"`
+	NvmeSetup    *ebpf.ProgramSpec `ebpf:"nvme_setup"`
 	RqComplete   *ebpf.ProgramSpec `ebpf:"rq_complete"`
 	RqInsert     *ebpf.ProgramSpec `ebpf:"rq_insert"`
 	RqIssue      *ebpf.ProgramSpec `ebpf:"rq_issue"`
@@ -148,6 +152,8 @@ type iolatPrograms struct {
 	BioComplete  *ebpf.Program `ebpf:"bio_complete"`
 	BioComplete1 *ebpf.Program `ebpf:"bio_complete1"`
 	BioQueue     *ebpf.Program `ebpf:"bio_queue"`
+	NvmeDone     *ebpf.Program `ebpf:"nvme_done"`
+	NvmeSetup    *ebpf.Program `ebpf:"nvme_setup"`
 	RqComplete   *ebpf.Program `ebpf:"rq_complete"`
 	RqInsert     *ebpf.Program `ebpf:"rq_insert"`
 	RqIssue      *ebpf.Program `ebpf:"rq_issue"`
@@ -158,6 +164,8 @@ func (p *iolatPrograms) Close() error {
 		p.BioComplete,
 		p.BioComplete1,
 		p.BioQueue,
+		p.NvmeDone,
+		p.NvmeSetup,
 		p.RqComplete,
 		p.RqInsert,
 		p.RqIssue,

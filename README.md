@@ -459,7 +459,10 @@ bbbench reads the histograms once per `--log-avg-msec` window. Nothing is
 copied per I/O, so nothing is lost to a ring buffer at any IOPS; the mean and
 count are exact, the percentiles keep the same 1.6 % bound, and min and max
 are the edges of the lowest and highest bucket used. The eBPF mode times NVMe
-devices from `block_rq_issue` (not `nvme_setup_cmd`), needs root, a kernel with
+namespaces from `nvme_setup_cmd` to `nvme_complete_rq` like ftrace (the two
+tracepoints are in the `nvme_core` module's BTF; without them, or with the
+module not loaded, the device is timed from `block_rq_issue` to
+`block_rq_complete` and the source line says so), needs root, a kernel with
 BTF and the block tracepoints, and is built for amd64 and arm64; `auto` (the
 default) falls back to ftrace otherwise. Start map overflow (a very deep queue)
 is counted and shown as unpaired. Only reads and writes that carry data are

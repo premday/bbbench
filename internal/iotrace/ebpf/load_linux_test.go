@@ -3,6 +3,7 @@
 package ebpf
 
 import (
+	"os"
 	"testing"
 
 	"github.com/cilium/ebpf/btf"
@@ -65,5 +66,33 @@ func TestSelectProgramsOnTheRunningKernel(t *testing.T) {
 	}
 	if bio != 1 {
 		t.Errorf("%d bio_complete variants kept, want exactly 1", bio)
+	}
+}
+
+// The NVMe tracepoints are in the nvme-core module's BTF: they are kept when
+// the module is loaded (or built in) and both go when it is not.
+func TestSelectProgramsKeepsTheNVMePairWhenTheModuleHasIt(t *testing.T) {
+	kspec, err := btf.LoadKernelSpec()
+	if err != nil {
+		t.Skipf("no kernel BTF: %v", err)
+	}
+	var td *btf.Typedef
+	have := kspec.TypeByName("btf_trace_nvme_setup_cmd", &td) == nil
+	if !have {
+		if _, err := os.Stat("/sys/kernel/btf/" + nvmeModule); err != nil {
+			t.Skip("no nvme-core BTF on this machine")
+		}
+	}
+	spec, err := loadIolat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := selectPrograms(spec, kspec); err != nil {
+		t.Skipf("this kernel lacks a required tracepoint: %v", err)
+	}
+	for _, name := range []string{"nvme_setup", "nvme_done"} {
+		if _, ok := spec.Programs[name]; !ok {
+			t.Errorf("program %s was dropped although nvme-core's BTF has its tracepoint", name)
+		}
 	}
 }
