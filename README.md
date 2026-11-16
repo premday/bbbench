@@ -143,7 +143,7 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--dmi-path`, `--sys-block` — override `/sys/class/dmi/id` and `/sys/block` (for tests)
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--no-io-trace` — do not trace read and write latency from kernel trace events (see [I/O latency tracing](#io-latency-tracing))
-- `--trace-buffer-mb N` — MiB of kernel ring buffer shared by the concurrent trace sessions (default 256; see [I/O latency tracing](#io-latency-tracing), "Cost and opt-out"); raise it when the trace reports events lost in the ring buffer
+- `--trace-buffer-mb N` — MiB of kernel ring buffer shared by the concurrent trace sessions (default 1024; see [I/O latency tracing](#io-latency-tracing), "Cost and opt-out"); raise it when the trace reports events lost in the ring buffer
 - `--config` — path to config file
 - `--dist` — override dist path
 
@@ -527,14 +527,14 @@ tracing off.
 **Cost and opt-out.** Tracing every read and write costs CPU, and at very high
 IOPS it can disturb the numbers it measures; this is why `--no-io-trace` exists.
 The kernel allocates the trace ring buffer per CPU. Concurrent sessions share a
-budget, `--trace-buffer-mb` (default 256 MiB): every drive running a phase at
+budget, `--trace-buffer-mb` (default 1024 MiB): every drive running a phase at
 the same time has one I/O latency session and, in a phase that fsyncs, one
 Flush session, each counting as one session. Each CPU of an I/O session gets
 budget / (sessions x CPUs), at least 1 MiB and at most 64 MiB; of a Flush
 session the same, at most 8 MiB. The kernel memory taken is sessions x CPUs x
 the per-CPU size: at most the budget, except at the 1 MiB floor, where it is
 exceeded rather than buffers shrunk further (one drive on 16 CPUs: 16 MiB per
-CPU, 256 MiB; one drive on 2 CPUs: 64 MiB per CPU, 128 MiB; 12 drives on 64
+CPU, 256 MiB; one drive on 64 CPUs: 16 MiB per CPU, 1 GiB; one drive on 2 CPUs: 64 MiB per CPU, 128 MiB; 12 drives on 64
 CPUs: the floor, 768 MiB in total, twice that in an fsync phase;
 `--trace-buffer-mb 4096` with one drive on 64 CPUs: 64 MiB per CPU, 4 GiB).
 The run prints the size it uses, e.g. `ftrace buffers: 256 MiB budget
@@ -582,7 +582,7 @@ it the controller filter is left out); how requeues, front merges that move the
 start sector and partial completions are paired (they are counted as unpaired or
 understate the block layer latency, see the package comment in
 `internal/iotrace/session.go`); the cost of the per-CPU ring buffers and the
-256 MiB default budget with its 1-64 MiB per-CPU range; and the effect of
+1024 MiB default budget with its 1-64 MiB per-CPU range; and the effect of
 tracing on the measured I/O. Run it first on a test machine, and use `--no-io-trace` if it
 disturbs a measurement.
 
