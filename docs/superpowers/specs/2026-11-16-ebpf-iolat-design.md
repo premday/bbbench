@@ -57,6 +57,17 @@ the histograms once per window.
 7. **Filtering:** devices to trace are passed in a map (dev number, kind,
    role), so non-target devices cost one lookup.
 
+8. **Mode is always logged.** The collector actually used (`ebpf` or `ftrace`),
+   the requested one and, on a fallback, the reason, appear in: the
+   `_iolat.1.log` header (`mode=`, `mode_note=`), `Summary.Mode`/`ModeNote`,
+   the terminal line printed once per phase, the graphs source line, and the
+   run log.
+9. **Run log file.** Everything a run prints (stdout, stderr, the slog output
+   of the internal packages) is also written to `<output>/run_<id>.log`
+   (the id of `run_<id>_summary.json`), started once the TUI has left the
+   terminal, with a header line (version, command line, requested and chosen
+   I/O trace mode). The file is complete when the run ends or is interrupted.
+
 ## Risks
 
 - **Not verifiable here**: no BPF run on this machine's kernel is the real
