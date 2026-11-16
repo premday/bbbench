@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"bbbench/internal/buildinfo"
+	"bbbench/internal/iotrace"
 )
 
 // runLogPath is the file a run's output is written to, next to its summary
@@ -106,7 +107,10 @@ func startRunLog(outDir, runID, header string) (stop func(), path string, err er
 func runLogHeader(opts runOptions) string {
 	ioTrace := "off"
 	if opts.IOTrace {
-		ioTrace = "on"
+		ioTrace = string(opts.IOTraceMode)
+		if ioTrace == "" {
+			ioTrace = string(iotrace.ModeAuto)
+		}
 	}
 	return fmt.Sprintf("bbbench %s, args: %s, mode: %s, io-trace: %s", buildinfo.Version, strings.Join(os.Args[1:], " "), opts.Mode, ioTrace)
 }

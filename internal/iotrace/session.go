@@ -74,6 +74,7 @@ type Options struct {
 	AvgMsec      int    // window length (fio's --log-avg-msec); 0 = flushtrace.DefaultWindowMs
 	OffsetMs     int    // fio's ramp_time: completions before it are left out of the summary
 	BufferKB     int    // per-CPU ring buffer; 0 = 16384
+	Mode         Mode   // how to collect; "" = ModeAuto
 }
 
 // DeviceSummary is what was traced on one device and its phase statistics.
@@ -112,6 +113,8 @@ type Summary struct {
 	// per-CPU pages) or flushtrace.ReaderText (trace_pipe); ReaderNote why
 	// the raw reader was not used, or what it could not decode. Clock is the
 	// instance's trace clock.
+	Mode       Mode   `json:"mode,omitempty"`      // the collector used: ModeEBPF or ModeFtrace
+	ModeNote   string `json:"mode_note,omitempty"` // why the requested mode was not used
 	Reader     string `json:"reader,omitempty"`
 	ReaderNote string `json:"reader_note,omitempty"`
 	Clock      string `json:"clock,omitempty"`
@@ -180,6 +183,9 @@ const (
 // the block_rq_* tracepoints. A device that cannot be traced is listed with a
 // Note; when none can, the error wraps ErrUnsupported with the reasons.
 func Start(devices []string, opts Options) (*Session, error) {
+	if opts.Mode == ModeEBPF {
+		return nil, errors.New("the ebpf I/O trace mode is not available in this build")
+	}
 	root, err := flushtrace.FindTracefs(flushtrace.Options{TracefsRoot: opts.TracefsRoot})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnsupported, err)
@@ -343,6 +349,7 @@ func (s *Session) Stop() (Result, error) {
 		res.Summary = sum
 	})
 	res.Summary.Overrun = s.inst.Overrun()
+	res.Summary.Mode = ModeFtrace
 	res.Summary.Reader, res.Summary.ReaderNote = s.inst.Reader(), s.inst.ReaderNote()
 	res.Summary.Clock, res.Summary.Late = s.inst.Clock(), s.inst.Late()
 	res.Summary.Kernel = s.inst.Kernel()

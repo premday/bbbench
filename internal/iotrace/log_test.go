@@ -13,7 +13,7 @@ func sampleResult() Result {
 	}
 	r := Result{
 		Summary: Summary{AvgMsec: 1000, OffsetMs: 10000, Overrun: 3, StartMissing: true,
-			Reader: "raw", Clock: "mono", Late: 4, ReaderNote: "2 raw records could not be decoded; x=y", Devices: []DeviceSummary{
+			Mode: ModeFtrace, Reader: "raw", Clock: "mono", Late: 4, ReaderNote: "2 raw records could not be decoded; x=y", Devices: []DeviceSummary{
 				{Name: "nvme0n1", Source: "nvme", Exact: true, BlockLayer: true, Pair: "ctrl,qid,cmdid",
 					Events: []string{"nvme_setup_cmd -> nvme_complete_rq", "block_rq_insert -> block_rq_complete"},
 					Stats: map[Kind]map[Dir]Stats{

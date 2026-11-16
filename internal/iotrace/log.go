@@ -41,14 +41,20 @@ func statsFields(s Stats) string {
 // The kind is device, blocklayer or bio (the bios of a bio-based node).
 // bio_based=true marks a device without a blk-mq queue (an md or dm node);
 // it is absent when false, so logs written before it read the same. The
-// header's reader, clock, late and reader_note (URL-escaped) are absent in
-// older logs.
+// header's mode, mode_note, reader, clock, late and reader_note (URL-escaped)
+// are absent in older logs (an absent mode reads as ftrace).
 func WriteLog(w io.Writer, r Result) error {
 	bw := bufio.NewWriter(w)
 	s := &r.Summary
 	fmt.Fprintf(bw, "%s avg_msec=%d offset_ms=%d overrun=%d lost=%d", logMagic, s.AvgMsec, s.OffsetMs, s.Overrun, s.Lost)
 	if s.StartMissing {
 		fmt.Fprint(bw, " start_missing=true")
+	}
+	if s.Mode != "" {
+		fmt.Fprintf(bw, " mode=%s", s.Mode)
+	}
+	if s.ModeNote != "" {
+		fmt.Fprintf(bw, " mode_note=%s", url.QueryEscape(s.ModeNote))
 	}
 	if s.Reader != "" {
 		fmt.Fprintf(bw, " reader=%s", s.Reader)
@@ -140,6 +146,10 @@ func ReadLog(rd io.Reader) (Result, error) {
 					res.Summary.Overrun = n
 				case "start_missing":
 					res.Summary.StartMissing = v == "true"
+				case "mode":
+					res.Summary.Mode = Mode(v)
+				case "mode_note":
+					res.Summary.ModeNote, _ = url.QueryUnescape(v)
 				case "reader":
 					res.Summary.Reader = v
 				case "clock":
@@ -292,6 +302,9 @@ func ReadLog(rd io.Reader) (Result, error) {
 	}
 	if first {
 		return Result{}, fmt.Errorf("empty I/O latency log")
+	}
+	if res.Summary.Mode == "" {
+		res.Summary.Mode = ModeFtrace // logs before the eBPF mode
 	}
 	res.Summary.Fill()
 	return res, nil
