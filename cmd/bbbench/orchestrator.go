@@ -475,8 +475,7 @@ type runOptions struct {
 // registerLiveRun creates the live result for the web view (updated
 // incrementally as phases complete), adds it to the results store, and then
 // calls opts.OnStarted.
-func registerLiveRun(opts runOptions, spec runSpec, coordinator *ExecutionCoordinator) *BenchmarkResult {
-	runID := fmt.Sprintf("run_%d", time.Now().Unix())
+func registerLiveRun(opts runOptions, spec runSpec, coordinator *ExecutionCoordinator, runID string) *BenchmarkResult {
 	liveResult := &BenchmarkResult{
 		ID:        runID,
 		Timestamp: time.Now(),
@@ -553,7 +552,15 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 		}
 	}()
 
-	liveResult := registerLiveRun(opts, spec, coordinator)
+	runID := fmt.Sprintf("run_%d", time.Now().Unix())
+	// Everything the run prints also goes to <runID>.log, next to its summary.
+	if stopLog, logPath, err := startRunLog(opts.OutDir, runID, runLogHeader(opts)); err != nil {
+		logger.Warn("run log", "err", err)
+	} else {
+		defer stopLog()
+		logger.Info("run log", "path", logPath)
+	}
+	liveResult := registerLiveRun(opts, spec, coordinator, runID)
 
 	// Execute based on mode
 	var execErr error

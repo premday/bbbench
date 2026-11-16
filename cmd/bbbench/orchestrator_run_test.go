@@ -73,7 +73,7 @@ func TestRegisterLiveRun_OnStartedOnceAfterStore(t *testing.T) {
 		}
 	}
 	ec := &ExecutionCoordinator{}
-	live = registerLiveRun(opts, runSpec{GroupID: "g-onstarted"}, ec)
+	live = registerLiveRun(opts, runSpec{GroupID: "g-onstarted"}, ec, "run_1")
 	if calls != 1 || !inStore {
 		t.Errorf("calls=%d inStore=%v", calls, inStore)
 	}
