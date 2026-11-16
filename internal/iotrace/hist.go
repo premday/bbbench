@@ -148,3 +148,31 @@ func (h *Hist) Stats() Stats {
 		P99Ns:  p99,
 	}
 }
+
+// lowerEdge is the smallest value that falls in bucket i.
+func lowerEdge(i int) int64 {
+	if i == 0 {
+		return 0
+	}
+	return upperEdge(i-1) + 1
+}
+
+// addBuckets adds latencies counted per bucket, with their exact sum (the
+// eBPF collector's histograms). Min and max are the edges of the lowest and
+// highest bucket used, so they are within one bucket (1/64) of the samples'.
+func (h *Hist) addBuckets(counts []uint64, sumNs uint64) {
+	for i, c := range counts {
+		if c == 0 || i >= numBuckets {
+			continue
+		}
+		if lo := lowerEdge(i); h.count == 0 || lo < h.min {
+			h.min = lo
+		}
+		if hi := upperEdge(i); hi > h.max {
+			h.max = hi
+		}
+		h.buckets[i] += int64(c)
+		h.count += int64(c)
+	}
+	h.sum += float64(sumNs)
+}

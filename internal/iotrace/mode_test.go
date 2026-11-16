@@ -2,7 +2,6 @@ package iotrace
 
 import (
 	"bytes"
-	"errors"
 	"strings"
 	"testing"
 )
@@ -61,15 +60,5 @@ func TestSourceLineNamesTheMode(t *testing.T) {
 	s.Mode = ""
 	if got := SourceLine(&s); !strings.HasPrefix(got, "ftrace: ") {
 		t.Errorf("no mode: %q", got)
-	}
-}
-
-func TestStartWithEBPFModeFailsUntilItExists(t *testing.T) {
-	_, err := Start([]string{"sda"}, Options{Mode: ModeEBPF, TracefsRoot: t.TempDir(), SysBlock: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "ebpf") {
-		t.Fatalf("err = %v, want an error naming ebpf", err)
-	}
-	if errors.Is(err, ErrUnsupported) {
-		t.Errorf("the ebpf error must not read as 'no tracefs': %v", err)
 	}
 }

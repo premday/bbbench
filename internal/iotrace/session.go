@@ -122,6 +122,8 @@ type Summary struct {
 	// one had been fed: they were fed out of order. A pair one broke is in
 	// Unpaired, so Late is not added to Lost.
 	Late int64 `json:"late,omitempty"`
+	// EBPF is the eBPF collector's own counters (ModeEBPF only).
+	EBPF *EBPFInfo `json:"ebpf,omitempty"`
 	// Kernel is the kernel's own view of the trace instance at stop: the
 	// filters it applied, the buffer size and each CPU's counters (entries,
 	// overrun, read events). Overrun above is bbbench's count from the pages;
@@ -135,6 +137,17 @@ type Summary struct {
 	// bio-based node's bio series is on the Device latency card).
 	TextDevice     string `json:"text_device"`
 	TextBlockLayer string `json:"text_blocklayer"`
+}
+
+// EBPFInfo is what the eBPF program counted over the phase. NoStart and Full
+// are shown as unpaired events of the first traced device (the counters are
+// not per device).
+type EBPFInfo struct {
+	Started   uint64   `json:"started"`            // starts stored
+	Completed uint64   `json:"completed"`          // completions that found their start
+	NoStart   uint64   `json:"no_start,omitempty"` // completions without a stored start
+	Full      uint64   `json:"full,omitempty"`     // starts dropped, the start map was full
+	Programs  []string `json:"programs,omitempty"` // tracepoints attached
 }
 
 // Fill sets Lost, the texts and each device's BlockLayerNote from the rest.

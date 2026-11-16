@@ -1,7 +1,6 @@
 package iotrace
 
 import (
-	"errors"
 	"fmt"
 )
 
@@ -17,10 +16,8 @@ type Session interface {
 }
 
 // startEBPF starts the eBPF collector. It is a variable so tests can replace
-// it; the real one is set where the collector is built.
-var startEBPF = func([]string, Options) (Session, error) {
-	return nil, errors.New("ebpf: the collector is not built into this binary")
-}
+// it.
+var startEBPF = openEBPF
 
 // Start begins tracing the reads and writes of the named block devices (the
 // target first, then its members) with the collector Options.Mode asks for:
