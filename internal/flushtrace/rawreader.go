@@ -129,6 +129,14 @@ func (r *rawReader) putBatch(b []Event) {
 	r.pool.Put(&b)
 }
 
+// rawWaitMax bounds how long a reader parks before it reads again. The
+// kernel wakes a poller of trace_pipe_raw only while a poll() is registered
+// (ring_buffer_poll_wait), which the Go poller's edge-triggered epoll does not
+// repeat after the first wake-up: a run on a real kernel read nothing until
+// the phase stopped. 20 ms is a fraction of what the smallest buffers hold at
+// the highest rates (4 MiB per CPU at 500k events/s lasts about 125 ms).
+const rawWaitMax = 20 * time.Millisecond
+
 // start runs the readers and the merger.
 func (r *rawReader) start() {
 	for _, c := range r.readers {
@@ -147,6 +155,11 @@ func (r *rawReader) read(c *cpuReader) {
 	for {
 		var n int
 		var rerr error
+		if c.pollable && !c.draining.Load() {
+			// A wake-up lost by the kernel or the poller must not leave the
+			// buffer unread: the wait is bounded, and a timeout reads again.
+			_ = c.f.SetReadDeadline(time.Now().Add(rawWaitMax))
+		}
 		err := c.rc.Read(func(fd uintptr) bool {
 			for {
 				n, rerr = syscall.Read(int(fd), buf)
@@ -166,8 +179,11 @@ func (r *rawReader) read(c *cpuReader) {
 		})
 		switch {
 		case errors.Is(err, os.ErrDeadlineExceeded):
-			// woken by drain: read on without parking
-			_ = c.f.SetReadDeadline(time.Time{})
+			// the wait timed out, or drain woke it: read on (draining
+			// reads without parking)
+			if c.draining.Load() {
+				_ = c.f.SetReadDeadline(time.Time{})
+			}
 			continue
 		case err != nil:
 			return // the file was closed

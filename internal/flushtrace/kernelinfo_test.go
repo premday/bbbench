@@ -55,6 +55,9 @@ func TestInstance_RecordsKernelView(t *testing.T) {
 	if len(k.CPUs) != 2 || k.CPUs[0].Overrun != 3400 || k.Overrun() != 3405 || k.Read() != 5006 {
 		t.Errorf("cpus %+v overrun %d read %d", k.CPUs, k.Overrun(), k.Read())
 	}
+	if i.Overrun() != 3405 {
+		t.Errorf("Overrun = %d, want the kernel's 3405", i.Overrun())
+	}
 	if len(k.Filters) != 2 {
 		t.Fatalf("filters %+v", k.Filters)
 	}

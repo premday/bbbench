@@ -63,6 +63,8 @@
 
 ### Fixed
 
+- The raw trace reader no longer waits indefinitely on a per-CPU pipe: a real run read nothing until the phase stopped and lost almost every event. It reads again at least every 20 ms, and the loss figure is at least the kernel's own overrun count.
+
 - fio log points stamped a millisecond early (9999 for 10 s) no longer fall into the previous 1 s bucket, which merged two windows and left a gap after them
 
 ## [0.1.0] - 2026-03-31

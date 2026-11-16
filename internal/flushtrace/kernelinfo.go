@@ -137,6 +137,12 @@ func (i *Instance) snapshot() {
 	}
 	sort.Slice(k.CPUs, func(a, b int) bool { return k.CPUs[a].CPU < k.CPUs[b].CPU })
 	i.kernel = k
+	// The pages carry a lost count only when the kernel could store one, so
+	// the reader's count can fall short: the kernel's own counter is the
+	// floor.
+	if ko := k.Overrun(); ko > i.overrun.Load() {
+		i.overrun.Store(ko)
+	}
 }
 
 // Kernel returns the kernel's view recorded at Stop (nil when the instance
