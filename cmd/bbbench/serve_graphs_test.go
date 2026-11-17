@@ -1032,7 +1032,7 @@ for (const [src, scale, prefix] of [['nvme', 1, 'μ'], ['block', 1e6, '']]) {
     const sc = siScale(LAT, 300 * scale);
     assert.strictEqual(sc.prefix, prefix === 'μ' ? 'μ' : '');
     const based = toBase(ftraceDatasets(d, LAT), sc);
-    assert.strictEqual(fmtScaled(based[2].data[1].y, sc, true), prefix === 'μ' ? '300.00μ' : '300.00');
+    assert.strictEqual(fmtScaled(based[2].data[1].y, sc, true), prefix === 'μ' ? '300μ' : '300');
     // Device latency: the device kind only, the members' device means.
     const io = ftraceDatasets(d, IOLAT);
     assert.deepStrictEqual(io.map(x => x.label), [
@@ -1057,7 +1057,7 @@ for (const [src, scale, prefix] of [['nvme', 1, 'μ'], ['block', 1e6, '']]) {
     assert.strictEqual(blk[4].data[0].y, 55 * scale);
     assert.strictEqual(blk[5].data[0].y, -65 * scale);
     const bsc = siScale(IOLATBLK, 260 * scale);
-    assert.strictEqual(fmtScaled(toBase(blk, bsc)[1].data[0].y, bsc, true), prefix === 'μ' ? '160.00μ' : '160.00');
+    assert.strictEqual(fmtScaled(toBase(blk, bsc)[1].data[0].y, bsc, true), prefix === 'μ' ? '160μ' : '160');
 }
 // a kind and direction without points yields no dataset
 const e = entry('nvme', 1);
@@ -1208,17 +1208,17 @@ makeChart({}, d, LAT, 0, 4.6e6);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read (fio)', 'Read device (ftrace)', 'Read block layer (ftrace)']);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(last.data.datasets[1].data[0].y, 2.5);
-assert.strictEqual(label(1, 0), 'Read device (ftrace): 2.50 s');
+assert.strictEqual(label(1, 0), 'Read device (ftrace): 2.5 s');
 makeChart({}, d, IOLAT, 0, 4.6e6);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read device mean (ftrace)', 'Read device p99 (ftrace)']);
-assert.strictEqual(label(1, 0), 'Read device p99 (ftrace): 4.00 s');
+assert.strictEqual(label(1, 0), 'Read device p99 (ftrace): 4 s');
 // The HDD's block layer on its own card, in seconds, two decimals.
 makeChart({}, d, IOLATBLK, 0, 4.1e6 * 1.15);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read block layer mean (ftrace)', 'Read block layer p99 (ftrace)']);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(last.data.datasets[0].data[0].y, 2.6);
-assert.strictEqual(label(0, 0), 'Read block layer mean (ftrace): 2.60 s');
-assert.strictEqual(label(1, 0), 'Read block layer p99 (ftrace): 4.10 s');
+assert.strictEqual(label(0, 0), 'Read block layer mean (ftrace): 2.6 s');
+assert.strictEqual(label(1, 0), 'Read block layer p99 (ftrace): 4.1 s');
 assert.strictEqual(last.options.plugins.rampZone.sec, 0);
 // No series: bars of the summary means.
 makeChart({}, {mean: {r: 100, w: 200}}, IOLAT, -230, 115);
@@ -1677,7 +1677,7 @@ setShown('iolat', 'ftrace.bio.p99.w', true);
 const slow = md0(1e4);
 const sc = siScale(IOLAT, 1.5e7);
 assert.strictEqual(sc.prefix, '');
-assert.strictEqual(fmtScaled(toBase(ftraceDatasets(slow, IOLAT), sc)[1].data[0].y, sc, true), '5.00');
+assert.strictEqual(fmtScaled(toBase(ftraceDatasets(slow, IOLAT), sc)[1].data[0].y, sc, true), '5');
 console.log('OK');
 `)
 }
@@ -1693,7 +1693,7 @@ makeChart({}, d, IOLAT, 0, 4.6e6);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Array read bio mean (ftrace)', 'Array read bio p99 (ftrace)']);
 assert.strictEqual(yTitle(), 's');
 const label = (k, i) => last.options.plugins.tooltip.callbacks.label({dataset: last.data.datasets[k], raw: last.data.datasets[k].data[i]});
-assert.strictEqual(label(1, 0), 'Array read bio p99 (ftrace): 4.00 s');
+assert.strictEqual(label(1, 0), 'Array read bio p99 (ftrace): 4 s');
 console.log('OK');
 `)
 }

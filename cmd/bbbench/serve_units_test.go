@@ -79,7 +79,7 @@ const G = {mul: 1, div: 1e9, prefix: 'G', unit: 'bytes/s'}, N = {mul: 1, div: 1,
 // A tooltip names a value in seconds with its own prefix, whatever the axis
 // prefix is: 120\u03bc s, not 0.00012 s, on an axis that runs to seconds.
 const S = {mul: 1e-6, div: 1, prefix: '', unit: 's'}, MS = {mul: 1e-6, div: 1e-3, prefix: 'm', unit: 's'};
-[[0.00012, S, '120.00\u03bc'], [0.0033, S, '3.30m'], [2.5, S, '2.50'], [4.2e-7, S, '420.00n'], [0.00012, MS, '120.00\u03bc'], [0.5, MS, '500.00m'], [1500, S, '1500.00'], [0, S, '0.00']]
+[[0.00012, S, '120\u03bc'], [0.0033, S, '3.3m'], [2.5, S, '2.5'], [4.2e-7, S, '420n'], [0.00012, MS, '120\u03bc'], [0.5, MS, '500m'], [1500, S, '1500'], [0, S, '0.00'], [0.001, S, '1m'], [1000 * 1e-6, S, '1m'], [0.001, MS, '1m'], [1, S, '1']]
     .forEach(([v, sc, want]) => assert.strictEqual(fmtScaled(v, sc, true), want, 'seconds ' + v));
 console.log('OK');
 `)
@@ -143,7 +143,7 @@ assert.strictEqual(label(0, 0), 'Read (fio): 1.20M IOPS');
 makeChart({}, {ts_lat: [{t: 1, r: 2500, w: 0}]}, LAT, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(tick(0.002), '2m');
-assert.strictEqual(label(0, 0), 'Read (fio): 2.50m s');
+assert.strictEqual(label(0, 0), 'Read (fio): 2.5m s');
 // Bar fallback (no series).
 makeChart({}, {r: 2300}, BW, 0, 2645);
 assert.strictEqual(yTitle(), 'bytes/s');
@@ -152,11 +152,11 @@ assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.
 // Flush latency: the series and the bar.
 makeChart({}, {ts_flush: [{t: 0, w: 2500}], flush: {avg_msec: 1000}}, FLUSH, 0, 2875);
 assert.strictEqual(yTitle(), 's');
-assert.ok(label(0, 0).startsWith('Flush latency: 2.50m s'), label(0, 0));
+assert.ok(label(0, 0).startsWith('Flush latency: 2.5m s'), label(0, 0));
 makeChart({}, {}, FLUSH, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(tick(0.0025), '2.5m');
-assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.50m s');
+assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.5m s');
 // Members: member lines, stack totals and the array line.
 const d = {log_avg_msec: 1000, ts_bw: [{t: 1, r: 2300, w: 0}],
     ts_members: {sdb: {bw: [{t: 0, r: 1200, w: 0}]}, sdc: {bw: [{t: 0, r: 1100, w: 0}]}}};
@@ -176,7 +176,7 @@ const dl = {log_avg_msec: 1000, ts_lat: [{t: 1, r: 2500, w: 0}],
 makeChart({}, dl, LAT, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 const ml = last.data.datasets.find(x => x.member === 'sdb');
-assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 800.00\u03bc s');
+assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 800\u03bc s');
 console.log('OK');
 `)
 }

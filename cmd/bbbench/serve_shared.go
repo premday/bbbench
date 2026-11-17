@@ -105,26 +105,27 @@ const chartSharedJS = `function rampOf(d) {
     // '800\u03bc'); 0 is '0'.
     // With fixed (tooltips) there are always at least two digits after the
     // dot and zeros are kept ('2.00G', '950.00', '0.0033'); a time (unit s)
-    // takes the prefix that fits its own value ('120.00\u03bc').
+    // takes the prefix that fits its own value, trimmed ('120\u03bc', '1m').
     function fmtScaled(v, sc, fixed) {
         let x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
+        let pre = sc && sc.prefix ? sc.prefix : '';
+        if (sc && sc.unit === 's' && v !== 0 && isFinite(v)) {
+            // A time takes the prefix of its own value (120\u03bc s, 1m s,
+            // never 0.00012 s or 0.001 s) and is printed trimmed.
+            const a = Math.abs(v) * (1 + 1e-9);
+            const own = a >= 1 ? ['', 1] : a >= 1e-3 ? ['m', 1e-3] : a >= 1e-6 ? ['\u03bc', 1e-6] : ['n', 1e-9];
+            pre = own[0];
+            x = Math.abs(v) / own[1];
+            fixed = false;
+        }
         if (fixed) {
-            let pre = sc && sc.prefix ? sc.prefix : '';
-            if (sc && sc.unit === 's' && v !== 0 && isFinite(v)) {
-                // A time in a tooltip takes its own prefix (120\u03bc s, not
-                // 0.00012 s on an axis that runs to seconds).
-                const a = Math.abs(v);
-                const own = a >= 1 ? ['', 1] : a >= 1e-3 ? ['m', 1e-3] : a >= 1e-6 ? ['\u03bc', 1e-6] : ['n', 1e-9];
-                pre = own[0];
-                x = a / own[1];
-            }
             if (!isFinite(x) || x === 0) return '0.00';
             return x.toFixed(Math.min(20, Math.max(2, 1 - Math.floor(Math.log10(x))))) + pre;
         }
         if (!isFinite(x) || x === 0) return '0';
         let s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toPrecision(2);
         if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
-        return s + (sc && sc.prefix ? sc.prefix : '');
+        return s + pre;
     }
     // toBase converts the datasets' values ({x, y} points or bar numbers) to
     // the base unit of sc, in place; null stays null. Chart.js then places
