@@ -128,6 +128,11 @@ static __always_inline void record(__u32 slot, __u64 ns)
 	if (!h)
 		return;
 	__u32 b = bucket(ns);
+	// bucket() never returns more than NBUCKETS-1, so clang drops the check
+	// below; the verifier cannot follow the bit arithmetic that computes the
+	// index and then rejects the array access as unbounded. The empty asm
+	// hides the value from the optimizer and keeps the check.
+	asm volatile("" : "+r"(b));
 	if (b >= NBUCKETS)
 		return;
 	h->buckets[b] += 1;
