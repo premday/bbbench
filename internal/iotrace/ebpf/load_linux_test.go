@@ -4,6 +4,8 @@ package ebpf
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/btf"
@@ -94,5 +96,19 @@ func TestSelectProgramsKeepsTheNVMePairWhenTheModuleHasIt(t *testing.T) {
 		if _, ok := spec.Programs[name]; !ok {
 			t.Errorf("program %s was dropped although nvme-core's BTF has its tracepoint", name)
 		}
+	}
+}
+
+func TestBTFHintNamesWhyTheFileIsUnusable(t *testing.T) {
+	got := btfHint(filepath.Join(t.TempDir(), "vmlinux"))
+	if !strings.Contains(got, "no such file") || !strings.Contains(got, "container") {
+		t.Errorf("hint for a missing file: %q", got)
+	}
+	f := filepath.Join(t.TempDir(), "vmlinux")
+	if err := os.WriteFile(f, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := btfHint(f); !strings.Contains(got, "opens") {
+		t.Errorf("hint for a readable file: %q", got)
 	}
 }

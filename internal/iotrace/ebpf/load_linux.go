@@ -5,12 +5,31 @@ package ebpf
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	cebpf "github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 )
+
+// kernelBTFPath is where the running kernel publishes its types.
+const kernelBTFPath = "/sys/kernel/btf/vmlinux"
+
+// btfHint says what is wrong with the kernel's BTF file itself: the library
+// reports only "not found" when it falls back to a vmlinux ELF without BTF.
+func btfHint(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return path + ": " + err.Error() + "; a container often hides /sys/kernel/btf, a kernel without CONFIG_DEBUG_INFO_BTF has none"
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return path + " exists (" + fi.Mode().String() + ") but cannot be opened: " + err.Error()
+	}
+	_ = f.Close()
+	return path + " opens: the failure is in the fallback vmlinux file"
+}
 
 // nvmeModule defines the nvme_setup_cmd and nvme_complete_rq tracepoints.
 const nvmeModule = "nvme_core"
@@ -46,7 +65,7 @@ func Open(ndevs int) (Program, error) {
 	}
 	kspec, err := btf.LoadKernelSpec()
 	if err != nil {
-		return nil, fmt.Errorf("%w: no kernel BTF: %v", ErrUnsupported, err)
+		return nil, fmt.Errorf("%w: no kernel BTF: %v (%s)", ErrUnsupported, err, btfHint(kernelBTFPath))
 	}
 	if err := selectPrograms(spec, kspec); err != nil {
 		return nil, err
