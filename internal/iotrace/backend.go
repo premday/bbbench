@@ -2,6 +2,8 @@ package iotrace
 
 import (
 	"fmt"
+	"log/slog"
+	"strings"
 )
 
 // Session is one running I/O latency trace of a set of devices, whichever
@@ -41,7 +43,8 @@ func Start(devices []string, opts Options) (Session, error) {
 		if ferr != nil {
 			return nil, ferr
 		}
-		f.modeNote = err.Error()
+		slog.Warn("ebpf I/O trace not used, falling back to ftrace", "reason", err.Error())
+		f.modeNote = shortReason(err.Error())
 		return f, nil
 	}
 	f, err := startFtrace(devices, opts)
@@ -49,4 +52,23 @@ func Start(devices []string, opts Options) (Session, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// shortReason keeps the first and the last line of a multi-line error (a
+// kernel verifier log runs to hundreds of lines, the cause is at its end),
+// joined on one line; the whole text is logged by the caller.
+func shortReason(s string) string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	switch len(lines) {
+	case 0:
+		return ""
+	case 1:
+		return lines[0]
+	}
+	return lines[0] + " ... " + strings.Join(lines[max(1, len(lines)-2):], " ")
 }

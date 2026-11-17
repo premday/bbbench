@@ -62,3 +62,22 @@ func TestAutoUsesEBPFWhenItStarts(t *testing.T) {
 		t.Fatalf("Start = %v, %v; want the ebpf session", s, err)
 	}
 }
+
+// A verifier log is hundreds of lines: the note kept in the result and shown
+// in the summary is its first and last line; the whole text is logged.
+func TestAutoFallbackNoteIsShort(t *testing.T) {
+	log := "the kernel verifier rejected the program: load program: permission denied:\n" +
+		strings.Repeat("    12: (bf) r2 = r7\n", 300) + "    235: (79) r2 = *(u64 *)(r0 +0)\nR0 unbounded memory access\nprocessed 196 insns"
+	failingEBPF(t, log)
+	sys := fakeSys(t, map[string]string{"sdb": "8:16"}, "sdb")
+	res, _ := run(t, []string{"sdb"}, blockEvents, sys, Options{Mode: ModeAuto},
+		marker(start, "bbbench-start"),
+		blk(10*sec, "block_rq_issue", "8,16", "R", 1000, 8),
+		blk(10*sec+5_000_000, "block_rq_complete", "8,16", "R", 1000, 8),
+	)
+	n := res.Summary.ModeNote
+	if strings.Contains(n, "\n") || len(n) > 400 ||
+		!strings.Contains(n, "the kernel verifier rejected the program") || !strings.Contains(n, "processed 196 insns") {
+		t.Errorf("note %d bytes: %q", len(n), n)
+	}
+}
