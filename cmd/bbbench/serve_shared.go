@@ -104,11 +104,20 @@ const chartSharedJS = `function rampOf(d) {
     // two significant digits below 1, trailing zeros trimmed ('2G', '1.5M',
     // '800\u03bc'); 0 is '0'.
     // With fixed (tooltips) there are always at least two digits after the
-    // dot and zeros are kept ('2.00G', '950.00', '0.0033').
+    // dot and zeros are kept ('2.00G', '950.00', '0.0033'); a time (unit s)
+    // takes the prefix that fits its own value ('120.00\u03bc').
     function fmtScaled(v, sc, fixed) {
-        const x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
+        let x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
         if (fixed) {
-            const pre = sc && sc.prefix ? sc.prefix : '';
+            let pre = sc && sc.prefix ? sc.prefix : '';
+            if (sc && sc.unit === 's' && v !== 0 && isFinite(v)) {
+                // A time in a tooltip takes its own prefix (120\u03bc s, not
+                // 0.00012 s on an axis that runs to seconds).
+                const a = Math.abs(v);
+                const own = a >= 1 ? ['', 1] : a >= 1e-3 ? ['m', 1e-3] : a >= 1e-6 ? ['\u03bc', 1e-6] : ['n', 1e-9];
+                pre = own[0];
+                x = a / own[1];
+            }
             if (!isFinite(x) || x === 0) return '0.00';
             return x.toFixed(Math.min(20, Math.max(2, 1 - Math.floor(Math.log10(x))))) + pre;
         }

@@ -76,6 +76,11 @@ const G = {mul: 1, div: 1e9, prefix: 'G', unit: 'bytes/s'}, N = {mul: 1, div: 1,
     .forEach(([v, sc, want]) => assert.strictEqual(fmtScaled(v, sc), want, String(v)));
 [[0, G, '0.00'], [950, N, '950.00'], [2e9, G, '2.00G'], [1.5e9, G, '1.50G'], [123.4e9, G, '123.40G'], [0.0033, N, '0.0033'], [-1.5e9, G, '1.50G']]
     .forEach(([v, sc, want]) => assert.strictEqual(fmtScaled(v, sc, true), want, 'fixed ' + v));
+// A tooltip names a value in seconds with its own prefix, whatever the axis
+// prefix is: 120\u03bc s, not 0.00012 s, on an axis that runs to seconds.
+const S = {mul: 1e-6, div: 1, prefix: '', unit: 's'}, MS = {mul: 1e-6, div: 1e-3, prefix: 'm', unit: 's'};
+[[0.00012, S, '120.00\u03bc'], [0.0033, S, '3.30m'], [2.5, S, '2.50'], [4.2e-7, S, '420.00n'], [0.00012, MS, '120.00\u03bc'], [0.5, MS, '500.00m'], [1500, S, '1500.00'], [0, S, '0.00']]
+    .forEach(([v, sc, want]) => assert.strictEqual(fmtScaled(v, sc, true), want, 'seconds ' + v));
 console.log('OK');
 `)
 }
@@ -171,7 +176,7 @@ const dl = {log_avg_msec: 1000, ts_lat: [{t: 1, r: 2500, w: 0}],
 makeChart({}, dl, LAT, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 const ml = last.data.datasets.find(x => x.member === 'sdb');
-assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 0.80m s');
+assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 800.00\u03bc s');
 console.log('OK');
 `)
 }
