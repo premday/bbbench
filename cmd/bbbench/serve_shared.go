@@ -183,4 +183,65 @@ const chartSharedJS = `function rampOf(d) {
         if (!d.members || d.members.length === 0) return '';
         return 'members: ' + d.members.map(m => m.name + ' (' + m.role + ')').join(', ');
     }
+
+    // htmlTooltip draws every chart tooltip as an HTML element beside the
+    // pointer, so a chart with many series (members, stack totals, ftrace or
+    // ebpf lines) is never cut at the canvas border: it is as tall as its
+    // lines need and, taller than the window, flows into columns. Plain text
+    // only (textContent).
+    function htmlTooltip(context) {
+        const tip = context.tooltip, chart = context.chart;
+        let el = document.getElementById('chart-tip');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'chart-tip';
+            el.style.cssText = 'position:fixed;z-index:2000;pointer-events:none;box-sizing:border-box;background:rgba(15,23,42,0.94);' +
+                'color:#f8fafc;font:11px/1.4 system-ui,sans-serif;padding:6px 9px;border-radius:5px;max-width:96vw;column-gap:14px';
+            document.body.appendChild(el);
+        }
+        if (tip.opacity === 0) { el.style.display = 'none'; return; }
+        const add = (isTitle, text, color) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'break-inside:avoid;white-space:pre-wrap;' + (isTitle ? 'font-weight:600;margin-bottom:3px;' : '');
+            if (color) {
+                const sw = document.createElement('span');
+                sw.style.cssText = 'display:inline-block;width:9px;height:9px;margin-right:5px;border:1px solid ' +
+                    (color.borderColor || '#fff') + ';background:' + (color.backgroundColor || color.borderColor || '#fff');
+                row.appendChild(sw);
+            }
+            row.appendChild(document.createTextNode(text));
+            el.appendChild(row);
+        };
+        el.textContent = '';
+        el.style.display = 'block';
+        el.style.columnCount = '1';
+        el.style.width = 'auto';
+        (tip.title || []).forEach(t => add(true, t));
+        (tip.beforeBody || []).forEach(t => add(false, t));
+        (tip.body || []).forEach((b, i) => {
+            (b.before || []).forEach(t => { if (t) add(false, t); });
+            (b.lines || []).forEach(t => add(false, t, (tip.labelColors || [])[i]));
+            (b.after || []).forEach(t => { if (t) add(false, t); });
+        });
+        (tip.afterBody || []).forEach(t => add(false, t));
+        (tip.footer || []).forEach(t => add(false, t));
+        // Taller than the window: flow into columns of about 290 px.
+        const room = window.innerHeight - 16;
+        if (el.offsetHeight > room) {
+            const cols = Math.min(4, Math.ceil(el.offsetHeight / room) + 1);
+            el.style.columnCount = String(cols);
+            el.style.width = Math.min(window.innerWidth - 16, cols * 290) + 'px';
+        }
+        const r = chart.canvas.getBoundingClientRect();
+        const w = el.offsetWidth, h = el.offsetHeight;
+        let x = r.left + tip.caretX + 14;
+        if (x + w > window.innerWidth - 8) x = Math.max(8, r.left + tip.caretX - w - 14);
+        const y = Math.min(Math.max(8, r.top + tip.caretY - h / 2), Math.max(8, window.innerHeight - h - 8));
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+    }
+    if (typeof Chart !== 'undefined' && Chart.defaults && Chart.defaults.plugins && Chart.defaults.plugins.tooltip) {
+        Chart.defaults.plugins.tooltip.enabled = false;
+        Chart.defaults.plugins.tooltip.external = htmlTooltip;
+    }
 `

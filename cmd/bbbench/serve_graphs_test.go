@@ -1860,3 +1860,26 @@ assert.strictEqual(scaleCriterion, 'phase');
 console.log('OK');
 `)
 }
+
+// The chart tooltip is an HTML element that lists every series, however many,
+// flows into columns when taller than the window and hides with the chart's.
+func TestGraphsPageHTMLTooltipListsEverySeries(t *testing.T) {
+	runPageJS(t, []string{"htmlTooltip"}, `
+const assert = require('assert');
+const mk = () => ({style: {}, children: [], appendChild(c) { this.children.push(c); }, set textContent(v) { this.children = []; }, 
+    get offsetHeight() { return this.children.length * 14; }, offsetWidth: 300});
+const el = mk(); el.id = 'chart-tip';
+global.document = {getElementById: () => el, createElement: () => mk(), createTextNode: t => ({text: t}), body: {appendChild() {}}};
+global.window = {innerHeight: 400, innerWidth: 1200};
+const chart = {canvas: {getBoundingClientRect: () => ({left: 10, top: 20})}};
+const lines = Array.from({length: 60}, (_, i) => ['series ' + i + ': 1']);
+const tip = {opacity: 1, title: ['window 0-30 s'], body: lines.map(l => ({lines: l})), labelColors: [], caretX: 100, caretY: 50};
+htmlTooltip({chart, tooltip: tip});
+assert.strictEqual(el.style.display, 'block');
+assert.strictEqual(el.children.length, 61, 'title and all 60 series');
+assert.ok(Number(el.style.columnCount) > 1, 'tall tooltip flows into columns');
+htmlTooltip({chart, tooltip: {opacity: 0}});
+assert.strictEqual(el.style.display, 'none');
+console.log('OK');
+`)
+}
