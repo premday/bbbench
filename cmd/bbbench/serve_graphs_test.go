@@ -2064,3 +2064,17 @@ func TestGraphsPageDrawsOnlyWhenShown(t *testing.T) {
 		}
 	}
 }
+
+// Every line chart of a card lists all its series at the hovered time (index
+// mode, not only the nearest point): the Flush, ftrace/ebpf latency and plain
+// cards as well as the member charts.
+func TestGraphsPageLineChartsTooltipIndexMode(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, fn := range []string{"makeFlushChart", "makeIOLatChart", "makeChart", "makeMembersChart"} {
+		src := jsFunction(t, body, fn)
+		if !strings.Contains(src, "interaction: { mode: 'index', intersect: false }") ||
+			!strings.Contains(src, "mode: 'index', intersect: false") {
+			t.Errorf("%s: tooltip is not in index mode", fn)
+		}
+	}
+}

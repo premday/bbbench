@@ -1294,10 +1294,12 @@ __NAVBAR_HTML__
                 data: { datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
+                    // The tooltip lists every series at the hovered time.
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
                         rampZone: { sec: rampOf(d) },
                         legend: { display: false },
-                        tooltip: { callbacks: {
+                        tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: items => 't+' + fmtDuration(items[0].raw.x) + ' \u2192 t+' + fmtDuration(items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)),
                             label: ctx => 'Flush latency: ' + fmtSI(ctx.raw.y, sc, true) +
                                 ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + fmtDuration(d.flush.avg_msec / 1000) : '') + ')' } }
@@ -1810,11 +1812,12 @@ __NAVBAR_HTML__
                 type: 'line', data: { datasets }, plugins: chartPlugins(d, metric),
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
                         rampZone: { sec: rampOf(d) },
                         mdTrack: mdOptions(d, metric),
                         legend: { display: false },
-                        tooltip: { callbacks: {
+                        tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: windowTitle(d),
                             label: ctx => ctx.dataset.label + ': ' +
                                           fmtSI(ctx.raw.y, sc, true),
@@ -1843,10 +1846,12 @@ __NAVBAR_HTML__
                 type: 'line', data: { datasets }, plugins: [rampPlugin],
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
+                    // The tooltip lists every series at the hovered time.
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
                         rampZone: { sec: rampOf(d) },
                         legend: { display: false },
-                        tooltip: { callbacks: {
+                        tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: windowTitle(d),
                             label: ctx => ctx.dataset.label + ': ' + fmtSI(ctx.raw.y, sc, true),
                         }}
