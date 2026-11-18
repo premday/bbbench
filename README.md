@@ -11,6 +11,15 @@ Block-device benchmark tool. Discovers drives, generates [fio](https://github.co
 
 `bbbench orchestrator` checks these when it starts, before anything interactive: a missing `fio`, or an I/O engine a selected workload needs that this fio lacks, stops the run with what to install; a missing optional program is a warning saying what is lost; an unavailable tracefs is a warning that the fsync phases will report fio's fsync latency only. `bbbench doctor` runs the same program checks.
 
+## Kernel tracing: ftrace and eBPF
+
+bbbench looks inside the kernel in two places, both read-only and both needing root:
+
+- **Flush latency** (phases that fsync) is timed from ftrace events in a private tracefs instance (see *Flush tracing*), because fio only times the whole `fsync()` call.
+- **Read and write latency** of every phase is timed at the device and in the block layer by one of two collectors, chosen with `--io-trace auto|ebpf|ftrace` (see *I/O latency tracing*): **eBPF**, a small program that aggregates latencies into histograms inside the kernel so nothing is lost at high IOPS, or **ftrace**, which reads every trace event out of the kernel. `auto` (the default) uses eBPF and falls back to ftrace, with the reason in the run log and the result; `--no-io-trace` turns it off. The graphs page names the collector of each latency graph (`ebpf` or `ftrace`).
+
+What they need: root, a mounted tracefs, the block (and for NVMe, `nvme_core`) tracepoints; eBPF also needs a kernel with BTF and is built for amd64 and arm64. Without them the run goes on and says what is missing. The eBPF program is committed as an object file built from `internal/iotrace/ebpf/bpf/iolat.bpf.c`; rebuild it with `go generate ./internal/iotrace/ebpf` (needs clang and llvm-strip; `make check` verifies that the object matches its source). Neither collector has been run on every kernel: the eBPF one is not verified on a real kernel yet.
+
 ## Build
 
 ```bash
