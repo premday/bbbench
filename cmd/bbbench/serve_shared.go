@@ -244,7 +244,12 @@ const chartSharedJS = `function rampOf(d) {
         el.textContent = '';
         el.style.display = 'block';
         el.style.columnCount = '1';
-        el.style.width = 'auto';
+        // Measured from the corner with the width its text needs: a fixed box
+        // is as wide as the room to its right, so one measured where it was
+        // last placed (near the right edge) would be squeezed and wrap.
+        el.style.left = '0px';
+        el.style.top = '0px';
+        el.style.width = 'max-content';
         (tip.title || []).forEach(t => add(true, t));
         (tip.beforeBody || []).forEach(t => add(false, t));
         (tip.body || []).forEach((b, i) => {

@@ -1873,7 +1873,8 @@ func TestGraphsPageHTMLTooltipListsEverySeries(t *testing.T) {
 	runPageJS(t, []string{"htmlTooltip"}, `
 const assert = require('assert');
 const mk = () => ({style: {}, children: [], appendChild(c) { this.children.push(c); }, set textContent(v) { this.children = []; }, 
-    get offsetHeight() { return this.children.length * 14; }, offsetWidth: 300});
+    get offsetHeight() { measured.push([this.style.left, this.style.width]); return this.children.length * 14; }, offsetWidth: 300});
+const measured = [];
 const el = mk(); el.id = 'chart-tip';
 global.document = {getElementById: () => el, createElement: () => mk(), createTextNode: t => ({text: t}), body: {appendChild() {}}};
 global.window = {innerHeight: 400, innerWidth: 1200};
@@ -1884,6 +1885,12 @@ htmlTooltip({chart, tooltip: tip});
 assert.strictEqual(el.style.display, 'block');
 assert.strictEqual(el.children.length, 61, 'title and all 60 series');
 assert.ok(Number(el.style.columnCount) > 1, 'tall tooltip flows into columns');
+// The box is measured from the corner at its natural width, never where it
+// was last placed (its width would be limited by the room to its right).
+el.style.left = '1100px';
+measured.length = 0;
+htmlTooltip({chart, tooltip: tip});
+assert.deepStrictEqual(measured[0], ['0px', 'max-content']);
 htmlTooltip({chart, tooltip: {opacity: 0}});
 assert.strictEqual(el.style.display, 'none');
 console.log('OK');
