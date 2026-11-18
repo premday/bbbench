@@ -1895,8 +1895,9 @@ func TestGraphsPageStateInURL(t *testing.T) {
 			t.Errorf("page lacks %q", want)
 		}
 	}
-	runPageJS(t, []string{"stateToHash", "hashToState", "currentState", "applyState"}, `
+	runPageJS(t, []string{"stateToHash", "hashToState", "currentState", "applyState", "cardKey", "restoreModal"}, `
 const assert = require('assert');
+let modalCtx = null, modalZoom = null;
 const METRICS = [{key: 'iops'}, {key: 'bw'}, {key: 'lat'}];
 const SCALE_CRITERIA = [['global', 'Global'], ['phase', 'Per phase'], ['graph', 'Per graph']];
 const DATA_DIMS = ['disk', 'phase'];
@@ -1934,6 +1935,23 @@ assert.strictEqual(SHOW_INVALID, true); assert.strictEqual(els['hide-invalid'].c
 assert.strictEqual(graphModeOf['iops:randread'], 'stacked');
 assert.deepStrictEqual([...HIDDEN.iops].sort(), ['fio.w', 'flush']);
 assert.strictEqual(listsUpdated, 1);
+
+// A graph open in full screen, and its zoom, are part of the link; opening
+// the link clicks that card again with the zoom set.
+const dOpen = allData[2];
+modalCtx = {metric: {key: 'bw'}, d: dOpen}; modalZoom = {min: 30, max: 90.5};
+const so = hashToState(stateToHash(currentState(false)));
+assert.deepStrictEqual(so.o, ['bw', 2]); assert.deepStrictEqual(so.z, [30, 90.5]); assert.strictEqual(so.r, 1);
+modalCtx = null; modalZoom = null;
+assert.strictEqual(currentState(true).o, undefined);
+assert.strictEqual(currentState(true).z, undefined);
+let clicked = 0, asked = null;
+global.document.querySelector = q => { asked = q; return q === '[data-card-key="bw:2"]' ? {click: () => { clicked++; }} : null; };
+restoreModal(so);
+assert.strictEqual(clicked, 1); assert.deepStrictEqual(modalZoom, {min: 30, max: 90.5}); assert.strictEqual(asked, '[data-card-key="bw:2"]');
+modalZoom = null; restoreModal({o: ['iops', 0]}); assert.strictEqual(clicked, 1); assert.strictEqual(modalZoom, null);
+restoreModal({o: ['bw', 2], z: [50, 10]}); assert.strictEqual(clicked, 2); assert.strictEqual(modalZoom, null);
+restoreModal({}); assert.strictEqual(clicked, 2);
 
 // Foreign, empty or damaged fragments are ignored; a new value stays selected.
 ['', '#', '#other', '#s=%7Bbad', '#s=%22str%22', '#s=null'].forEach(h => assert.strictEqual(hashToState(h), null, h));

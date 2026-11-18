@@ -2261,6 +2261,7 @@ __NAVBAR_HTML__
         charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
         addLossNote(warnEl, d, metric, mode);
 
+        if (card.dataset) card.dataset.cardKey = cardKey(metric, d);
         card.addEventListener('click', () => openModal(d, metric, yLow, yHigh, mode, pname, phaseData));
         return card;
     }
@@ -2388,7 +2389,7 @@ __NAVBAR_HTML__
     // g = graph types not selected, f = for each filter the values not
     // selected, y = Y scale criterion, i = 1 when invalid results are shown,
     // m = graph modes other than normal, h = hidden series per metric, r = 1
-    // when the graphs are shown. Excluded values are stored so a short link
+    // when the graphs are shown, o and z = the full screen graph and its zoom. Excluded values are stored so a short link
     // stays short and values the link does not know stay selected.
     function stateToHash(st) {
         return '#s=' + encodeURIComponent(JSON.stringify(st));
@@ -2400,8 +2401,17 @@ __NAVBAR_HTML__
             return st && typeof st === 'object' ? st : null;
         } catch (e) { return null; }
     }
+    // cardKey names a card (a graph type of one entry of the data) in the
+    // link and in the page: o = [metric key, entry index] is the graph open in
+    // full screen, z = [from, to] its zoom in seconds.
+    function cardKey(metric, d) { return metric.key + ':' + allData.indexOf(d); }
     function currentState(shown) {
         const st = {g: [], f: {}, y: scaleCriterion, i: SHOW_INVALID ? 1 : 0, m: {}, h: {}, r: shown ? 1 : 0};
+        if (modalCtx) {
+            st.o = [modalCtx.metric.key, allData.indexOf(modalCtx.d)];
+            st.r = 1;
+            if (modalZoom) st.z = [modalZoom.min, modalZoom.max];
+        }
         METRICS.forEach(m => { if (!SEL.graph_type.has(m.key)) st.g.push(m.key); });
         DATA_DIMS.forEach(dim => {
             const all = [...new Set(allData.map(d => DIM_F[dim](d)))].sort();
@@ -2433,6 +2443,16 @@ __NAVBAR_HTML__
         Object.keys(st.h || {}).forEach(k => { HIDDEN[k] = new Set(st.h[k]); });
         updateLists();
     }
+    // restoreModal opens the full screen graph a link names (st.o), zoomed
+    // to st.z, once the cards are drawn; nothing when the card is not there.
+    function restoreModal(st) {
+        if (!st || !st.o) return;
+        const card = document.querySelector('[data-card-key="' + String(st.o[0]).replace(/[^\w.-]/g, '') + ':' + (st.o[1] | 0) + '"]');
+        if (!card) return;
+        const z = st.z;
+        modalZoom = z && z.length === 2 && z[1] > z[0] ? {min: Math.max(0, +z[0] || 0), max: +z[1]} : null;
+        card.click();
+    }
     let GRAPHS_SHOWN = false;
     function saveState() {
         try {
@@ -2442,11 +2462,12 @@ __NAVBAR_HTML__
     // Every change on the page (a filter, a series, a graph mode, the Y scale,
     // Show Graphs) is a click or a change event: the state is saved once the
     // handlers have run.
-    ['click', 'change'].forEach(ev => document.addEventListener(ev, () => setTimeout(saveState, 0)));
+    ['click', 'change', 'keydown', 'mouseup'].forEach(ev => document.addEventListener(ev, () => setTimeout(saveState, 0)));
 
     // drawGraphs draws behind the loading overlay (a big page takes seconds).
-    function drawGraphs() {
-        if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing graphs\u2026', renderAll); else renderAll();
+    function drawGraphs(after) {
+        const run = () => { renderAll(); if (after) after(); };
+        if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing graphs\u2026', run); else run();
     }
     document.getElementById('btn-show').addEventListener('click', () => { GRAPHS_SHOWN = true; drawGraphs(); });
     document.getElementById('y-scale').addEventListener('change', e => setScaleCriterion(e.target.value));
@@ -2461,7 +2482,7 @@ __NAVBAR_HTML__
             const st = hashToState(location.hash);
             if (st) applyState(st);
             if (typeof bbLoadingDone === 'function') bbLoadingDone();
-            if (st && st.r) { GRAPHS_SHOWN = true; drawGraphs(); }
+            if (st && (st.r || st.o)) { GRAPHS_SHOWN = true; drawGraphs(() => restoreModal(st)); }
         })
         .catch(err => {
             if (typeof bbLoadingDone === 'function') bbLoadingDone();
