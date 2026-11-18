@@ -42,7 +42,7 @@ func runJS(t *testing.T, body string, funcs []string, script string) {
 // maximum in [1, 1000); fmtScaled prints a base-unit value as the number with
 // the prefix letter, no space, trailing zeros trimmed.
 func TestChartUnitScale(t *testing.T) {
-	runPageJS(t, []string{"siScale", "fmtScaled"}, `
+	runPageJS(t, []string{"siScale", "fmtScaled", "fmtSI"}, `
 const assert = require('assert');
 const BW = {unit: 'MB/s'}, IOPS = {unit: 'IOPS'}, LAT = {unit: '\u03bcs'};
 const u = (m, max) => { const s = siScale(m, max); return s.prefix + '|' + s.unit; };
@@ -77,7 +77,7 @@ const G = {mul: 1, div: 1e9, prefix: 'G', unit: 'bytes/s'}, N = {mul: 1, div: 1,
 [[0, G, '0.00'], [950, N, '950.00'], [2e9, G, '2.00G'], [1.5e9, G, '1.50G'], [123.4e9, G, '123.40G'], [0.0033, N, '0.0033'], [-1.5e9, G, '1.50G']]
     .forEach(([v, sc, want]) => assert.strictEqual(fmtScaled(v, sc, true), want, 'fixed ' + v));
 // A tooltip names a value in seconds with its own prefix, whatever the axis
-// prefix is: 120\u03bc s, not 0.00012 s, on an axis that runs to seconds.
+// prefix is: 120 \u03bcs, not 0.00012 s, on an axis that runs to seconds.
 const S = {mul: 1e-6, div: 1, prefix: '', unit: 's'}, MS = {mul: 1e-6, div: 1e-3, prefix: 'm', unit: 's'};
 [[0.00012, S, '120\u03bc'], [0.0033, S, '3.3m'], [2.5, S, '2.5'], [4.2e-7, S, '420n'], [0.00012, MS, '120\u03bc'], [0.5, MS, '500m'], [1500, S, '1500'], [0, S, '0.00'], [0.001, S, '1m'], [1000 * 1e-6, S, '1m'], [0.001, MS, '1m'], [1, S, '1']]
     .forEach(([v, sc, want]) => assert.strictEqual(fmtScaled(v, sc, true), want, 'seconds ' + v));
@@ -100,7 +100,7 @@ const tick = v => last.options.scales.y.ticks.callback(v);
 const yTitle = () => last.options.scales.y.title && last.options.scales.y.title.display && last.options.scales.y.title.text;
 `
 
-var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "siScale", "fmtScaled", "toBase", "phaseScale", "tsWarn", "memberMetric",
+var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "siScale", "fmtScaled", "fmtSI", "toBase", "phaseScale", "tsWarn", "memberMetric",
 	"memberNames", "memberColors", "memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "rgba",
 	"stackedMemberDatasets", "memberLatencyDatasets", "arrayDatasets", "makeMembersChart",
 	"mdMetric", "hasMD", "mdBusy", "mdActions", "mdBands", "mdIndex", "mdTipLines", "mdMarkers", "mdOptions",
@@ -129,34 +129,34 @@ assert.strictEqual(pt(0, 1).y, 2300 * MiB);
 assert.strictEqual(tick(2e9), '2G');
 assert.strictEqual(tick(1.5e9), '1.5G');
 assert.strictEqual(tick(-1.5e9), '1.5G');
-assert.strictEqual(label(0, 1), 'Read (fio): 2.41G bytes/s');
-assert.strictEqual(label(1, 0), 'Write (fio): 1.57G bytes/s');
+assert.strictEqual(label(0, 1), 'Read (fio): 2.41 Gbytes/s');
+assert.strictEqual(label(1, 0), 'Write (fio): 1.57 Gbytes/s');
 // A 900 MiB/s peak with 15% headroom on the axis (1035) stays M.
 makeChart({}, {ts_bw: [{t: 1, r: 900, w: 0}]}, BW, 0, 1035);
 assert.strictEqual(tick(9e8), '900M');
-assert.strictEqual(label(0, 0), 'Read (fio): 943.72M bytes/s');
+assert.strictEqual(label(0, 0), 'Read (fio): 943.72 Mbytes/s');
 // IOPS of 1.2 M, latency of 2500 us.
 makeChart({}, {ts_iops: [{t: 1, r: 1.2e6, w: 0}]}, IOPS, 0, 1.38e6);
 assert.strictEqual(yTitle(), 'IOPS');
 assert.strictEqual(tick(1e6), '1M');
-assert.strictEqual(label(0, 0), 'Read (fio): 1.20M IOPS');
+assert.strictEqual(label(0, 0), 'Read (fio): 1.20 MIOPS');
 makeChart({}, {ts_lat: [{t: 1, r: 2500, w: 0}]}, LAT, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(tick(0.002), '2m');
-assert.strictEqual(label(0, 0), 'Read (fio): 2.5m s');
+assert.strictEqual(label(0, 0), 'Read (fio): 2.5 ms');
 // Bar fallback (no series).
 makeChart({}, {r: 2300}, BW, 0, 2645);
 assert.strictEqual(yTitle(), 'bytes/s');
 assert.strictEqual(last.options.scales.y.max, 2645 * MiB);
-assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.41G bytes/s');
+assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.41 Gbytes/s');
 // Flush latency: the series and the bar.
 makeChart({}, {ts_flush: [{t: 0, w: 2500}], flush: {avg_msec: 1000}}, FLUSH, 0, 2875);
 assert.strictEqual(yTitle(), 's');
-assert.ok(label(0, 0).startsWith('Flush latency: 2.5m s'), label(0, 0));
+assert.ok(label(0, 0).startsWith('Flush latency: 2.5 ms'), label(0, 0));
 makeChart({}, {}, FLUSH, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 assert.strictEqual(tick(0.0025), '2.5m');
-assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.5m s');
+assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.5 ms');
 // Members: member lines, stack totals and the array line.
 const d = {log_avg_msec: 1000, ts_bw: [{t: 1, r: 2300, w: 0}],
     ts_members: {sdb: {bw: [{t: 0, r: 1200, w: 0}]}, sdc: {bw: [{t: 0, r: 1100, w: 0}]}}};
@@ -165,18 +165,18 @@ assert.strictEqual(yTitle(), 'bytes/s');
 assert.strictEqual(tick(1e9), '1G');
 const cb = last.options.plugins.tooltip.callbacks;
 const sdb = last.data.datasets.find(x => x.member === 'sdb' && x.dir === 'r');
-assert.strictEqual(cb.label({dataset: sdb, raw: sdb.data.find(p => p.y !== null)}), sdb.label + ': 1.26G bytes/s');
+assert.strictEqual(cb.label({dataset: sdb, raw: sdb.data.find(p => p.y !== null)}), sdb.label + ': 1.26 Gbytes/s');
 const arr = last.data.datasets.find(x => x.array && x.dir === 'r');
-assert.strictEqual(cb.label({dataset: arr, raw: arr.data.find(p => p.y !== null)}), arr.label + ': 2.41G bytes/s');
+assert.strictEqual(cb.label({dataset: arr, raw: arr.data.find(p => p.y !== null)}), arr.label + ': 2.41 Gbytes/s');
 const lines = [].concat(cb.afterBody([{chart: {isDatasetVisible: () => false}, dataIndex: 0, raw: {x: 0}}]));
-assert.ok(lines.some(l => l === 'Stack total read: 2.41G bytes/s'), JSON.stringify(lines));
+assert.ok(lines.some(l => l === 'Stack total read: 2.41 Gbytes/s'), JSON.stringify(lines));
 // Member latency in seconds.
 const dl = {log_avg_msec: 1000, ts_lat: [{t: 1, r: 2500, w: 0}],
     ts_members: {sdb: {lat: [{t: 0, r: 800, w: 0}]}}};
 makeChart({}, dl, LAT, 0, 2875);
 assert.strictEqual(yTitle(), 's');
 const ml = last.data.datasets.find(x => x.member === 'sdb');
-assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 800\u03bc s');
+assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 800 \u03bcs');
 console.log('OK');
 `)
 }
@@ -213,7 +213,7 @@ func TestChartPagesDropFixedUnit(t *testing.T) {
 // TestComparePageScale: the compare chart takes its SI prefix from the
 // largest value it plots.
 func TestComparePageScale(t *testing.T) {
-	runJS(t, comparePageBody(t), []string{"siScale", "fmtScaled", "toBase", "chartScale", "axisTitle"}, `
+	runJS(t, comparePageBody(t), []string{"siScale", "fmtScaled", "fmtSI", "toBase", "chartScale", "axisTitle"}, `
 const assert = require('assert');
 const BW = {key: 'bw', unit: 'MB/s'};
 const sc = chartScale(BW, [{data: [{x: 0, y: 900}]}, {data: [{x: 0, y: 2300}]}]);

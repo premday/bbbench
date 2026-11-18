@@ -1260,7 +1260,7 @@ __NAVBAR_HTML__
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false },
-                    tooltip: { callbacks: { label: ctx => fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit } } },
+                    tooltip: { callbacks: { label: ctx => fmtSI(ctx.raw, sc, true) } } },
                 scales: { y }
             }
         });
@@ -1298,7 +1298,7 @@ __NAVBAR_HTML__
                         legend: { display: false },
                         tooltip: { callbacks: {
                             title: items => 't+' + fmtDuration(items[0].raw.x) + ' \u2192 t+' + fmtDuration(items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)),
-                            label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit +
+                            label: ctx => 'Flush latency: ' + fmtSI(ctx.raw.y, sc, true) +
                                 ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + fmtDuration(d.flush.avg_msec / 1000) : '') + ')' } }
                     },
                     scales: lineScales(d, sc, 0, yHigh, { grid: { color: '#f1f5f9' } })
@@ -1506,7 +1506,7 @@ __NAVBAR_HTML__
         const totals = stacked ? g.totals : {};
         const dirs = ['r', 'w'].filter(dir => datasets.some(m => m.member && m.dir === dir));
         // v in the base unit; the stack totals are in the metric's units.
-        const fmt = v => fmtScaled(v, sc, true) + ' ' + sc.unit;
+        const fmt = v => fmtSI(v, sc, true);
         const totalLines = i => {
             const s = totals[xs[i]];
             if (!s) return [];
@@ -1795,7 +1795,7 @@ __NAVBAR_HTML__
                         tooltip: { callbacks: {
                             title: windowTitle(d),
                             label: ctx => ctx.dataset.label + ': ' +
-                                          fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
+                                          fmtSI(ctx.raw.y, sc, true),
                             afterBody: items => mdTipLines(d, items)
                         }}
                     },
@@ -1826,7 +1826,7 @@ __NAVBAR_HTML__
                         legend: { display: false },
                         tooltip: { callbacks: {
                             title: windowTitle(d),
-                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtSI(ctx.raw.y, sc, true),
                         }}
                     },
                     scales: scales

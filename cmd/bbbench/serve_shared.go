@@ -120,7 +120,7 @@ const chartSharedJS = `function rampOf(d) {
         let x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
         let pre = sc && sc.prefix ? sc.prefix : '';
         if (sc && sc.unit === 's' && v !== 0 && isFinite(v)) {
-            // A time takes the prefix of its own value (120\u03bc s, 1m s,
+            // A time takes the prefix of its own value (120 \u03bcs, 1 ms,
             // never 0.00012 s or 0.001 s) and is printed trimmed.
             const a = Math.abs(v) * (1 + 1e-9);
             const own = a >= 1 ? ['', 1] : a >= 1e-3 ? ['m', 1e-3] : a >= 1e-6 ? ['\u03bc', 1e-6] : ['n', 1e-9];
@@ -136,6 +136,13 @@ const chartSharedJS = `function rampOf(d) {
         let s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toPrecision(2);
         if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
         return s + pre;
+    }
+    // fmtSI is fmtScaled with its unit: the number, a space, then the SI
+    // prefix and the unit glued together (2.41 Gbytes/s, 1.5 MIOPS, 120 \u03bcs,
+    // 0 IOPS). Tooltips use it; the axis ticks stay numbers with a prefix.
+    function fmtSI(v, sc, fixed) {
+        const m = /^([0-9.e+-]*)(.*)$/.exec(fmtScaled(v, sc, fixed));
+        return m[1] + ' ' + m[2] + (sc && sc.unit ? sc.unit : '');
     }
     // toBase converts the datasets' values ({x, y} points or bar numbers) to
     // the base unit of sc, in place; null stays null. Chart.js then places

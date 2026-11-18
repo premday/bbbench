@@ -989,7 +989,7 @@ console.log('OK');
 // ftraceFuncs are the page functions of the ftrace latency overlay.
 var ftraceFuncs = []string{"windowOf", "memberStep", "memberKey", "memberColors", "rgba",
 	"iolatKind", "iolatPtsHave", "iolatMembersHave", "iolatStatsHas", "iolatHasKind", "iolatBlkHas", "iolatBlkNoneText",
-	"iolatPoints", "iolatMean", "ftraceDatasets", "iolatNone", "siScale", "fmtScaled", "toBase",
+	"iolatPoints", "iolatMean", "ftraceDatasets", "iolatNone", "siScale", "fmtScaled", "fmtSI", "toBase",
 	"rampOf", "fioShift", "memberMetric", "isShown", "chartDatasets", "phaseRange", "rangeExtent", "phaseExtent"}
 
 const ftraceTestPrelude = `
