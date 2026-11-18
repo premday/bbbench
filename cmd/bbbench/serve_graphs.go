@@ -2319,13 +2319,83 @@ __NAVBAR_HTML__
         });
     }
 
-    document.getElementById('btn-show').addEventListener('click', renderAll);
+    // ── Shareable state ──
+    // The page keeps its state in the URL fragment (#s=<json>), kept up to
+    // date after every change, so the address bar can be shared at any time:
+    // g = graph types not selected, f = for each filter the values not
+    // selected, y = Y scale criterion, i = 1 when invalid results are shown,
+    // m = graph modes other than normal, h = hidden series per metric, r = 1
+    // when the graphs are shown. Excluded values are stored so a short link
+    // stays short and values the link does not know stay selected.
+    function stateToHash(st) {
+        return '#s=' + encodeURIComponent(JSON.stringify(st));
+    }
+    function hashToState(h) {
+        if (!h || h.indexOf('#s=') !== 0) return null;
+        try {
+            const st = JSON.parse(decodeURIComponent(h.slice(3)));
+            return st && typeof st === 'object' ? st : null;
+        } catch (e) { return null; }
+    }
+    function currentState(shown) {
+        const st = {g: [], f: {}, y: scaleCriterion, i: SHOW_INVALID ? 1 : 0, m: {}, h: {}, r: shown ? 1 : 0};
+        METRICS.forEach(m => { if (!SEL.graph_type.has(m.key)) st.g.push(m.key); });
+        DATA_DIMS.forEach(dim => {
+            const all = [...new Set(allData.map(d => DIM_F[dim](d)))].sort();
+            const out = all.filter(v => !SEL[dim].has(v));
+            if (out.length) st.f[dim] = out;
+        });
+        Object.keys(graphModeOf).forEach(k => { if (graphModeOf[k] !== 'normal') st.m[k] = graphModeOf[k]; });
+        Object.keys(HIDDEN).forEach(k => { if (HIDDEN[k].size) st.h[k] = [...HIDDEN[k]].sort(); });
+        return st;
+    }
+    // applyState puts a state read from the URL on the page (not the
+    // graphs: the caller draws them when st.r is set).
+    function applyState(st) {
+        const all = new Set((st.g || []));
+        SEL.graph_type = new Set(METRICS.map(m => m.key).filter(k => !all.has(k)));
+        document.querySelectorAll('#list-graph_type input[type=checkbox]').forEach(cb => {
+            cb.checked = SEL.graph_type.has(cb.value);
+        });
+        DATA_DIMS.forEach(dim => {
+            const out = new Set((st.f && st.f[dim]) || []);
+            SEL[dim] = new Set(allData.map(d => DIM_F[dim](d)).filter(v => !out.has(v)));
+        });
+        SHOW_INVALID = !!st.i;
+        const hi = document.getElementById('hide-invalid');
+        if (hi) hi.checked = !SHOW_INVALID;
+        scaleCriterion = SCALE_CRITERIA.some(c => c[0] === st.y) ? st.y : 'phase';
+        document.getElementById('y-scale').value = scaleCriterion;
+        Object.keys(st.m || {}).forEach(k => { graphModeOf[k] = st.m[k]; });
+        Object.keys(st.h || {}).forEach(k => { HIDDEN[k] = new Set(st.h[k]); });
+        updateLists();
+    }
+    let GRAPHS_SHOWN = false;
+    function saveState() {
+        try {
+            history.replaceState(null, '', location.pathname + location.search + stateToHash(currentState(GRAPHS_SHOWN)));
+        } catch (e) { /* no history API: the page works without a shareable link */ }
+    }
+    // Every change on the page (a filter, a series, a graph mode, the Y scale,
+    // Show Graphs) is a click or a change event: the state is saved once the
+    // handlers have run.
+    ['click', 'change'].forEach(ev => document.addEventListener(ev, () => setTimeout(saveState, 0)));
+
+    document.getElementById('btn-show').addEventListener('click', () => { GRAPHS_SHOWN = true; renderAll(); });
     document.getElementById('y-scale').addEventListener('change', e => setScaleCriterion(e.target.value));
     document.getElementById('hide-invalid').addEventListener('change', e => setShowInvalid(!e.target.checked));
 
     fetch(DATA_URL)
         .then(r => r.json())
-        .then(data => { allData = data || []; initFilters(); })
+        .then(data => {
+            allData = data || [];
+            initFilters();
+            const st = hashToState(location.hash);
+            if (st) {
+                applyState(st);
+                if (st.r) { GRAPHS_SHOWN = true; renderAll(); }
+            }
+        })
         .catch(err => {
             document.getElementById('main').innerHTML =
                 '<div class="placeholder">Error loading data: ' + err.message + '</div>';

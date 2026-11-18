@@ -1883,3 +1883,63 @@ assert.strictEqual(el.style.display, 'none');
 console.log('OK');
 `)
 }
+
+// The page keeps its state in the URL fragment so the address bar can be
+// shared at any time: what is unselected, the Y scale, graph modes, hidden
+// series and whether the graphs are shown survive a round trip, and a
+// fragment that is not ours or is damaged changes nothing.
+func TestGraphsPageStateInURL(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{"history.replaceState", "hashToState(location.hash)", "setTimeout(saveState, 0)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	runPageJS(t, []string{"stateToHash", "hashToState", "currentState", "applyState"}, `
+const assert = require('assert');
+const METRICS = [{key: 'iops'}, {key: 'bw'}, {key: 'lat'}];
+const SCALE_CRITERIA = [['global', 'Global'], ['phase', 'Per phase'], ['graph', 'Per graph']];
+const DATA_DIMS = ['disk', 'phase'];
+const DIM_F = {disk: d => d.disk, phase: d => d.phase};
+let allData = [{disk: 'sda', phase: 'randread'}, {disk: 'sdb', phase: 'trim'}, {disk: 'sdb', phase: 'randread'}];
+const SEL = {graph_type: new Set(['iops', 'bw', 'lat']), disk: new Set(['sda', 'sdb']), phase: new Set(['randread'])};
+let scaleCriterion = 'graph', SHOW_INVALID = true;
+const graphModeOf = {'iops:randread': 'stacked', 'bw:randread': 'normal'};
+const HIDDEN = {iops: new Set(['fio.w', 'flush']), bw: new Set()};
+SEL.graph_type.delete('bw');
+const els = {'y-scale': {value: ''}, 'hide-invalid': {checked: true}};
+global.document = {getElementById: id => els[id], querySelectorAll: () => []};
+let listsUpdated = 0;
+const updateLists = () => { listsUpdated++; };
+
+const hash = stateToHash(currentState(true));
+assert.ok(hash.indexOf('#s=') === 0 && hash.indexOf(' ') < 0, hash);
+const st = hashToState(hash);
+assert.deepStrictEqual(st.g, ['bw']);
+assert.deepStrictEqual(st.f, {phase: ['trim']});
+assert.strictEqual(st.y, 'graph'); assert.strictEqual(st.i, 1); assert.strictEqual(st.r, 1);
+assert.deepStrictEqual(st.m, {'iops:randread': 'stacked'});
+assert.deepStrictEqual(st.h, {iops: ['fio.w', 'flush']});
+
+// Apply it on a page in its default state.
+SEL.graph_type = new Set(['iops', 'bw', 'lat']); SEL.disk = new Set(['sda', 'sdb']); SEL.phase = new Set(['randread', 'trim']);
+scaleCriterion = 'phase'; SHOW_INVALID = false;
+delete graphModeOf['iops:randread']; HIDDEN.iops = new Set();
+applyState(st);
+assert.deepStrictEqual([...SEL.graph_type].sort(), ['iops', 'lat']);
+assert.deepStrictEqual([...SEL.phase], ['randread']);
+assert.deepStrictEqual([...SEL.disk].sort(), ['sda', 'sdb']);
+assert.strictEqual(scaleCriterion, 'graph'); assert.strictEqual(els['y-scale'].value, 'graph');
+assert.strictEqual(SHOW_INVALID, true); assert.strictEqual(els['hide-invalid'].checked, false);
+assert.strictEqual(graphModeOf['iops:randread'], 'stacked');
+assert.deepStrictEqual([...HIDDEN.iops].sort(), ['fio.w', 'flush']);
+assert.strictEqual(listsUpdated, 1);
+
+// Foreign, empty or damaged fragments are ignored; a new value stays selected.
+['', '#', '#other', '#s=%7Bbad', '#s=%22str%22', '#s=null'].forEach(h => assert.strictEqual(hashToState(h), null, h));
+applyState({y: 'nonsense', f: {disk: ['gone']}});
+assert.strictEqual(scaleCriterion, 'phase');
+assert.deepStrictEqual([...SEL.disk].sort(), ['sda', 'sdb']);
+console.log('OK');
+`)
+}
