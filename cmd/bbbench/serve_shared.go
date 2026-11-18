@@ -137,6 +137,11 @@ const chartSharedJS = `function rampOf(d) {
         if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
         return s + pre;
     }
+    // unitName spells a base unit out for an axis title: second (s), bytes
+    // per second (B/s), IO per second (IOPS); another unit is kept as is.
+    function unitName(unit) {
+        return {'s': 'second (s)', 'bytes/s': 'bytes per second (B/s)', 'IOPS': 'IO per second (IOPS)'}[unit] || unit;
+    }
     // fmtSI is fmtScaled with its unit: the number, a space, then the SI
     // prefix and the unit glued together (2.41 Gbytes/s, 1.5 MIOPS, 120 \u03bcs,
     // 0 IOPS). Tooltips use it; the axis ticks stay numbers with a prefix.

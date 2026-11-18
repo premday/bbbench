@@ -380,8 +380,8 @@ __NAVBAR_HTML__
     __CHART_SHARED_JS__
 
     function axisTitle(metric, sc) {
-        // "Bandwidth (bytes/s)", but just "IOPS" when the label is the unit.
-        return metric.label === sc.unit ? metric.label : metric.label + ' (' + sc.unit + ')';
+        // "bytes per second (B/s)": the unit spelled out (unitName).
+        return unitName(sc.unit);
     }
 
     // chartScale is the SI scale of one compare chart (siScale), its prefix

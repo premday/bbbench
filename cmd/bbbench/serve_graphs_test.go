@@ -1206,7 +1206,7 @@ const d = {log_avg_msec: 1000, ts_lat: [{t: 1, r: 2e6, w: 0}],
     ts_iolat: [pt(0, 'device', 'r', 3, 2.5e6, 4e6), pt(0, 'blocklayer', 'r', 3, 2.6e6, 4.1e6)]};
 makeChart({}, d, LAT, 0, 4.6e6);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read (fio)', 'Read device (ftrace)', 'Read block layer (ftrace)']);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 assert.strictEqual(last.data.datasets[1].data[0].y, 2.5);
 assert.strictEqual(label(1, 0), 'Read device (ftrace): 2.5 s');
 makeChart({}, d, IOLAT, 0, 4.6e6);
@@ -1215,7 +1215,7 @@ assert.strictEqual(label(1, 0), 'Read device p99 (ftrace): 4 s');
 // The HDD's block layer on its own card, in seconds, two decimals.
 makeChart({}, d, IOLATBLK, 0, 4.1e6 * 1.15);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read block layer mean (ftrace)', 'Read block layer p99 (ftrace)']);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 assert.strictEqual(last.data.datasets[0].data[0].y, 2.6);
 assert.strictEqual(label(0, 0), 'Read block layer mean (ftrace): 2.6 s');
 assert.strictEqual(label(1, 0), 'Read block layer p99 (ftrace): 4.1 s');
@@ -1691,7 +1691,7 @@ const pt = (t, kind, dir, n, mean, p99) => ({t, kind, dir, n, mean, p50: mean, p
 const d = {log_avg_msec: 1000, ts_iolat: [pt(0, 'bio', 'r', 3, 2.5e6, 4e6)]};
 makeChart({}, d, IOLAT, 0, 4.6e6);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Array read bio mean (ftrace)', 'Array read bio p99 (ftrace)']);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 const label = (k, i) => last.options.plugins.tooltip.callbacks.label({dataset: last.data.datasets[k], raw: last.data.datasets[k].data[i]});
 assert.strictEqual(label(1, 0), 'Array read bio p99 (ftrace): 4 s');
 console.log('OK');

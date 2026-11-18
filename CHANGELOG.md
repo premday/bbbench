@@ -9,6 +9,7 @@
 - Every orchestrator run now also writes everything it prints (stdout, stderr and the internal log output) to `<output>/run_<id>.log`, next to `run_<id>_summary.json`, with a first line naming the version, arguments and I/O trace mode.
 - The I/O latency log records the kernel's own view of the trace instance at stop (applied event filters, granted buffer size, per-CPU entries, overrun and read events), and the run summary and graphs warn when a filter was not applied or the kernel's overrun differs from bbbench's count, so an implausible loss figure can be traced to its cause. Not verified on a real kernel.
 - Graph axis titles spell the unit out: `second (s)`, `bytes per second (B/s)`, `IO per second (IOPS)`.
+- Graph axis titles spell the unit out: `second (s)`, `bytes per second (B/s)`, `IO per second (IOPS)`.
 - Graph tooltips write a value as `2.41 Gbytes/s`, `120 μs`: a space after the number, none between the SI prefix and the unit.
 - Graph tooltips show a time window as `t+n → t+(n+w)` (t = start of the phase), and times over a minute as `2m40s` or `1h1m30s`.
 - Graph tooltips show a time window as `t+n s → t+(n+w) s` (t = start of the phase) instead of `window n–m s`.

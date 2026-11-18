@@ -104,7 +104,7 @@ var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "siScale", "fmtScale
 	"memberNames", "memberColors", "memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "rgba",
 	"stackedMemberDatasets", "memberLatencyDatasets", "arrayDatasets", "makeMembersChart",
 	"mdMetric", "hasMD", "mdBusy", "mdActions", "mdBands", "mdIndex", "mdTipLines", "mdMarkers", "mdOptions",
-	"chartPlugins", "yAxisTitle", "lineScales", "barAxis", "barChart", "windowTitle", "fmtDuration", "makeFlushChart", "barData", "iolatKind", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart",
+	"chartPlugins", "yAxisTitle", "unitName", "lineScales", "barAxis", "barChart", "windowTitle", "fmtDuration", "makeFlushChart", "barData", "iolatKind", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart",
 	"isShown", "chartDatasets", "phaseKey"}
 
 // TestGraphsPageChartPhaseScale: a card plots its values in the base unit,
@@ -122,7 +122,7 @@ const pt = (k, i) => last.data.datasets[k].data[i];
 const label = (k, i) => last.options.plugins.tooltip.callbacks.label({dataset: last.data.datasets[k], raw: pt(k, i)});
 // A bandwidth phase of 2300 MiB/s reads and 1500 MiB/s writes: G.
 makeChart({}, {ts_bw: [{t: 1, r: 2000, w: 1500}, {t: 2, r: 2300, w: 0}]}, BW, -1725, 2645);
-assert.strictEqual(yTitle(), 'bytes/s');
+assert.strictEqual(yTitle(), 'bytes per second (B/s)');
 assert.strictEqual(last.options.scales.y.max, 2645 * MiB);
 assert.strictEqual(last.options.scales.y.min, -1725 * MiB);
 assert.strictEqual(pt(0, 1).y, 2300 * MiB);
@@ -137,31 +137,31 @@ assert.strictEqual(tick(9e8), '900M');
 assert.strictEqual(label(0, 0), 'Read (fio): 943.72 Mbytes/s');
 // IOPS of 1.2 M, latency of 2500 us.
 makeChart({}, {ts_iops: [{t: 1, r: 1.2e6, w: 0}]}, IOPS, 0, 1.38e6);
-assert.strictEqual(yTitle(), 'IOPS');
+assert.strictEqual(yTitle(), 'IO per second (IOPS)');
 assert.strictEqual(tick(1e6), '1M');
 assert.strictEqual(label(0, 0), 'Read (fio): 1.20 MIOPS');
 makeChart({}, {ts_lat: [{t: 1, r: 2500, w: 0}]}, LAT, 0, 2875);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 assert.strictEqual(tick(0.002), '2m');
 assert.strictEqual(label(0, 0), 'Read (fio): 2.5 ms');
 // Bar fallback (no series).
 makeChart({}, {r: 2300}, BW, 0, 2645);
-assert.strictEqual(yTitle(), 'bytes/s');
+assert.strictEqual(yTitle(), 'bytes per second (B/s)');
 assert.strictEqual(last.options.scales.y.max, 2645 * MiB);
 assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.41 Gbytes/s');
 // Flush latency: the series and the bar.
 makeChart({}, {ts_flush: [{t: 0, w: 2500}], flush: {avg_msec: 1000}}, FLUSH, 0, 2875);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 assert.ok(label(0, 0).startsWith('Flush latency: 2.5 ms'), label(0, 0));
 makeChart({}, {}, FLUSH, 0, 2875);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 assert.strictEqual(tick(0.0025), '2.5m');
 assert.strictEqual(last.options.plugins.tooltip.callbacks.label({raw: last.data.datasets[0].data[0]}), '2.5 ms');
 // Members: member lines, stack totals and the array line.
 const d = {log_avg_msec: 1000, ts_bw: [{t: 1, r: 2300, w: 0}],
     ts_members: {sdb: {bw: [{t: 0, r: 1200, w: 0}]}, sdc: {bw: [{t: 0, r: 1100, w: 0}]}}};
 makeChart({}, d, BW, 0, 2645);
-assert.strictEqual(yTitle(), 'bytes/s');
+assert.strictEqual(yTitle(), 'bytes per second (B/s)');
 assert.strictEqual(tick(1e9), '1G');
 const cb = last.options.plugins.tooltip.callbacks;
 const sdb = last.data.datasets.find(x => x.member === 'sdb' && x.dir === 'r');
@@ -174,7 +174,7 @@ assert.ok(lines.some(l => l === 'Stack total read: 2.41 Gbytes/s'), JSON.stringi
 const dl = {log_avg_msec: 1000, ts_lat: [{t: 1, r: 2500, w: 0}],
     ts_members: {sdb: {lat: [{t: 0, r: 800, w: 0}]}}};
 makeChart({}, dl, LAT, 0, 2875);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 const ml = last.data.datasets.find(x => x.member === 'sdb');
 assert.strictEqual(last.options.plugins.tooltip.callbacks.label({dataset: ml, raw: ml.data.find(p => p.y !== null)}), ml.label + ': 800 \u03bcs');
 console.log('OK');
@@ -199,7 +199,7 @@ func TestChartPagesDropFixedUnit(t *testing.T) {
 	}
 	// Every card's y axis comes from lineScales (line charts, and the
 	// ftrace latency bars) or barAxis (the other bars).
-	if !strings.Contains(jsFunction(t, pages["graphs"], "yAxisTitle"), "text: sc.unit") ||
+	if !strings.Contains(jsFunction(t, pages["graphs"], "yAxisTitle"), "text: unitName(sc.unit)") ||
 		strings.Count(pages["graphs"], "title: yAxisTitle(sc)") != 2 ||
 		!strings.Contains(jsFunction(t, pages["graphs"], "lineScales"), "title: yAxisTitle(sc)") ||
 		!strings.Contains(jsFunction(t, pages["graphs"], "barAxis"), "title: yAxisTitle(sc)") {
@@ -213,7 +213,7 @@ func TestChartPagesDropFixedUnit(t *testing.T) {
 // TestComparePageScale: the compare chart takes its SI prefix from the
 // largest value it plots.
 func TestComparePageScale(t *testing.T) {
-	runJS(t, comparePageBody(t), []string{"siScale", "fmtScaled", "fmtSI", "toBase", "chartScale", "axisTitle"}, `
+	runJS(t, comparePageBody(t), []string{"siScale", "fmtScaled", "fmtSI", "toBase", "chartScale", "axisTitle", "unitName"}, `
 const assert = require('assert');
 const BW = {key: 'bw', unit: 'MB/s'};
 const sc = chartScale(BW, [{data: [{x: 0, y: 900}]}, {data: [{x: 0, y: 2300}]}]);
@@ -226,8 +226,9 @@ const ds = [{data: [{x: 0, y: 2}, {x: 1, y: null}]}, {data: [3]}];
 toBase(ds, {mul: 10});
 assert.deepStrictEqual(ds, [{data: [{x: 0, y: 20}, {x: 1, y: null}]}, {data: [30]}]);
 // The axis title does not repeat itself.
-assert.strictEqual(axisTitle({label: 'IOPS'}, {unit: 'IOPS'}), 'IOPS');
-assert.strictEqual(axisTitle({label: 'Bandwidth'}, {unit: 'bytes/s'}), 'Bandwidth (bytes/s)');
+assert.strictEqual(axisTitle({label: 'IOPS'}, {unit: 'IOPS'}), 'IO per second (IOPS)');
+assert.strictEqual(axisTitle({label: 'Bandwidth'}, {unit: 'bytes/s'}), 'bytes per second (B/s)');
+assert.strictEqual(axisTitle({label: 'Latency'}, {unit: 's'}), 'second (s)');
 console.log('OK');
 `)
 }

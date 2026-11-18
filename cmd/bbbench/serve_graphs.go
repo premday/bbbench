@@ -1228,10 +1228,10 @@ __NAVBAR_HTML__
     }
     __CHART_SHARED_JS__
 
-    // yAxisTitle is the y axis title of a card: the base unit of its ticks,
-    // whose numbers carry the SI prefix (2.4G = 2.4 * 10^9 bytes/s).
+    // yAxisTitle is the y axis title of a card: the base unit of its ticks
+    // spelled out (unitName), whose numbers carry the SI prefix (2.4G = 2.4 * 10^9 bytes/s).
     function yAxisTitle(sc) {
-        return { display: true, text: sc.unit, color: '#94a3b8', font: {size: 9} };
+        return { display: true, text: unitName(sc.unit), color: '#94a3b8', font: {size: 9} };
     }
     // lineScales are the axes of a line chart: seconds on x (0..the phase's
     // maximum of d, shared by every card of the phase), y from yLow to yHigh in the base unit with the scale's
