@@ -120,7 +120,7 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 				add("sync_action %s (at phase start)", cur.Action)
 			}
 			if cur.Degraded > 0 {
-				add("degraded %d (at phase start)", cur.Degraded)
+				add("degraded (%s) (at phase start)", mdMissingText(cur.Degraded))
 			}
 		} else {
 			// an unreadable value ("", 0 raid_disks or -1 degraded) is not a change; the
@@ -132,7 +132,7 @@ func mdEventsFrom(base *diskstat.MDState, wins []diskstat.MDWindow) []MDEvent {
 				add("array_state %s -> %s", prev.ArrayState, cur.ArrayState)
 			}
 			if cur.Degraded >= 0 && prev.Degraded >= 0 && cur.Degraded != prev.Degraded {
-				add("degraded %d -> %d", prev.Degraded, cur.Degraded)
+				add("%s", mdHealthChange(prev.Degraded, cur.Degraded))
 			}
 			if cur.RaidDisks != 0 && cur.RaidDisks != prev.RaidDisks {
 				add("raid_disks %d -> %d", prev.RaidDisks, cur.RaidDisks)
@@ -266,4 +266,25 @@ func applyMembersLog(phase *PhaseResult, device, logPrefix string) {
 		phase.MemberSeries = make(map[string]map[string]MemberSeries)
 	}
 	phase.MemberSeries[device] = series
+}
+
+// mdMissingText words a degraded count: "1 disk missing", "2 disks missing".
+func mdMissingText(n int) string {
+	if n == 1 {
+		return "1 disk missing"
+	}
+	return fmt.Sprintf("%d disks missing", n)
+}
+
+// mdHealthChange words a change of the degraded count (both known): the array
+// became degraded, healthy again, or lost or regained disks.
+func mdHealthChange(from, to int) string {
+	switch {
+	case from == 0:
+		return fmt.Sprintf("healthy -> degraded (%s)", mdMissingText(to))
+	case to == 0:
+		return fmt.Sprintf("degraded (%s) -> healthy", mdMissingText(from))
+	default:
+		return fmt.Sprintf("degraded (%s) -> degraded (%s)", mdMissingText(from), mdMissingText(to))
+	}
 }

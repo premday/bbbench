@@ -514,7 +514,7 @@ func pageScript(t *testing.T) string {
 	w := httptest.NewRecorder()
 	handleStatusPage(w, httptest.NewRequest("GET", "/status", nil))
 	body := w.Body.String()
-	i := strings.Index(body, "<script>")
+	i := strings.LastIndex(body, "<script>")
 	j := strings.LastIndex(body, "</script>")
 	if i < 0 || j < i {
 		t.Fatal("no script in the status page")

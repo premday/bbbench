@@ -470,7 +470,9 @@ function renderAll() {
         section.appendChild(secHdr);
 
         const secBody = document.createElement('div');
-        secBody.className = 'sec-body';
+        // Folded at first: a click on the header opens the section.
+        secBody.className = 'sec-body hidden';
+        secHdr.classList.add('collapsed');
         section.appendChild(secBody);
         main.appendChild(section);
 
@@ -565,12 +567,16 @@ function renderAll() {
     });
 }
 
-document.getElementById('btn-show').addEventListener('click', renderAll);
+document.getElementById('btn-show').addEventListener('click', () => {
+    if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing summary\u2026', renderAll); else renderAll();
+});
 
+if (typeof bbLoading === 'function') bbLoading('Loading summary\u2026');
 fetch('/api/results/summary?id=' + resultID)
     .then(r => r.json())
-    .then(data => { allData = data || []; initFilters(); })
+    .then(data => { allData = data || []; initFilters(); if (typeof bbLoadingDone === 'function') bbLoadingDone(); })
     .catch(err => {
+        if (typeof bbLoadingDone === 'function') bbLoadingDone();
         document.getElementById('main').innerHTML =
             '<div class="placeholder">Error loading data: ' + err.message + '</div>';
     });

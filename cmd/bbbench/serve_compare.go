@@ -380,8 +380,8 @@ __NAVBAR_HTML__
     __CHART_SHARED_JS__
 
     function axisTitle(metric, sc) {
-        // "Bandwidth (bytes/s)", but just "IOPS" when the label is the unit.
-        return metric.label === sc.unit ? metric.label : metric.label + ' (' + sc.unit + ')';
+        // "bytes per second (B/s)": the unit spelled out (unitName).
+        return unitName(sc.unit, sc.prefix);
     }
 
     // chartScale is the SI scale of one compare chart (siScale), its prefix
@@ -525,14 +525,14 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'right',
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { mode: 'index', intersect: false, callbacks: {
-                            title: items => 'at ' + items[0].raw.x + ' s',
-                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
+                            title: items => 'at ' + fmtDuration(items[0].raw.x),
+                            label: ctx => ctx.dataset.label + ': ' + fmtSI(ctx.raw.y, sc, true),
                         }}
                     },
                     scales: {
                         x: { type: 'linear', min: 0,
-                             title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 10} },
-                             ticks: { font: {size: 10}, color: '#64748b', maxTicksLimit: 8 } },
+                             title: { display: true, text: 'time since the phase start', color: '#94a3b8', font: {size: 10} },
+                             ticks: { callback: v => fmtDuration(v), font: {size: 10}, color: '#64748b', maxTicksLimit: 8 } },
                         y: { min: 0,
                              ticks: { callback: tick, font: {size: 10}, color: '#64748b' },
                              grid: { color: '#f1f5f9' },
@@ -581,7 +581,7 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'right',
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { callbacks: {
-                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtSI(ctx.raw, sc, true),
                         }}
                     },
                     scales: {
@@ -596,13 +596,17 @@ __NAVBAR_HTML__
         }
     }
 
-    document.getElementById('btn-compare').addEventListener('click', renderCompare);
+    document.getElementById('btn-compare').addEventListener('click', () => {
+        if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing graphs\u2026', renderCompare); else renderCompare();
+    });
     document.getElementById('hide-invalid').addEventListener('change', e => setShowInvalid(!e.target.checked));
 
+    if (typeof bbLoading === 'function') bbLoading('Loading data\u2026');
     fetch(DATA_URL)
         .then(r => r.json())
-        .then(data => { allData = data || []; initSidebar(); })
+        .then(data => { allData = data || []; initSidebar(); if (typeof bbLoadingDone === 'function') bbLoadingDone(); })
         .catch(err => {
+            if (typeof bbLoadingDone === 'function') bbLoadingDone();
             document.getElementById('main').innerHTML =
                 '<div class="cmp-placeholder">Error loading data: ' + err.message + '</div>';
         });

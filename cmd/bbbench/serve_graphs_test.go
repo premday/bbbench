@@ -526,7 +526,7 @@ func runPageJS(t *testing.T, funcs []string, script string) {
 
 // mdFuncs are the page functions of the md track and what they use.
 var mdFuncs = []string{"windowOf", "memberStep", "memberKey", "mdMetric", "hasMD", "mdBusy",
-	"mdActions", "mdBands", "mdBadges", "mdBusyNote", "mdIndex", "mdTipLines", "mdMarkers",
+	"mdActions", "mdBands", "mdMissing", "mdHealth", "mdBadges", "mdBusyNote", "mdIndex", "mdTipLines", "mdMarkers",
 	"mdLabelLayout", "chartPlugins"}
 
 const mdTestPrelude = `
@@ -582,9 +582,9 @@ assert.deepStrictEqual(mdBadges(r).map(b => b.text), ['check 20% -> 30%', 'check
 assert.deepStrictEqual(mdBadges({ts_md: [md(0, 'resync', 50, 1, 0)]}).map(b => b.text), ['resync 50%']);
 assert.strictEqual(mdBusyNote(d), true);
 // Degraded only: no sync badge.
-const g = {ts_md: [md(0, 'idle', 0, 0, 0), md(1, 'idle', 0, 0, 1)], md_events: [{t: 1, text: 'degraded 0 -> 1'}]};
-assert.deepStrictEqual(mdBadges(g), [{text: 'degraded', kind: 'degraded'}]);
-assert.deepStrictEqual(mdBadges({ts_md: [md(0, 'idle', 0, 0, 2)]}), [{text: 'degraded 2', kind: 'degraded'}]);
+const g = {ts_md: [md(0, 'idle', 0, 0, 0), md(1, 'idle', 0, 0, 1)], md_events: [{t: 1, text: 'healthy -> degraded (1 disk missing)'}]};
+assert.deepStrictEqual(mdBadges(g), [{text: 'degraded (1 disk missing)', kind: 'degraded'}]);
+assert.deepStrictEqual(mdBadges({ts_md: [md(0, 'idle', 0, 0, 2)]}), [{text: 'degraded (2 disks missing)', kind: 'degraded'}]);
 assert.strictEqual(mdBusyNote(g), true);
 // Idle all along, no event: nothing.
 const q = {ts_md: [md(0, 'idle', 0, 0, 0), md(1, 'idle', 0, 0, 0)]};
@@ -593,20 +593,26 @@ assert.strictEqual(mdBusyNote(q), false);
 assert.strictEqual(mdBusyNote({md_events: [{t: 0, text: 'sdb: in_sync -> faulty'}]}), true);
 // Hover: the md point of the window, keyed like the member grid.
 const items = x => [{raw: {x}}];
-assert.deepStrictEqual(mdTipLines(d, items(1)), ['md: resync 43% 10.0 MiB/s, degraded 0']);
-assert.deepStrictEqual(mdTipLines(d, items(0)), ['md: idle, degraded 0']);
+assert.deepStrictEqual(mdTipLines(d, items(1)), ['md: resyncing 43% at 10.0 MiB/s']);
+assert.deepStrictEqual(mdTipLines(d, items(0)), ['md: healthy']);
 assert.deepStrictEqual(mdTipLines(d, items(9)), []);
+// Health in words: degraded and syncing together, an unreadable count, no rate known.
+assert.strictEqual(mdHealth(md(0, 'recover', 12.4, 187596, 1)), 'degraded (1 disk missing), recovering 12% at 183.2 MiB/s');
+assert.strictEqual(mdHealth(md(0, 'idle', 0, 0, 3)), 'degraded (3 disks missing)');
+assert.strictEqual(mdHealth(md(0, 'resync', 0, 0, 0)), 'resyncing');
+assert.strictEqual(mdHealth(md(0, 'idle', 0, 0, -1)), 'health unknown');
+assert.strictEqual(mdHealth(md(0, 'idle', 0, 0, 0)), 'healthy');
 // Events of the window are spelt out in full.
-const e = {log_avg_msec: 1000, ts_md: [md(1, 'idle', 0, 0, 1)], md_events: [{t: 1.002, text: 'degraded 0 -> 1'}]};
-assert.deepStrictEqual(mdTipLines(e, items(1)), ['md: idle, degraded 1', 'md event: degraded 0 -> 1']);
+const e = {log_avg_msec: 1000, ts_md: [md(1, 'idle', 0, 0, 1)], md_events: [{t: 1.002, text: 'healthy -> degraded (1 disk missing)'}]};
+assert.deepStrictEqual(mdTipLines(e, items(1)), ['md: degraded (1 disk missing)', 'md event: healthy -> degraded (1 disk missing)']);
 // Sub-second windows keep their own key.
 const s = {log_avg_msec: 500, ts_md: [md(2, 'check', 10, 512, 0), md(2.5, 'check', 11, 512, 0)]};
-assert.deepStrictEqual(mdTipLines(s, items(2.5)), ['md: check 11% 0.5 MiB/s, degraded 0']);
+assert.deepStrictEqual(mdTipLines(s, items(2.5)), ['md: checking 11% at 0.5 MiB/s']);
 // The index is built once per entry and kept hidden on it: several events of
 // one window in their order, the entry's keys and JSON unchanged.
 const c = {log_avg_msec: 1000, ts_md: [md(1, 'idle', 0, 0, 0)], md_events: [{t: 1, text: 'a'}, {t: 3, text: 'x'}, {t: 0.999, text: 'b'}]};
 const before = JSON.stringify(c);
-assert.deepStrictEqual(mdTipLines(c, items(1)), ['md: idle, degraded 0', 'md event: a', 'md event: b']);
+assert.deepStrictEqual(mdTipLines(c, items(1)), ['md: healthy', 'md event: a', 'md event: b']);
 assert.deepStrictEqual(mdTipLines(c, items(3)), ['md event: x']);
 assert.strictEqual(mdIndex(c), mdIndex(c));
 assert.deepStrictEqual(Object.keys(c), ['log_avg_msec', 'ts_md', 'md_events']);
@@ -957,7 +963,7 @@ console.log('OK');
 
 // A loss note shown in the modal must not survive into the next one.
 func TestGraphsPageModalClearsWarn(t *testing.T) {
-	runPageJS(t, []string{"openModal", "iolatKind", "fmtCount", "lossShare", "lossSeries", "lossInfo", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote", "metricLabel", "traceToolOf"}, `
+	runPageJS(t, []string{"openModal", "applyModalZoom", "phaseKey", "iolatKind", "fmtCount", "lossShare", "lossSeries", "lossInfo", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote", "metricLabel", "traceToolOf"}, `
 const assert = require('assert');
 const els = {};
 const el = id => els[id] || (els[id] = {id, textContent: '', className: '', innerHTML: '',
@@ -989,7 +995,7 @@ console.log('OK');
 // ftraceFuncs are the page functions of the ftrace latency overlay.
 var ftraceFuncs = []string{"windowOf", "memberStep", "memberKey", "memberColors", "rgba",
 	"iolatKind", "iolatPtsHave", "iolatMembersHave", "iolatStatsHas", "iolatHasKind", "iolatBlkHas", "iolatBlkNoneText",
-	"iolatPoints", "iolatMean", "ftraceDatasets", "iolatNone", "siScale", "fmtScaled", "toBase",
+	"iolatPoints", "iolatMean", "ftraceDatasets", "iolatNone", "siScale", "fmtScaled", "fmtSI", "toBase",
 	"rampOf", "fioShift", "memberMetric", "isShown", "chartDatasets", "phaseRange", "rangeExtent", "phaseExtent"}
 
 const ftraceTestPrelude = `
@@ -1032,7 +1038,7 @@ for (const [src, scale, prefix] of [['nvme', 1, 'μ'], ['block', 1e6, '']]) {
     const sc = siScale(LAT, 300 * scale);
     assert.strictEqual(sc.prefix, prefix === 'μ' ? 'μ' : '');
     const based = toBase(ftraceDatasets(d, LAT), sc);
-    assert.strictEqual(fmtScaled(based[2].data[1].y, sc, true), prefix === 'μ' ? '300.00μ' : '300.00');
+    assert.strictEqual(fmtScaled(based[2].data[1].y, sc, true), prefix === 'μ' ? '300μ' : '300');
     // Device latency: the device kind only, the members' device means.
     const io = ftraceDatasets(d, IOLAT);
     assert.deepStrictEqual(io.map(x => x.label), [
@@ -1057,7 +1063,7 @@ for (const [src, scale, prefix] of [['nvme', 1, 'μ'], ['block', 1e6, '']]) {
     assert.strictEqual(blk[4].data[0].y, 55 * scale);
     assert.strictEqual(blk[5].data[0].y, -65 * scale);
     const bsc = siScale(IOLATBLK, 260 * scale);
-    assert.strictEqual(fmtScaled(toBase(blk, bsc)[1].data[0].y, bsc, true), prefix === 'μ' ? '160.00μ' : '160.00');
+    assert.strictEqual(fmtScaled(toBase(blk, bsc)[1].data[0].y, bsc, true), prefix === 'μ' ? '160μ' : '160');
 }
 // a kind and direction without points yields no dataset
 const e = entry('nvme', 1);
@@ -1206,19 +1212,19 @@ const d = {log_avg_msec: 1000, ts_lat: [{t: 1, r: 2e6, w: 0}],
     ts_iolat: [pt(0, 'device', 'r', 3, 2.5e6, 4e6), pt(0, 'blocklayer', 'r', 3, 2.6e6, 4.1e6)]};
 makeChart({}, d, LAT, 0, 4.6e6);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read (fio)', 'Read device (ftrace)', 'Read block layer (ftrace)']);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 assert.strictEqual(last.data.datasets[1].data[0].y, 2.5);
-assert.strictEqual(label(1, 0), 'Read device (ftrace): 2.50 s');
+assert.strictEqual(label(1, 0), 'Read device (ftrace): 2.5 s');
 makeChart({}, d, IOLAT, 0, 4.6e6);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read device mean (ftrace)', 'Read device p99 (ftrace)']);
-assert.strictEqual(label(1, 0), 'Read device p99 (ftrace): 4.00 s');
+assert.strictEqual(label(1, 0), 'Read device p99 (ftrace): 4 s');
 // The HDD's block layer on its own card, in seconds, two decimals.
 makeChart({}, d, IOLATBLK, 0, 4.1e6 * 1.15);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Read block layer mean (ftrace)', 'Read block layer p99 (ftrace)']);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 assert.strictEqual(last.data.datasets[0].data[0].y, 2.6);
-assert.strictEqual(label(0, 0), 'Read block layer mean (ftrace): 2.60 s');
-assert.strictEqual(label(1, 0), 'Read block layer p99 (ftrace): 4.10 s');
+assert.strictEqual(label(0, 0), 'Read block layer mean (ftrace): 2.6 s');
+assert.strictEqual(label(1, 0), 'Read block layer p99 (ftrace): 4.1 s');
 assert.strictEqual(last.options.plugins.rampZone.sec, 0);
 // No series: bars of the summary means.
 makeChart({}, {mean: {r: 100, w: 200}}, IOLAT, -230, 115);
@@ -1677,7 +1683,7 @@ setShown('iolat', 'ftrace.bio.p99.w', true);
 const slow = md0(1e4);
 const sc = siScale(IOLAT, 1.5e7);
 assert.strictEqual(sc.prefix, '');
-assert.strictEqual(fmtScaled(toBase(ftraceDatasets(slow, IOLAT), sc)[1].data[0].y, sc, true), '5.00');
+assert.strictEqual(fmtScaled(toBase(ftraceDatasets(slow, IOLAT), sc)[1].data[0].y, sc, true), '5');
 console.log('OK');
 `)
 }
@@ -1691,9 +1697,9 @@ const pt = (t, kind, dir, n, mean, p99) => ({t, kind, dir, n, mean, p50: mean, p
 const d = {log_avg_msec: 1000, ts_iolat: [pt(0, 'bio', 'r', 3, 2.5e6, 4e6)]};
 makeChart({}, d, IOLAT, 0, 4.6e6);
 assert.deepStrictEqual(last.data.datasets.map(x => x.label), ['Array read bio mean (ftrace)', 'Array read bio p99 (ftrace)']);
-assert.strictEqual(yTitle(), 's');
+assert.strictEqual(yTitle(), 'second (s)');
 const label = (k, i) => last.options.plugins.tooltip.callbacks.label({dataset: last.data.datasets[k], raw: last.data.datasets[k].data[i]});
-assert.strictEqual(label(1, 0), 'Array read bio p99 (ftrace): 4.00 s');
+assert.strictEqual(label(1, 0), 'Array read bio p99 (ftrace): 4 s');
 console.log('OK');
 `)
 }
@@ -1859,4 +1865,216 @@ setScaleCriterion('bogus');
 assert.strictEqual(scaleCriterion, 'phase');
 console.log('OK');
 `)
+}
+
+// The chart tooltip is an HTML element that lists every series, however many,
+// flows into columns when taller than the window and hides with the chart's.
+func TestGraphsPageHTMLTooltipListsEverySeries(t *testing.T) {
+	runPageJS(t, []string{"htmlTooltip"}, `
+const assert = require('assert');
+const mk = () => ({style: {}, children: [], appendChild(c) { this.children.push(c); }, set textContent(v) { this.children = []; }, 
+    get offsetHeight() { measured.push([this.style.left, this.style.width]); return this.children.length * 14; }, offsetWidth: 300});
+const measured = [];
+const el = mk(); el.id = 'chart-tip';
+global.document = {getElementById: () => el, createElement: () => mk(), createTextNode: t => ({text: t}), body: {appendChild() {}}};
+global.window = {innerHeight: 400, innerWidth: 1200};
+const chart = {canvas: {getBoundingClientRect: () => ({left: 10, top: 20})}};
+const lines = Array.from({length: 60}, (_, i) => ['series ' + i + ': 1']);
+const tip = {opacity: 1, title: ['t+0s → t+30s'], body: lines.map(l => ({lines: l})), labelColors: [], caretX: 100, caretY: 50};
+htmlTooltip({chart, tooltip: tip});
+assert.strictEqual(el.style.display, 'block');
+assert.strictEqual(el.children.length, 61, 'title and all 60 series');
+assert.ok(Number(el.style.columnCount) > 1, 'tall tooltip flows into columns');
+// The box is measured from the corner at its natural width, never where it
+// was last placed (its width would be limited by the room to its right).
+el.style.left = '1100px';
+measured.length = 0;
+htmlTooltip({chart, tooltip: tip});
+assert.deepStrictEqual(measured[0], ['0px', 'max-content']);
+htmlTooltip({chart, tooltip: {opacity: 0}});
+assert.strictEqual(el.style.display, 'none');
+console.log('OK');
+`)
+}
+
+// The page keeps its state in the URL fragment so the address bar can be
+// shared at any time: what is unselected, the Y scale, graph modes, hidden
+// series and whether the graphs are shown survive a round trip, and a
+// fragment that is not ours or is damaged changes nothing.
+func TestGraphsPageStateInURL(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{"history.replaceState", "hashToState(location.hash)", "setTimeout(saveState, 0)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	runPageJS(t, []string{"stateToHash", "hashToState", "currentState", "applyState", "cardKey", "restoreModal", "phaseKey"}, `
+const assert = require('assert');
+let modalCtx = null, modalZoom = null, OPEN_PHASE = {};
+const METRICS = [{key: 'iops'}, {key: 'bw'}, {key: 'lat'}];
+const SCALE_CRITERIA = [['global', 'Global'], ['phase', 'Per phase'], ['graph', 'Per graph']];
+const DATA_DIMS = ['disk', 'phase'];
+const DIM_F = {disk: d => d.disk, phase: d => d.phase};
+let allData = [{disk: 'sda', phase: 'randread'}, {disk: 'sdb', phase: 'trim'}, {disk: 'sdb', phase: 'randread'}];
+const SEL = {graph_type: new Set(['iops', 'bw', 'lat']), disk: new Set(['sda', 'sdb']), phase: new Set(['randread'])};
+let scaleCriterion = 'graph', SHOW_INVALID = true;
+const graphModeOf = {'iops:randread': 'stacked', 'bw:randread': 'normal'};
+const HIDDEN = {iops: new Set(['fio.w', 'flush']), bw: new Set()};
+SEL.graph_type.delete('bw');
+const els = {'y-scale': {value: ''}, 'hide-invalid': {checked: true}};
+global.document = {getElementById: id => els[id], querySelectorAll: () => []};
+let listsUpdated = 0;
+const updateLists = () => { listsUpdated++; };
+
+const hash = stateToHash(currentState(true));
+assert.ok(hash.indexOf('#s=') === 0 && hash.indexOf(' ') < 0, hash);
+const st = hashToState(hash);
+assert.deepStrictEqual(st.g, ['bw']);
+assert.deepStrictEqual(st.f, {phase: ['trim']});
+assert.strictEqual(st.y, 'graph'); assert.strictEqual(st.i, 1); assert.strictEqual(st.r, 1);
+assert.deepStrictEqual(st.m, {'iops:randread': 'stacked'});
+assert.deepStrictEqual(st.h, {iops: ['fio.w', 'flush']});
+
+// Apply it on a page in its default state.
+SEL.graph_type = new Set(['iops', 'bw', 'lat']); SEL.disk = new Set(['sda', 'sdb']); SEL.phase = new Set(['randread', 'trim']);
+scaleCriterion = 'phase'; SHOW_INVALID = false;
+delete graphModeOf['iops:randread']; HIDDEN.iops = new Set();
+applyState(st);
+assert.deepStrictEqual([...SEL.graph_type].sort(), ['iops', 'lat']);
+assert.deepStrictEqual([...SEL.phase], ['randread']);
+assert.deepStrictEqual([...SEL.disk].sort(), ['sda', 'sdb']);
+assert.strictEqual(scaleCriterion, 'graph'); assert.strictEqual(els['y-scale'].value, 'graph');
+assert.strictEqual(SHOW_INVALID, true); assert.strictEqual(els['hide-invalid'].checked, false);
+assert.strictEqual(graphModeOf['iops:randread'], 'stacked');
+assert.deepStrictEqual([...HIDDEN.iops].sort(), ['fio.w', 'flush']);
+assert.strictEqual(listsUpdated, 1);
+
+// A graph open in full screen, and its zoom, are part of the link; opening
+// the link clicks that card again with the zoom set.
+const dOpen = allData[2];
+modalCtx = {metric: {key: 'bw'}, d: dOpen}; modalZoom = {min: 30, max: 90.5};
+const so = hashToState(stateToHash(currentState(false)));
+assert.deepStrictEqual(so.o, ['bw', 2]); assert.deepStrictEqual(so.z, [30, 90.5]); assert.strictEqual(so.r, 1);
+modalCtx = null; modalZoom = null;
+assert.strictEqual(currentState(true).o, undefined);
+assert.strictEqual(currentState(true).z, undefined);
+let clicked = 0, asked = null;
+global.document.querySelector = q => { asked = q; return q === '[data-card-key="bw:2"]' ? {click: () => { clicked++; }} : null; };
+restoreModal(so);
+assert.strictEqual(clicked, 1); assert.deepStrictEqual(modalZoom, {min: 30, max: 90.5}); assert.strictEqual(asked, '[data-card-key="bw:2"]');
+modalZoom = null; restoreModal({o: ['iops', 0]}); assert.strictEqual(clicked, 1); assert.strictEqual(modalZoom, null);
+restoreModal({o: ['bw', 2], z: [50, 10]}); assert.strictEqual(clicked, 2); assert.strictEqual(modalZoom, null);
+restoreModal({}); assert.strictEqual(clicked, 2);
+// A graph in a folded phase is drawn (its phase opened) before its card is clicked.
+allData[2].phase_name = 'randread';
+const order = [];
+OPEN_PHASE['bw|randread'] = () => order.push('open');
+global.document.querySelector = q => { order.push('query'); return {click: () => order.push('click')}; };
+restoreModal({o: ['bw', 2]});
+assert.deepStrictEqual(order, ['open', 'query', 'click']);
+
+// Foreign, empty or damaged fragments are ignored; a new value stays selected.
+['', '#', '#other', '#s=%7Bbad', '#s=%22str%22', '#s=null'].forEach(h => assert.strictEqual(hashToState(h), null, h));
+applyState({y: 'nonsense', f: {disk: ['gone']}});
+assert.strictEqual(scaleCriterion, 'phase');
+assert.deepStrictEqual([...SEL.disk].sort(), ['sda', 'sdb']);
+console.log('OK');
+`)
+}
+
+// The tooltip title of a time-series chart reads "t+n s → t+(n+w) s" (t = the
+// start of the phase, n = the window's x value, w = its width).
+func TestGraphsPageWindowTitle(t *testing.T) {
+	runPageJS(t, []string{"windowTitle", "windowOf", "fmtDuration"}, `
+const assert = require('assert');
+const items = [{raw: {x: 30}}];
+assert.strictEqual(windowTitle({ts_iops: [{t: 10}]})(items), 't+30s \u2192 t+40s');
+assert.strictEqual(windowTitle({})(items), 't+30s');
+assert.strictEqual(windowTitle({ts_iops: [{t: 10}]})([{raw: {x: 150}}]), 't+2m30s \u2192 t+2m40s');
+[[0, '0s'], [0.5, '0.5s'], [45, '45s'], [59.99, '59.99s'], [60, '1m'], [160, '2m40s'], [3600, '1h'], [3690, '1h1m30s'], [7325, '2h2m5s'], [-1, '']]
+    .forEach(([v, w]) => assert.strictEqual(fmtDuration(v), w, String(v)));
+console.log('OK');
+`)
+}
+
+// A drag over the full screen chart zooms its time axis to the selected
+// range (any direction, never below 0), Esc resets it, and a click or an empty
+// drag selects nothing.
+func TestGraphsPageModalZoom(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{"modalZoom = r; applyModalZoom();", "if (modalZoom) { modalZoom = null; applyModalZoom(); } else closeModal();"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	runPageJS(t, []string{"zoomRange", "applyModalZoom", "phaseKey"}, `
+const assert = require('assert');
+assert.deepStrictEqual(zoomRange(10, 40), {min: 10, max: 40});
+assert.deepStrictEqual(zoomRange(40, 10), {min: 10, max: 40});
+assert.deepStrictEqual(zoomRange(-5, 20), {min: 0, max: 20});
+assert.strictEqual(zoomRange(7, 7), null);
+assert.strictEqual(zoomRange(-9, -3), null);
+const PHASE_X = {A: 120};
+let modalZoom = null, updates = [];
+const modalCtx = {d: {phase_name: 'A'}};
+const modalChart = {options: {scales: {x: {min: 0, max: 120}}}, update: m => updates.push(m)};
+modalZoom = {min: 30, max: 60};
+applyModalZoom();
+assert.deepStrictEqual([modalChart.options.scales.x.min, modalChart.options.scales.x.max], [30, 60]);
+modalZoom = null;
+applyModalZoom();
+assert.deepStrictEqual([modalChart.options.scales.x.min, modalChart.options.scales.x.max], [0, 120]);
+assert.strictEqual(updates.length, 2);
+console.log('OK');
+`)
+}
+
+// Pages that load or draw for a while show a loading overlay: the navigation
+// bar carries it and the graphs, compare, summary, results and result pages
+// open it around their fetch, and Show Graphs draws behind it.
+func TestPagesShowALoadingOverlay(t *testing.T) {
+	nav := navbarHTML("/results")
+	for _, want := range []string{`id="bb-loading"`, "function bbLoading(", "function bbLoadingDone(", "function bbLoadingRun("} {
+		if !strings.Contains(nav, want) {
+			t.Errorf("navigation bar lacks %q", want)
+		}
+	}
+	pages := map[string]string{"graphs": graphsPageBody(t), "compare": comparePageBody(t)}
+	for name, body := range pages {
+		for _, want := range []string{"bbLoading('Loading", "bbLoadingDone()", "bbLoadingRun('Drawing graphs"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s page lacks %q", name, want)
+			}
+		}
+	}
+}
+
+// Graphs are drawn only while shown: a folded phase is only marked stale, and
+// opening it (or its section) draws it.
+func TestGraphsPageDrawsOnlyWhenShown(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{
+		"const fill = ext => { if (shown()) draw(ext); else stale = true; };",
+		"toggleSection(phaseHdr, phaseBody); ensure();",
+		"toggleSection(secHdr, secBody); ensures.forEach(f => f());",
+		"OPEN_PHASE[metric.key + '|' + pname] =",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
+// Every line chart of a card lists all its series at the hovered time (index
+// mode, not only the nearest point): the Flush, ftrace/ebpf latency and plain
+// cards as well as the member charts.
+func TestGraphsPageLineChartsTooltipIndexMode(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, fn := range []string{"makeFlushChart", "makeIOLatChart", "makeChart", "makeMembersChart"} {
+		src := jsFunction(t, body, fn)
+		if !strings.Contains(src, "interaction: { mode: 'index', intersect: false }") ||
+			!strings.Contains(src, "mode: 'index', intersect: false") {
+			t.Errorf("%s: tooltip is not in index mode", fn)
+		}
+	}
 }

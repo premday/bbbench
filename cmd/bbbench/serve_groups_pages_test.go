@@ -153,10 +153,11 @@ func seedSwapGroup(t *testing.T) {
 			Jobs: []JobResult{{Device: "sda", WriteStats: &IOStats{IOPS: 10, Bandwidth: 1024, AvgLatNS: 1000}}}}}})
 }
 
-// inlineScript returns the page's inline <script> (not the Chart.js one).
+// inlineScript returns the page's own inline <script>: the last one (not the
+// Chart.js one, nor the navigation bar's loading overlay before it).
 func inlineScript(t *testing.T, name, body string) string {
 	t.Helper()
-	i := strings.Index(body, "<script>")
+	i := strings.LastIndex(body, "<script>")
 	j := strings.Index(body[i+1:], "</script>")
 	if i < 0 || j < 0 {
 		t.Fatalf("%s: no inline script", name)
@@ -228,7 +229,7 @@ const DATA = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
 const HTML = [], ELS = [], CHARTS = [], byId = {};
 function el(tag) {
   const e = { tag, children: [], style: {}, dataset: {}, className: '', _t: '', _h: '',
-    classList: { add() {}, remove() {}, toggle() { return false; } },
+    classList: { add() {}, remove() {}, toggle() { return false; }, contains() { return false; } },
     appendChild(c) { this.children.push(c); return c; },
     removeChild(c) { this.children = this.children.filter(x => x !== c); },
     replaceChild() {}, addEventListener() {},
@@ -492,7 +493,7 @@ const DATA = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
 const HTML = [], ELS = [], CHARTS = [], byId = {};
 function el(tag) {
   const e = { tag, children: [], style: {}, dataset: {}, className: '', _t: '', _h: '',
-    classList: { add() {}, remove() {}, toggle() { return false; } },
+    classList: { add() {}, remove() {}, toggle() { return false; }, contains() { return false; } },
     appendChild(c) { this.children.push(c); return c; },
     removeChild(c) { this.children = this.children.filter(x => x !== c); },
     replaceChild() {}, addEventListener() {},

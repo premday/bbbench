@@ -63,6 +63,16 @@ const chartSharedJS = `function rampOf(d) {
         return Math.max(...ts.map(p => p.t)) + shift;
     }
 
+    // fmtDuration writes a time in seconds for people: under a minute as
+    // seconds (45s, 0.5s), from a minute on in whole seconds as h/m/s with
+    // the zero parts left out (160 -> 2m40s, 3690 -> 1h1m30s, 3600 -> 1h).
+    function fmtDuration(sec) {
+        if (!(sec >= 0)) return '';
+        if (sec < 60) return String(Math.round(sec * 100) / 100) + 's';
+        const t = Math.round(sec), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+        return (h ? h + 'h' : '') + (m ? m + 'm' : '') + (s ? s + 's' : '');
+    }
+
     function fmtTick(v) {
         const a = Math.abs(v);
         if (a === 0) return '0';
@@ -104,18 +114,47 @@ const chartSharedJS = `function rampOf(d) {
     // two significant digits below 1, trailing zeros trimmed ('2G', '1.5M',
     // '800\u03bc'); 0 is '0'.
     // With fixed (tooltips) there are always at least two digits after the
-    // dot and zeros are kept ('2.00G', '950.00', '0.0033').
+    // dot and zeros are kept ('2.00G', '950.00', '0.0033'); a time (unit s)
+    // takes the prefix that fits its own value, trimmed ('120\u03bc', '1m').
     function fmtScaled(v, sc, fixed) {
-        const x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
+        let x = Math.abs(v) / (sc && sc.div ? sc.div : 1);
+        let pre = sc && sc.prefix ? sc.prefix : '';
+        if (sc && sc.unit === 's' && v !== 0 && isFinite(v)) {
+            // A time takes the prefix of its own value (120 \u03bcs, 1 ms,
+            // never 0.00012 s or 0.001 s) and is printed trimmed.
+            const a = Math.abs(v) * (1 + 1e-9);
+            const own = a >= 1 ? ['', 1] : a >= 1e-3 ? ['m', 1e-3] : a >= 1e-6 ? ['\u03bc', 1e-6] : ['n', 1e-9];
+            pre = own[0];
+            x = Math.abs(v) / own[1];
+            fixed = false;
+        }
         if (fixed) {
-            const pre = sc && sc.prefix ? sc.prefix : '';
             if (!isFinite(x) || x === 0) return '0.00';
             return x.toFixed(Math.min(20, Math.max(2, 1 - Math.floor(Math.log10(x))))) + pre;
         }
         if (!isFinite(x) || x === 0) return '0';
         let s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toPrecision(2);
         if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
-        return s + (sc && sc.prefix ? sc.prefix : '');
+        return s + pre;
+    }
+    // unitName spells a unit out for an axis title, with the SI prefix of the
+    // ticks: second (s), millisecond (ms), bytes per second (B/s), gigabytes
+    // per second (GB/s), IO per second (IOPS), kilo IO per second (kIOPS);
+    // another unit is kept as is.
+    function unitName(unit, prefix) {
+        const p = prefix || '';
+        const word = {'n': 'nano', '\u03bc': 'micro', 'm': 'milli', 'k': 'kilo', 'M': 'mega', 'G': 'giga', 'T': 'tera', 'P': 'peta'}[p] || '';
+        if (unit === 's') return word + 'second (' + p + 's)';
+        if (unit === 'bytes/s') return word + 'bytes per second (' + p + 'B/s)';
+        if (unit === 'IOPS') return (word ? word + ' ' : '') + 'IO per second (' + p + 'IOPS)';
+        return unit;
+    }
+    // fmtSI is fmtScaled with its unit: the number, a space, then the SI
+    // prefix and the unit glued together (2.41 Gbytes/s, 1.5 MIOPS, 120 \u03bcs,
+    // 0 IOPS). Tooltips use it; the axis ticks stay numbers with a prefix.
+    function fmtSI(v, sc, fixed) {
+        const m = /^([0-9.e+-]*)(.*)$/.exec(fmtScaled(v, sc, fixed));
+        return m[1] + ' ' + m[2] + (sc && sc.unit ? sc.unit : '');
     }
     // toBase converts the datasets' values ({x, y} points or bar numbers) to
     // the base unit of sc, in place; null stays null. Chart.js then places
@@ -172,5 +211,71 @@ const chartSharedJS = `function rampOf(d) {
     function membersText(d) {
         if (!d.members || d.members.length === 0) return '';
         return 'members: ' + d.members.map(m => m.name + ' (' + m.role + ')').join(', ');
+    }
+
+    // htmlTooltip draws every chart tooltip as an HTML element beside the
+    // pointer, so a chart with many series (members, stack totals, ftrace or
+    // ebpf lines) is never cut at the canvas border: it is as tall as its
+    // lines need and, taller than the window, flows into columns. Plain text
+    // only (textContent).
+    function htmlTooltip(context) {
+        const tip = context.tooltip, chart = context.chart;
+        let el = document.getElementById('chart-tip');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'chart-tip';
+            el.style.cssText = 'position:fixed;z-index:2000;pointer-events:none;box-sizing:border-box;background:rgba(15,23,42,0.94);' +
+                'color:#f8fafc;font:11px/1.4 system-ui,sans-serif;padding:6px 9px;border-radius:5px;max-width:96vw;column-gap:14px';
+            document.body.appendChild(el);
+        }
+        if (tip.opacity === 0) { el.style.display = 'none'; return; }
+        const add = (isTitle, text, color) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'break-inside:avoid;white-space:pre-wrap;' + (isTitle ? 'font-weight:600;margin-bottom:3px;' : '');
+            if (color) {
+                const sw = document.createElement('span');
+                sw.style.cssText = 'display:inline-block;width:9px;height:9px;margin-right:5px;border:1px solid ' +
+                    (color.borderColor || '#fff') + ';background:' + (color.backgroundColor || color.borderColor || '#fff');
+                row.appendChild(sw);
+            }
+            row.appendChild(document.createTextNode(text));
+            el.appendChild(row);
+        };
+        el.textContent = '';
+        el.style.display = 'block';
+        el.style.columnCount = '1';
+        // Measured from the corner with the width its text needs: a fixed box
+        // is as wide as the room to its right, so one measured where it was
+        // last placed (near the right edge) would be squeezed and wrap.
+        el.style.left = '0px';
+        el.style.top = '0px';
+        el.style.width = 'max-content';
+        (tip.title || []).forEach(t => add(true, t));
+        (tip.beforeBody || []).forEach(t => add(false, t));
+        (tip.body || []).forEach((b, i) => {
+            (b.before || []).forEach(t => { if (t) add(false, t); });
+            (b.lines || []).forEach(t => add(false, t, (tip.labelColors || [])[i]));
+            (b.after || []).forEach(t => { if (t) add(false, t); });
+        });
+        (tip.afterBody || []).forEach(t => add(false, t));
+        (tip.footer || []).forEach(t => add(false, t));
+        // Taller than the window: flow into columns of about 290 px.
+        const room = window.innerHeight - 16;
+        if (el.offsetHeight > room) {
+            const cols = Math.min(4, Math.ceil(el.offsetHeight / room) + 1);
+            el.style.columnCount = String(cols);
+            el.style.width = Math.min(window.innerWidth - 16, cols * 290) + 'px';
+        }
+        const r = chart.canvas.getBoundingClientRect();
+        const w = el.offsetWidth, h = el.offsetHeight;
+        let x = r.left + tip.caretX + 14;
+        if (x + w > window.innerWidth - 8) x = Math.max(8, r.left + tip.caretX - w - 14);
+        const y = Math.min(Math.max(8, r.top + tip.caretY - h / 2), Math.max(8, window.innerHeight - h - 8));
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+    }
+    if (typeof Chart !== 'undefined' && Chart.defaults && Chart.defaults.plugins && Chart.defaults.plugins.tooltip) {
+        Chart.defaults.plugins.tooltip.enabled = false;
+        Chart.defaults.plugins.tooltip.external = htmlTooltip;
     }
 `

@@ -156,6 +156,22 @@ const navbarCSS = `
         }
         nav.topnav a.nav-link:hover { background: #334155; color: #e2e8f0; }
         nav.topnav a.nav-link.active { background: #2563eb; color: #fff; }
+        #bb-loading {
+            display: none; position: fixed; inset: 0; z-index: 3000;
+            background: rgba(241,245,249,0.82); align-items: center; justify-content: center;
+        }
+        #bb-loading.active { display: flex; }
+        #bb-loading .bb-card {
+            background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px 26px;
+            box-shadow: 0 4px 18px rgba(15,23,42,0.15); min-width: 260px; text-align: center;
+            font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #334155;
+        }
+        #bb-loading .bb-bar { height: 5px; background: #e2e8f0; border-radius: 3px; margin-top: 12px; overflow: hidden; position: relative; }
+        #bb-loading .bb-bar i {
+            position: absolute; top: 0; bottom: 0; width: 35%; background: #2563eb; border-radius: 3px;
+            animation: bb-slide 1.1s ease-in-out infinite;
+        }
+        @keyframes bb-slide { 0% { left: -35%; } 100% { left: 100%; } }
 `
 
 // navbarHTML returns the top navigation bar, marking the given path as active.
@@ -170,7 +186,23 @@ func navbarHTML(active string) string {
 	return fmt.Sprintf(`<nav class="topnav">
     <a class="brand" href="/">bbbench</a>
     <div class="nav-links">%s%s%s</div>
-</nav>`, link("/", "Home"), link("/status", "Status"), link("/results", "Results"))
+</nav>
+<div id="bb-loading" role="status" aria-live="polite"><div class="bb-card"><div class="bb-text"></div><div class="bb-bar"><i></i></div></div></div>
+<script>
+// A page that loads or draws for a while shows this overlay: bbLoading(text)
+// opens it, bbLoadingDone() closes it, bbLoadingRun(text, fn) shows it, lets
+// the browser paint it, then runs fn (a long synchronous draw) and closes it.
+function bbLoading(text) {
+    var el = document.getElementById('bb-loading');
+    el.querySelector('.bb-text').textContent = text;
+    el.classList.add('active');
+}
+function bbLoadingDone() { document.getElementById('bb-loading').classList.remove('active'); }
+function bbLoadingRun(text, fn) {
+    bbLoading(text);
+    setTimeout(function () { try { fn(); } finally { bbLoadingDone(); } }, 30);
+}
+</script>`, link("/", "Home"), link("/status", "Status"), link("/results", "Results"))
 }
 
 // handleHealth responds to health check requests.

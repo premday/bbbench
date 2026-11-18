@@ -495,7 +495,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .sec-hdr:hover { background: #f8fafc; }
         .sec-hdr .chev { display: inline-block; font-size: 10px; color: #94a3b8; transition: transform 0.18s; }
         .sec-hdr.collapsed .chev { transform: rotate(-90deg); }
-        .sec-body { padding: 8px 0 4px; display: flex; flex-direction: column; gap: 0; }
+        .sec-body { padding: 8px 0 4px 18px; display: flex; flex-direction: column; gap: 0; }
         .sec-body.hidden { display: none; }
 
         /* Phase-level foldable sub-section */
@@ -515,7 +515,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .mode-toggle button { font: inherit; font-size: 11px; font-weight: 600; padding: 2px 9px; border: 0; background: #fff; color: #475569; cursor: pointer; }
         .mode-toggle button + button { border-left: 1px solid #cbd5e1; }
         .mode-toggle button.on { background: #2563eb; color: #fff; }
-        .phase-body { padding-bottom: 8px; }
+        .phase-body { padding: 0 0 8px 18px; }
         .phase-body.hidden { display: none; }
 
         .chart-grid {
@@ -553,6 +553,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             padding: 0 5px; border-radius: 8px; border: 1px solid #fcd34d;
             color: #b45309; background: #fffbeb; cursor: help;
         }
+        .md-badge.md-ok { color: #166534; border-color: #86efac; background: #f0fdf4; }
         .md-badge.md-degraded { color: #be123c; border-color: #fda4af; background: #fff1f2; }
         .md-note { font-size: 10px; color: #b45309; margin-top: 2px; }
         .src-line { font-size: 10px; color: #6d28d9; margin-top: 2px; word-break: break-word; }
@@ -1228,10 +1229,10 @@ __NAVBAR_HTML__
     }
     __CHART_SHARED_JS__
 
-    // yAxisTitle is the y axis title of a card: the base unit of its ticks,
-    // whose numbers carry the SI prefix (2.4G = 2.4 * 10^9 bytes/s).
+    // yAxisTitle is the y axis title of a card: the base unit of its ticks
+    // spelled out (unitName), whose numbers carry the SI prefix (2.4G = 2.4 * 10^9 bytes/s).
     function yAxisTitle(sc) {
-        return { display: true, text: sc.unit, color: '#94a3b8', font: {size: 9} };
+        return { display: true, text: unitName(sc.unit, sc.prefix), color: '#94a3b8', font: {size: 9} };
     }
     // lineScales are the axes of a line chart: seconds on x (0..the phase's
     // maximum of d, shared by every card of the phase), y from yLow to yHigh in the base unit with the scale's
@@ -1239,8 +1240,8 @@ __NAVBAR_HTML__
     function lineScales(d, sc, yLow, yHigh, extra) {
         return {
             x: { type: 'linear', min: 0, max: PHASE_X[phaseKey(d)] || undefined,
-                 title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
-                 ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
+                 title: { display: true, text: 'time since the phase start (t)', color: '#94a3b8', font: {size: 9} },
+                 ticks: { callback: v => fmtDuration(v), font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
             y: Object.assign({ min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
                  ticks: { callback: v => fmtScaled(v, sc), font: {size: 9}, color: '#64748b' },
                  grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } }, extra)
@@ -1260,7 +1261,7 @@ __NAVBAR_HTML__
             options: {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false },
-                    tooltip: { callbacks: { label: ctx => fmtScaled(ctx.raw, sc, true) + ' ' + sc.unit } } },
+                    tooltip: { callbacks: { label: ctx => fmtSI(ctx.raw, sc, true) } } },
                 scales: { y }
             }
         });
@@ -1268,7 +1269,7 @@ __NAVBAR_HTML__
     // windowTitle is the tooltip title of a time-series chart: the hovered
     // window, or its time without a window.
     function windowTitle(d) {
-        return items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s';
+        return items => windowOf(d) ? 't+' + fmtDuration(items[0].raw.x) + ' \u2192 t+' + fmtDuration(items[0].raw.x + windowOf(d)) : 't+' + fmtDuration(items[0].raw.x);
     }
 
     // phaseScale is the SI scale of a card (siScale): its prefix is chosen
@@ -1293,13 +1294,15 @@ __NAVBAR_HTML__
                 data: { datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
+                    // The tooltip lists every series at the hovered time.
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
                         rampZone: { sec: rampOf(d) },
                         legend: { display: false },
-                        tooltip: { callbacks: {
-                            title: items => 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
-                            label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit +
-                                ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
+                        tooltip: { mode: 'index', intersect: false, callbacks: {
+                            title: items => 't+' + fmtDuration(items[0].raw.x) + ' \u2192 t+' + fmtDuration(items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)),
+                            label: ctx => 'Flush latency: ' + fmtSI(ctx.raw.y, sc, true) +
+                                ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + fmtDuration(d.flush.avg_msec / 1000) : '') + ')' } }
                     },
                     scales: lineScales(d, sc, 0, yHigh, { grid: { color: '#f1f5f9' } })
                 }
@@ -1506,7 +1509,7 @@ __NAVBAR_HTML__
         const totals = stacked ? g.totals : {};
         const dirs = ['r', 'w'].filter(dir => datasets.some(m => m.member && m.dir === dir));
         // v in the base unit; the stack totals are in the metric's units.
-        const fmt = v => fmtScaled(v, sc, true) + ' ' + sc.unit;
+        const fmt = v => fmtSI(v, sc, true);
         const totalLines = i => {
             const s = totals[xs[i]];
             if (!s) return [];
@@ -1680,7 +1683,7 @@ __NAVBAR_HTML__
             const f = Math.round(g.first), l = Math.round(g.last);
             return {text: g.action + ' ' + f + '%' + (f === l ? '' : ' -> ' + l + '%'), kind: 'sync'};
         });
-        if (deg > 0) out.push({text: deg === 1 ? 'degraded' : 'degraded ' + deg, kind: 'degraded'});
+        if (deg > 0) out.push({text: 'degraded (' + mdMissing(deg) + ')', kind: 'degraded'});
         return out;
     }
     // mdBusyNote: the phase ran a sync or its md state changed.
@@ -1702,6 +1705,26 @@ __NAVBAR_HTML__
         Object.defineProperty(d, '_mdIndex', {value: idx});
         return idx;
     }
+    // mdMissing words a degraded count: '1 disk missing', '2 disks missing'.
+    function mdMissing(n) { return n + ' disk' + (n === 1 ? '' : 's') + ' missing'; }
+    // mdHealth says in words what an md window shows: healthy, degraded (n
+    // disks missing), and a running sync as its action in progress with its
+    // rate: 'resyncing 43% at 10.0 MiB/s', 'degraded (1 disk missing),
+    // recovering 12% at 183.2 MiB/s'; a degraded count that could not be read
+    // is 'health unknown'.
+    function mdHealth(p) {
+        const VERB = {resync: 'resyncing', recover: 'recovering', reshape: 'reshaping', check: 'checking', repair: 'repairing'};
+        const parts = [];
+        if (p.degraded < 0) parts.push('health unknown');
+        else if (p.degraded > 0) parts.push('degraded (' + mdMissing(p.degraded) + ')');
+        if (mdBusy(p)) {
+            const rate = (p.speed || 0) > 0 ? ' at ' + (p.speed / 1024).toFixed(1) + ' MiB/s' : '';
+            const pct = (p.pct || 0) > 0 ? ' ' + Math.round(p.pct) + '%' : '';
+            parts.push((VERB[p.action] || p.action) + pct + rate);
+        }
+        if (!parts.length) parts.push(p.degraded < 0 ? 'health unknown' : 'healthy');
+        return parts.join(', ');
+    }
     // mdTipLines: the hovered window's md state and its events, for a
     // tooltip's afterBody; [] without md data or without an md window there.
     function mdTipLines(d, items) {
@@ -1709,9 +1732,7 @@ __NAVBAR_HTML__
         const idx = mdIndex(d), k = memberKey(items[0].raw.x, idx.step), out = [];
         const p = idx.windows[k];
         if (p) {
-            out.push('md: ' + (mdBusy(p)
-                ? p.action + ' ' + Math.round(p.pct || 0) + '% ' + ((p.speed || 0) / 1024).toFixed(1) + ' MiB/s'
-                : (p.action || 'unknown')) + ', degraded ' + (p.degraded < 0 ? 'unknown' : (p.degraded || 0)));
+            out.push('md: ' + mdHealth(p));
         }
         (idx.events[k] || []).forEach(text => out.push('md event: ' + text));
         return out;
@@ -1752,13 +1773,16 @@ __NAVBAR_HTML__
     // null without md data.
     function mdHeader(d, metric) {
         if (!mdMetric(d, metric)) return null;
-        const badges = mdBadges(d).map(b => {
+        const list = mdBadges(d);
+        // Nothing wrong and the state was read: say it is healthy.
+        if (!list.length && (d.ts_md || []).some(p => p.degraded === 0)) list.push({text: 'healthy', kind: 'ok'});
+        const badges = list.map(b => {
             const s = document.createElement('span');
             s.className = 'md-badge md-' + b.kind;
             s.textContent = b.text;
             s.title = b.kind === 'sync'
                 ? 'md sync_action during this phase, progress at its first and last window'
-                : 'md degraded count during this phase';
+                : b.kind === 'ok' ? 'no md disk missing and no sync running during this phase' : 'md degraded: disks missing from the array during this phase';
             return s;
         });
         let note = null;
@@ -1788,14 +1812,15 @@ __NAVBAR_HTML__
                 type: 'line', data: { datasets }, plugins: chartPlugins(d, metric),
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
                         rampZone: { sec: rampOf(d) },
                         mdTrack: mdOptions(d, metric),
                         legend: { display: false },
-                        tooltip: { callbacks: {
+                        tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: windowTitle(d),
                             label: ctx => ctx.dataset.label + ': ' +
-                                          fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
+                                          fmtSI(ctx.raw.y, sc, true),
                             afterBody: items => mdTipLines(d, items)
                         }}
                     },
@@ -1821,12 +1846,14 @@ __NAVBAR_HTML__
                 type: 'line', data: { datasets }, plugins: [rampPlugin],
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
+                    // The tooltip lists every series at the hovered time.
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
                         rampZone: { sec: rampOf(d) },
                         legend: { display: false },
-                        tooltip: { callbacks: {
+                        tooltip: { mode: 'index', intersect: false, callbacks: {
                             title: windowTitle(d),
-                            label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
+                            label: ctx => ctx.dataset.label + ': ' + fmtSI(ctx.raw.y, sc, true),
                         }}
                     },
                     scales: scales
@@ -2020,6 +2047,9 @@ __NAVBAR_HTML__
     // toggle redraws every phase of that metric only, so under Global the
     // untouched phases follow the new range.
     let REFILL = {};
+    // OPEN_PHASE maps '<metric key>|<phase>' to the function that unfolds
+    // that phase and its section and draws it (renderAll resets it).
+    let OPEN_PHASE = {};
     // ROW_BOXES maps '<where>|<skey>' to the checkbox of the series row now
     // shown there (where = a card's chart id or 'modal:<metric>'), so a
     // toggle gives the focus back to the rebuilt checkbox; reset in renderAll.
@@ -2090,6 +2120,10 @@ __NAVBAR_HTML__
 
     // ── Modal ──
     let modalChart = null;
+    // modalZoom is the time range {min, max} (seconds on the phase clock) the
+    // full screen chart is zoomed to, null = the whole phase. It survives a
+    // redraw of the open card (a series toggle) and is dropped on close.
+    let modalZoom = null;
     // modalCtx is what the open modal shows ({d, metric, pname, mode,
     // phaseData}), so a series toggle can draw it again; null when closed.
     let modalCtx = null;
@@ -2122,6 +2156,8 @@ __NAVBAR_HTML__
         warnEl.className = 'modal-ts-warn';
         warnEl.textContent = '';
         modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl, mode);
+        applyModalZoom();
+        newCanvas.title = 'Drag to zoom on a time range, Esc to reset the zoom';
         addLossNote(warnEl, d, metric, mode);
         const seriesEl = document.getElementById('modal-series');
         seriesEl.innerHTML = '';
@@ -2130,7 +2166,62 @@ __NAVBAR_HTML__
         document.getElementById('modal-overlay').classList.add('active');
     }
 
+    // zoomRange turns the two ends of a drag (x values, any order) into the
+    // range to zoom to, or null for a click or a drag with no width.
+    function zoomRange(v0, v1) {
+        const lo = Math.max(0, Math.min(v0, v1)), hi = Math.max(v0, v1);
+        return hi > lo ? {min: lo, max: hi} : null;
+    }
+    // applyModalZoom sets the full screen chart's time axis to modalZoom (the
+    // whole phase when null).
+    function applyModalZoom() {
+        if (!modalChart || !modalChart.options || !modalChart.options.scales || !modalChart.options.scales.x) return;
+        const x = modalChart.options.scales.x;
+        if (modalZoom) { x.min = modalZoom.min; x.max = modalZoom.max; }
+        else { x.min = 0; x.max = PHASE_X[phaseKey(modalCtx.d)] || undefined; }
+        modalChart.update('none');
+    }
+    // A drag over the full screen chart selects a time range (shown as a
+    // shaded band) and zooms to it on release; Esc resets. Registered once on
+    // the chart's wrapper, which openModal keeps while it replaces the canvas.
+    (function () {
+        const wrap = document.querySelector('.modal-chart-wrap');
+        if (!wrap || !wrap.addEventListener || typeof window === 'undefined') return;
+        let startX = null, band = null;
+        const canvas = () => document.getElementById('modal-canvas');
+        const px = e => {
+            const r = canvas().getBoundingClientRect();
+            return Math.min(Math.max(e.clientX - r.left, 0), r.width);
+        };
+        wrap.addEventListener('mousedown', e => {
+            if (e.button !== 0 || !modalChart || e.target !== canvas()) return;
+            startX = px(e);
+            band = document.createElement('div');
+            band.style.cssText = 'position:absolute;top:0;bottom:0;background:rgba(37,99,235,0.15);border:1px solid rgba(37,99,235,0.5);pointer-events:none';
+            band.style.left = startX + 'px';
+            band.style.width = '0px';
+            wrap.appendChild(band);
+            e.preventDefault();
+        });
+        window.addEventListener('mousemove', e => {
+            if (startX === null) return;
+            const x = px(e);
+            band.style.left = Math.min(startX, x) + 'px';
+            band.style.width = Math.abs(x - startX) + 'px';
+        });
+        window.addEventListener('mouseup', e => {
+            if (startX === null) return;
+            const x = px(e), x0 = startX;
+            startX = null;
+            if (band) { band.remove(); band = null; }
+            if (!modalChart || Math.abs(x - x0) < 5) return;
+            const sx = modalChart.scales.x;
+            const r = zoomRange(sx.getValueForPixel(x0), sx.getValueForPixel(x));
+            if (r) { modalZoom = r; applyModalZoom(); }
+        });
+    })();
     function closeModal() {
+        modalZoom = null;
         modalCtx = null;
         document.getElementById('modal-overlay').classList.remove('active');
         if (modalChart) { modalChart.destroy(); modalChart = null; }
@@ -2140,7 +2231,9 @@ __NAVBAR_HTML__
         if (e.target === e.currentTarget) closeModal();
     });
     document.addEventListener('keydown', e => {
-        if (e.key === 'Escape') closeModal();
+        if (e.key !== 'Escape') return;
+        // Esc first resets a zoom, and closes the full screen view when none is set.
+        if (modalZoom) { modalZoom = null; applyModalZoom(); } else closeModal();
     });
 
     function makeChartCard(d, metric, cid, yLow, yHigh, mode, pname, phaseData) {
@@ -2198,6 +2291,7 @@ __NAVBAR_HTML__
         charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl, mode);
         addLossNote(warnEl, d, metric, mode);
 
+        if (card.dataset) card.dataset.cardKey = cardKey(metric, d);
         card.addEventListener('click', () => openModal(d, metric, yLow, yHigh, mode, pname, phaseData));
         return card;
     }
@@ -2205,6 +2299,7 @@ __NAVBAR_HTML__
     function renderAll() {
         destroyAllCharts();
         REFILL = {};
+        OPEN_PHASE = {};
         SCALE_PHASES = {};
         ROW_BOXES = {};
         const main = document.getElementById('main');
@@ -2237,11 +2332,16 @@ __NAVBAR_HTML__
             section.appendChild(secHdr);
 
             const secBody = document.createElement('div');
-            secBody.className = 'sec-body';
+            // Every level starts folded: a click on a header opens it.
+            secBody.className = 'sec-body hidden';
+            secHdr.classList.add('collapsed');
             section.appendChild(secBody);
             main.appendChild(section);
 
-            secHdr.addEventListener('click', () => toggleSection(secHdr, secBody));
+            // Graphs are drawn only while shown: a phase draws when it and
+            // its section are open (ensures redraws what changed while folded).
+            const ensures = [];
+            secHdr.addEventListener('click', () => { toggleSection(secHdr, secBody); ensures.forEach(f => f()); });
 
             // Group data by phase, preserving encounter order. Metrics with a
             // "has" test (Flush, ftrace latency) only show disks that have
@@ -2275,10 +2375,11 @@ __NAVBAR_HTML__
                 secBody.appendChild(phaseHdr);
 
                 const phaseBody = document.createElement('div');
-                phaseBody.className = 'phase-body';
+                phaseBody.className = 'phase-body hidden';
+                phaseHdr.classList.add('collapsed');
                 secBody.appendChild(phaseBody);
 
-                phaseHdr.addEventListener('click', () => toggleSection(phaseHdr, phaseBody));
+                phaseHdr.addEventListener('click', () => { toggleSection(phaseHdr, phaseBody); ensure(); });
 
                 const grid = document.createElement('div');
                 grid.className = 'chart-grid';
@@ -2286,7 +2387,10 @@ __NAVBAR_HTML__
 
                 // (Re)draws this phase's cards in its current graph mode, each
                 // on its range in ext (metricScales: the Y scale criterion).
-                const fill = ext => {
+                let stale = true;
+                const shown = () => !phaseBody.classList.contains('hidden') && !secBody.classList.contains('hidden');
+                const draw = ext => {
+                    stale = false;
                     const mode = graphMode(metric, pname);
                     Object.keys(charts).forEach(id => {
                         if (id.indexOf(metric.key + ':' + pname + ':') === 0) { charts[id].destroy(); delete charts[id]; }
@@ -2298,6 +2402,21 @@ __NAVBAR_HTML__
                         grid.appendChild(makeChartCard(d, metric, cid, sc.yLow, sc.yHigh, mode, pname, phaseData));
                     });
                     toggle.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+                };
+                const fill = ext => { if (shown()) draw(ext); else stale = true; };
+                const idx = (REFILL[metric.key] || []).length;
+                const ensure = () => {
+                    if (!stale || !shown()) return;
+                    const go = () => draw(metricScales(metric)[idx]);
+                    if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing graphs\u2026', go); else go();
+                };
+                ensures.push(ensure);
+                // Opens this phase (and its section) for a link to a graph in it.
+                OPEN_PHASE[metric.key + '|' + pname] = () => {
+                    [[secHdr, secBody], [phaseHdr, phaseBody]].forEach(([h, b]) => {
+                        b.classList.remove('hidden'); h.classList.remove('collapsed');
+                    });
+                    stale && draw(metricScales(metric)[idx]);
                 };
                 // Only a phase with a per-member breakdown has a choice.
                 const toggle = document.createElement('span');
@@ -2319,14 +2438,112 @@ __NAVBAR_HTML__
         });
     }
 
-    document.getElementById('btn-show').addEventListener('click', renderAll);
+    // ── Shareable state ──
+    // The page keeps its state in the URL fragment (#s=<json>), kept up to
+    // date after every change, so the address bar can be shared at any time:
+    // g = graph types not selected, f = for each filter the values not
+    // selected, y = Y scale criterion, i = 1 when invalid results are shown,
+    // m = graph modes other than normal, h = hidden series per metric, r = 1
+    // when the graphs are shown, o and z = the full screen graph and its zoom. Excluded values are stored so a short link
+    // stays short and values the link does not know stay selected.
+    function stateToHash(st) {
+        return '#s=' + encodeURIComponent(JSON.stringify(st));
+    }
+    function hashToState(h) {
+        if (!h || h.indexOf('#s=') !== 0) return null;
+        try {
+            const st = JSON.parse(decodeURIComponent(h.slice(3)));
+            return st && typeof st === 'object' ? st : null;
+        } catch (e) { return null; }
+    }
+    // cardKey names a card (a graph type of one entry of the data) in the
+    // link and in the page: o = [metric key, entry index] is the graph open in
+    // full screen, z = [from, to] its zoom in seconds.
+    function cardKey(metric, d) { return metric.key + ':' + allData.indexOf(d); }
+    function currentState(shown) {
+        const st = {g: [], f: {}, y: scaleCriterion, i: SHOW_INVALID ? 1 : 0, m: {}, h: {}, r: shown ? 1 : 0};
+        if (modalCtx) {
+            st.o = [modalCtx.metric.key, allData.indexOf(modalCtx.d)];
+            st.r = 1;
+            if (modalZoom) st.z = [modalZoom.min, modalZoom.max];
+        }
+        METRICS.forEach(m => { if (!SEL.graph_type.has(m.key)) st.g.push(m.key); });
+        DATA_DIMS.forEach(dim => {
+            const all = [...new Set(allData.map(d => DIM_F[dim](d)))].sort();
+            const out = all.filter(v => !SEL[dim].has(v));
+            if (out.length) st.f[dim] = out;
+        });
+        Object.keys(graphModeOf).forEach(k => { if (graphModeOf[k] !== 'normal') st.m[k] = graphModeOf[k]; });
+        Object.keys(HIDDEN).forEach(k => { if (HIDDEN[k].size) st.h[k] = [...HIDDEN[k]].sort(); });
+        return st;
+    }
+    // applyState puts a state read from the URL on the page (not the
+    // graphs: the caller draws them when st.r is set).
+    function applyState(st) {
+        const all = new Set((st.g || []));
+        SEL.graph_type = new Set(METRICS.map(m => m.key).filter(k => !all.has(k)));
+        document.querySelectorAll('#list-graph_type input[type=checkbox]').forEach(cb => {
+            cb.checked = SEL.graph_type.has(cb.value);
+        });
+        DATA_DIMS.forEach(dim => {
+            const out = new Set((st.f && st.f[dim]) || []);
+            SEL[dim] = new Set(allData.map(d => DIM_F[dim](d)).filter(v => !out.has(v)));
+        });
+        SHOW_INVALID = !!st.i;
+        const hi = document.getElementById('hide-invalid');
+        if (hi) hi.checked = !SHOW_INVALID;
+        scaleCriterion = SCALE_CRITERIA.some(c => c[0] === st.y) ? st.y : 'phase';
+        document.getElementById('y-scale').value = scaleCriterion;
+        Object.keys(st.m || {}).forEach(k => { graphModeOf[k] = st.m[k]; });
+        Object.keys(st.h || {}).forEach(k => { HIDDEN[k] = new Set(st.h[k]); });
+        updateLists();
+    }
+    // restoreModal opens the full screen graph a link names (st.o), zoomed
+    // to st.z, once the cards are drawn; nothing when the card is not there.
+    function restoreModal(st) {
+        if (!st || !st.o) return;
+        const e = allData[st.o[1] | 0];
+        const open = e && OPEN_PHASE[st.o[0] + '|' + phaseKey(e)];
+        if (open) open();
+        const card = document.querySelector('[data-card-key="' + String(st.o[0]).replace(/[^\w.-]/g, '') + ':' + (st.o[1] | 0) + '"]');
+        if (!card) return;
+        const z = st.z;
+        modalZoom = z && z.length === 2 && z[1] > z[0] ? {min: Math.max(0, +z[0] || 0), max: +z[1]} : null;
+        card.click();
+    }
+    let GRAPHS_SHOWN = false;
+    function saveState() {
+        try {
+            history.replaceState(null, '', location.pathname + location.search + stateToHash(currentState(GRAPHS_SHOWN)));
+        } catch (e) { /* no history API: the page works without a shareable link */ }
+    }
+    // Every change on the page (a filter, a series, a graph mode, the Y scale,
+    // Show Graphs) is a click or a change event: the state is saved once the
+    // handlers have run.
+    ['click', 'change', 'keydown', 'mouseup'].forEach(ev => document.addEventListener(ev, () => setTimeout(saveState, 0)));
+
+    // drawGraphs draws behind the loading overlay (a big page takes seconds).
+    function drawGraphs(after) {
+        const run = () => { renderAll(); if (after) after(); };
+        if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing graphs\u2026', run); else run();
+    }
+    document.getElementById('btn-show').addEventListener('click', () => { GRAPHS_SHOWN = true; drawGraphs(); });
     document.getElementById('y-scale').addEventListener('change', e => setScaleCriterion(e.target.value));
     document.getElementById('hide-invalid').addEventListener('change', e => setShowInvalid(!e.target.checked));
 
+    if (typeof bbLoading === 'function') bbLoading('Loading graphs\u2026');
     fetch(DATA_URL)
         .then(r => r.json())
-        .then(data => { allData = data || []; initFilters(); })
+        .then(data => {
+            allData = data || [];
+            initFilters();
+            const st = hashToState(location.hash);
+            if (st) applyState(st);
+            if (typeof bbLoadingDone === 'function') bbLoadingDone();
+            if (st && (st.r || st.o)) { GRAPHS_SHOWN = true; drawGraphs(() => restoreModal(st)); }
+        })
         .catch(err => {
+            if (typeof bbLoadingDone === 'function') bbLoadingDone();
             document.getElementById('main').innerHTML =
                 '<div class="placeholder">Error loading data: ' + err.message + '</div>';
         });

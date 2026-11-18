@@ -315,14 +315,17 @@ __NAVBAR_HTML__
         function refreshResults() {
             // Groups are optional: without them every run is listed on its own.
             const groups = fetch('/api/groups').then(r => r.json()).catch(() => []);
+            if (!allResults.length && typeof bbLoading === 'function') bbLoading('Loading results\u2026');
             fetch('/api/results')
                 .then(response => response.json())
                 .then(results => groups.then(gs => {
                     allGroups = gs || [];
                     allResults = results;
                     filterResults();
+                    if (typeof bbLoadingDone === 'function') bbLoadingDone();
                 }))
                 .catch(error => {
+                    if (typeof bbLoadingDone === 'function') bbLoadingDone();
                     console.error('Error loading results:', error);
                     document.getElementById('results-body').innerHTML =
                         '<tr><td colspan="6" class="no-results">Error loading results</td></tr>';
@@ -574,9 +577,11 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
         }
 
         // Fetch full result details
+        if (typeof bbLoading === 'function') bbLoading('Loading result\u2026');
         fetch('/api/results/detail?id=' + resultID)
             .then(response => response.json())
             .then(result => {
+                if (typeof bbLoadingDone === 'function') bbLoadingDone();
                 const db = drivesHTML(result);
                 if (db) {
                     document.getElementById('drives-block').innerHTML = db;
@@ -620,6 +625,7 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
             })
             .catch(error => {
                 console.error('Error loading result details:', error);
+                if (typeof bbLoadingDone === 'function') bbLoadingDone();
                 document.getElementById('phases-list').innerHTML =
                     '<li style="padding: 20px; text-align: center; color: #f44336;">Error loading phase details</li>';
             });
