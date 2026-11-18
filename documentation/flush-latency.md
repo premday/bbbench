@@ -72,7 +72,7 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
   file cannot be used, it reads the text `trace_pipe` as before, where a stop
   marker ends the reader (a live `trace_pipe` never reports end of file). The
   raw reader is verified only against pages built by the tests, not on a real
-  kernel (see the README, "I/O latency tracing").
+  kernel (see [io-latency-tracing.md](io-latency-tracing.md)).
 - **Pairing:** each `nvme_setup_cmd` is matched to its `nvme_complete_rq` by
   controller, queue and command id, so the pairing is exact even with many
   Flushes in flight. Latency = completion time - setup time, per Flush.
@@ -96,7 +96,7 @@ filesystem). `fsync()` is then "write back dirty pages, then flush the device".
 - **Other devices:** non-NVMe devices use `block_rq_issue` / `block_rq_complete`
   for requests that are Flushes. Pairing is first-in first-out, so only the mean
   is exact and no percentiles are reported.
-- **Reads and writes:** the same private tracefs instance mechanism (`flushtrace.Instance`) carries a sibling session that times every read and write, at the device and in the block layer, in every phase (`<fio log prefix>_iolat.1.log`, `bbbench-iolat-*` instances, `--no-io-trace` to turn it off). It is documented in the README, "I/O latency tracing"; this page covers only the Flush.
+- **Reads and writes:** the same private tracefs instance mechanism (`flushtrace.Instance`) carries a sibling session that times every read and write, at the device and in the block layer, in every phase (`<fio log prefix>_iolat.1.log`, `bbbench-iolat-*` instances, `--no-io-trace` to turn it off). It is documented in [io-latency-tracing.md](io-latency-tracing.md); this page covers only the Flush.
 
 ## What is included in the number
 
@@ -134,7 +134,7 @@ cache at all, and `nvme set-feature /dev/nvme0 -f 6 -V 1` enables it (capital
 Flush tracing and a plain run only **read** the drive's state (`queue/write_cache`,
 tracefs): they do not enable or disable the write cache, set NVMe features,
 or touch queue settings or the I/O scheduler. The Flush numbers describe the
-drive as you left it. The one exception is a *setting test* (see the README):
+drive as you left it. The one exception is a *setting test* (see [layout-test.md](layout-test.md)):
 of the write cache policy, after an explicit confirmation it applies each value,
 verifies it before and after each run and restores the original; a *layout*
 setting test builds md arrays or LVM volumes on the chosen disks and erases them
