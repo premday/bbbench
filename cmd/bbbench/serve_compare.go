@@ -596,13 +596,17 @@ __NAVBAR_HTML__
         }
     }
 
-    document.getElementById('btn-compare').addEventListener('click', renderCompare);
+    document.getElementById('btn-compare').addEventListener('click', () => {
+        if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing graphs\u2026', renderCompare); else renderCompare();
+    });
     document.getElementById('hide-invalid').addEventListener('change', e => setShowInvalid(!e.target.checked));
 
+    if (typeof bbLoading === 'function') bbLoading('Loading data\u2026');
     fetch(DATA_URL)
         .then(r => r.json())
-        .then(data => { allData = data || []; initSidebar(); })
+        .then(data => { allData = data || []; initSidebar(); if (typeof bbLoadingDone === 'function') bbLoadingDone(); })
         .catch(err => {
+            if (typeof bbLoadingDone === 'function') bbLoadingDone();
             document.getElementById('main').innerHTML =
                 '<div class="cmp-placeholder">Error loading data: ' + err.message + '</div>';
         });

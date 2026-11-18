@@ -2444,22 +2444,27 @@ __NAVBAR_HTML__
     // handlers have run.
     ['click', 'change'].forEach(ev => document.addEventListener(ev, () => setTimeout(saveState, 0)));
 
-    document.getElementById('btn-show').addEventListener('click', () => { GRAPHS_SHOWN = true; renderAll(); });
+    // drawGraphs draws behind the loading overlay (a big page takes seconds).
+    function drawGraphs() {
+        if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing graphs\u2026', renderAll); else renderAll();
+    }
+    document.getElementById('btn-show').addEventListener('click', () => { GRAPHS_SHOWN = true; drawGraphs(); });
     document.getElementById('y-scale').addEventListener('change', e => setScaleCriterion(e.target.value));
     document.getElementById('hide-invalid').addEventListener('change', e => setShowInvalid(!e.target.checked));
 
+    if (typeof bbLoading === 'function') bbLoading('Loading graphs\u2026');
     fetch(DATA_URL)
         .then(r => r.json())
         .then(data => {
             allData = data || [];
             initFilters();
             const st = hashToState(location.hash);
-            if (st) {
-                applyState(st);
-                if (st.r) { GRAPHS_SHOWN = true; renderAll(); }
-            }
+            if (st) applyState(st);
+            if (typeof bbLoadingDone === 'function') bbLoadingDone();
+            if (st && st.r) { GRAPHS_SHOWN = true; drawGraphs(); }
         })
         .catch(err => {
+            if (typeof bbLoadingDone === 'function') bbLoadingDone();
             document.getElementById('main').innerHTML =
                 '<div class="placeholder">Error loading data: ' + err.message + '</div>';
         });

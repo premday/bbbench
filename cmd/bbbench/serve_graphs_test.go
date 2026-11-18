@@ -1990,3 +1990,23 @@ assert.strictEqual(updates.length, 2);
 console.log('OK');
 `)
 }
+
+// Pages that load or draw for a while show a loading overlay: the navigation
+// bar carries it and the graphs, compare, summary, results and result pages
+// open it around their fetch, and Show Graphs draws behind it.
+func TestPagesShowALoadingOverlay(t *testing.T) {
+	nav := navbarHTML("/results")
+	for _, want := range []string{`id="bb-loading"`, "function bbLoading(", "function bbLoadingDone(", "function bbLoadingRun("} {
+		if !strings.Contains(nav, want) {
+			t.Errorf("navigation bar lacks %q", want)
+		}
+	}
+	pages := map[string]string{"graphs": graphsPageBody(t), "compare": comparePageBody(t)}
+	for name, body := range pages {
+		for _, want := range []string{"bbLoading('Loading", "bbLoadingDone()", "bbLoadingRun('Drawing graphs"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s page lacks %q", name, want)
+			}
+		}
+	}
+}
