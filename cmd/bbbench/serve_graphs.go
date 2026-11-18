@@ -2301,7 +2301,9 @@ __NAVBAR_HTML__
             section.appendChild(secHdr);
 
             const secBody = document.createElement('div');
-            secBody.className = 'sec-body';
+            // Every level starts folded: a click on a header opens it.
+            secBody.className = 'sec-body hidden';
+            secHdr.classList.add('collapsed');
             section.appendChild(secBody);
             main.appendChild(section);
 
@@ -2339,7 +2341,8 @@ __NAVBAR_HTML__
                 secBody.appendChild(phaseHdr);
 
                 const phaseBody = document.createElement('div');
-                phaseBody.className = 'phase-body';
+                phaseBody.className = 'phase-body hidden';
+                phaseHdr.classList.add('collapsed');
                 secBody.appendChild(phaseBody);
 
                 phaseHdr.addEventListener('click', () => toggleSection(phaseHdr, phaseBody));
