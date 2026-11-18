@@ -957,7 +957,7 @@ console.log('OK');
 
 // A loss note shown in the modal must not survive into the next one.
 func TestGraphsPageModalClearsWarn(t *testing.T) {
-	runPageJS(t, []string{"openModal", "iolatKind", "fmtCount", "lossShare", "lossSeries", "lossInfo", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote", "metricLabel", "traceToolOf"}, `
+	runPageJS(t, []string{"openModal", "applyModalZoom", "phaseKey", "iolatKind", "fmtCount", "lossShare", "lossSeries", "lossInfo", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote", "metricLabel", "traceToolOf"}, `
 const assert = require('assert');
 const els = {};
 const el = id => els[id] || (els[id] = {id, textContent: '', className: '', innerHTML: '',
@@ -1955,6 +1955,38 @@ assert.strictEqual(windowTitle({})(items), 't+30s');
 assert.strictEqual(windowTitle({ts_iops: [{t: 10}]})([{raw: {x: 150}}]), 't+2m30s \u2192 t+2m40s');
 [[0, '0s'], [0.5, '0.5s'], [45, '45s'], [59.99, '59.99s'], [60, '1m'], [160, '2m40s'], [3600, '1h'], [3690, '1h1m30s'], [7325, '2h2m5s'], [-1, '']]
     .forEach(([v, w]) => assert.strictEqual(fmtDuration(v), w, String(v)));
+console.log('OK');
+`)
+}
+
+// A drag over the full screen chart zooms its time axis to the selected
+// range (any direction, never below 0), Esc resets it, and a click or an empty
+// drag selects nothing.
+func TestGraphsPageModalZoom(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{"modalZoom = r; applyModalZoom();", "if (modalZoom) { modalZoom = null; applyModalZoom(); } else closeModal();"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	runPageJS(t, []string{"zoomRange", "applyModalZoom", "phaseKey"}, `
+const assert = require('assert');
+assert.deepStrictEqual(zoomRange(10, 40), {min: 10, max: 40});
+assert.deepStrictEqual(zoomRange(40, 10), {min: 10, max: 40});
+assert.deepStrictEqual(zoomRange(-5, 20), {min: 0, max: 20});
+assert.strictEqual(zoomRange(7, 7), null);
+assert.strictEqual(zoomRange(-9, -3), null);
+const PHASE_X = {A: 120};
+let modalZoom = null, updates = [];
+const modalCtx = {d: {phase_name: 'A'}};
+const modalChart = {options: {scales: {x: {min: 0, max: 120}}}, update: m => updates.push(m)};
+modalZoom = {min: 30, max: 60};
+applyModalZoom();
+assert.deepStrictEqual([modalChart.options.scales.x.min, modalChart.options.scales.x.max], [30, 60]);
+modalZoom = null;
+applyModalZoom();
+assert.deepStrictEqual([modalChart.options.scales.x.min, modalChart.options.scales.x.max], [0, 120]);
+assert.strictEqual(updates.length, 2);
 console.log('OK');
 `)
 }

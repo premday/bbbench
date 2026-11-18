@@ -2090,6 +2090,10 @@ __NAVBAR_HTML__
 
     // ── Modal ──
     let modalChart = null;
+    // modalZoom is the time range {min, max} (seconds on the phase clock) the
+    // full screen chart is zoomed to, null = the whole phase. It survives a
+    // redraw of the open card (a series toggle) and is dropped on close.
+    let modalZoom = null;
     // modalCtx is what the open modal shows ({d, metric, pname, mode,
     // phaseData}), so a series toggle can draw it again; null when closed.
     let modalCtx = null;
@@ -2122,6 +2126,8 @@ __NAVBAR_HTML__
         warnEl.className = 'modal-ts-warn';
         warnEl.textContent = '';
         modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl, mode);
+        applyModalZoom();
+        newCanvas.title = 'Drag to zoom on a time range, Esc to reset the zoom';
         addLossNote(warnEl, d, metric, mode);
         const seriesEl = document.getElementById('modal-series');
         seriesEl.innerHTML = '';
@@ -2130,7 +2136,62 @@ __NAVBAR_HTML__
         document.getElementById('modal-overlay').classList.add('active');
     }
 
+    // zoomRange turns the two ends of a drag (x values, any order) into the
+    // range to zoom to, or null for a click or a drag with no width.
+    function zoomRange(v0, v1) {
+        const lo = Math.max(0, Math.min(v0, v1)), hi = Math.max(v0, v1);
+        return hi > lo ? {min: lo, max: hi} : null;
+    }
+    // applyModalZoom sets the full screen chart's time axis to modalZoom (the
+    // whole phase when null).
+    function applyModalZoom() {
+        if (!modalChart || !modalChart.options || !modalChart.options.scales || !modalChart.options.scales.x) return;
+        const x = modalChart.options.scales.x;
+        if (modalZoom) { x.min = modalZoom.min; x.max = modalZoom.max; }
+        else { x.min = 0; x.max = PHASE_X[phaseKey(modalCtx.d)] || undefined; }
+        modalChart.update('none');
+    }
+    // A drag over the full screen chart selects a time range (shown as a
+    // shaded band) and zooms to it on release; Esc resets. Registered once on
+    // the chart's wrapper, which openModal keeps while it replaces the canvas.
+    (function () {
+        const wrap = document.querySelector('.modal-chart-wrap');
+        if (!wrap || !wrap.addEventListener || typeof window === 'undefined') return;
+        let startX = null, band = null;
+        const canvas = () => document.getElementById('modal-canvas');
+        const px = e => {
+            const r = canvas().getBoundingClientRect();
+            return Math.min(Math.max(e.clientX - r.left, 0), r.width);
+        };
+        wrap.addEventListener('mousedown', e => {
+            if (e.button !== 0 || !modalChart || e.target !== canvas()) return;
+            startX = px(e);
+            band = document.createElement('div');
+            band.style.cssText = 'position:absolute;top:0;bottom:0;background:rgba(37,99,235,0.15);border:1px solid rgba(37,99,235,0.5);pointer-events:none';
+            band.style.left = startX + 'px';
+            band.style.width = '0px';
+            wrap.appendChild(band);
+            e.preventDefault();
+        });
+        window.addEventListener('mousemove', e => {
+            if (startX === null) return;
+            const x = px(e);
+            band.style.left = Math.min(startX, x) + 'px';
+            band.style.width = Math.abs(x - startX) + 'px';
+        });
+        window.addEventListener('mouseup', e => {
+            if (startX === null) return;
+            const x = px(e), x0 = startX;
+            startX = null;
+            if (band) { band.remove(); band = null; }
+            if (!modalChart || Math.abs(x - x0) < 5) return;
+            const sx = modalChart.scales.x;
+            const r = zoomRange(sx.getValueForPixel(x0), sx.getValueForPixel(x));
+            if (r) { modalZoom = r; applyModalZoom(); }
+        });
+    })();
     function closeModal() {
+        modalZoom = null;
         modalCtx = null;
         document.getElementById('modal-overlay').classList.remove('active');
         if (modalChart) { modalChart.destroy(); modalChart = null; }
@@ -2140,7 +2201,9 @@ __NAVBAR_HTML__
         if (e.target === e.currentTarget) closeModal();
     });
     document.addEventListener('keydown', e => {
-        if (e.key === 'Escape') closeModal();
+        if (e.key !== 'Escape') return;
+        // Esc first resets a zoom, and closes the full screen view when none is set.
+        if (modalZoom) { modalZoom = null; applyModalZoom(); } else closeModal();
     });
 
     function makeChartCard(d, metric, cid, yLow, yHigh, mode, pname, phaseData) {
