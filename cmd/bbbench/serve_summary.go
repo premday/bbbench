@@ -470,7 +470,9 @@ function renderAll() {
         section.appendChild(secHdr);
 
         const secBody = document.createElement('div');
-        secBody.className = 'sec-body';
+        // Folded at first: a click on the header opens the section.
+        secBody.className = 'sec-body hidden';
+        secHdr.classList.add('collapsed');
         section.appendChild(secBody);
         main.appendChild(section);
 
