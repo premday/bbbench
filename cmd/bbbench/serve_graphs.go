@@ -553,6 +553,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             padding: 0 5px; border-radius: 8px; border: 1px solid #fcd34d;
             color: #b45309; background: #fffbeb; cursor: help;
         }
+        .md-badge.md-ok { color: #166534; border-color: #86efac; background: #f0fdf4; }
         .md-badge.md-degraded { color: #be123c; border-color: #fda4af; background: #fff1f2; }
         .md-note { font-size: 10px; color: #b45309; margin-top: 2px; }
         .src-line { font-size: 10px; color: #6d28d9; margin-top: 2px; word-break: break-word; }
@@ -1680,7 +1681,7 @@ __NAVBAR_HTML__
             const f = Math.round(g.first), l = Math.round(g.last);
             return {text: g.action + ' ' + f + '%' + (f === l ? '' : ' -> ' + l + '%'), kind: 'sync'};
         });
-        if (deg > 0) out.push({text: deg === 1 ? 'degraded' : 'degraded ' + deg, kind: 'degraded'});
+        if (deg > 0) out.push({text: 'degraded (' + mdMissing(deg) + ')', kind: 'degraded'});
         return out;
     }
     // mdBusyNote: the phase ran a sync or its md state changed.
@@ -1702,6 +1703,26 @@ __NAVBAR_HTML__
         Object.defineProperty(d, '_mdIndex', {value: idx});
         return idx;
     }
+    // mdMissing words a degraded count: '1 disk missing', '2 disks missing'.
+    function mdMissing(n) { return n + ' disk' + (n === 1 ? '' : 's') + ' missing'; }
+    // mdHealth says in words what an md window shows: healthy, degraded (n
+    // disks missing), and a running sync as its action in progress with its
+    // rate: 'resyncing 43% at 10.0 MiB/s', 'degraded (1 disk missing),
+    // recovering 12% at 183.2 MiB/s'; a degraded count that could not be read
+    // is 'health unknown'.
+    function mdHealth(p) {
+        const VERB = {resync: 'resyncing', recover: 'recovering', reshape: 'reshaping', check: 'checking', repair: 'repairing'};
+        const parts = [];
+        if (p.degraded < 0) parts.push('health unknown');
+        else if (p.degraded > 0) parts.push('degraded (' + mdMissing(p.degraded) + ')');
+        if (mdBusy(p)) {
+            const rate = (p.speed || 0) > 0 ? ' at ' + (p.speed / 1024).toFixed(1) + ' MiB/s' : '';
+            const pct = (p.pct || 0) > 0 ? ' ' + Math.round(p.pct) + '%' : '';
+            parts.push((VERB[p.action] || p.action) + pct + rate);
+        }
+        if (!parts.length) parts.push(p.degraded < 0 ? 'health unknown' : 'healthy');
+        return parts.join(', ');
+    }
     // mdTipLines: the hovered window's md state and its events, for a
     // tooltip's afterBody; [] without md data or without an md window there.
     function mdTipLines(d, items) {
@@ -1709,9 +1730,7 @@ __NAVBAR_HTML__
         const idx = mdIndex(d), k = memberKey(items[0].raw.x, idx.step), out = [];
         const p = idx.windows[k];
         if (p) {
-            out.push('md: ' + (mdBusy(p)
-                ? p.action + ' ' + Math.round(p.pct || 0) + '% ' + ((p.speed || 0) / 1024).toFixed(1) + ' MiB/s'
-                : (p.action || 'unknown')) + ', degraded ' + (p.degraded < 0 ? 'unknown' : (p.degraded || 0)));
+            out.push('md: ' + mdHealth(p));
         }
         (idx.events[k] || []).forEach(text => out.push('md event: ' + text));
         return out;
@@ -1752,13 +1771,16 @@ __NAVBAR_HTML__
     // null without md data.
     function mdHeader(d, metric) {
         if (!mdMetric(d, metric)) return null;
-        const badges = mdBadges(d).map(b => {
+        const list = mdBadges(d);
+        // Nothing wrong and the state was read: say it is healthy.
+        if (!list.length && (d.ts_md || []).some(p => p.degraded === 0)) list.push({text: 'healthy', kind: 'ok'});
+        const badges = list.map(b => {
             const s = document.createElement('span');
             s.className = 'md-badge md-' + b.kind;
             s.textContent = b.text;
             s.title = b.kind === 'sync'
                 ? 'md sync_action during this phase, progress at its first and last window'
-                : 'md degraded count during this phase';
+                : b.kind === 'ok' ? 'no md disk missing and no sync running during this phase' : 'md degraded: disks missing from the array during this phase';
             return s;
         });
         let note = null;

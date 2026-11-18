@@ -526,7 +526,7 @@ func runPageJS(t *testing.T, funcs []string, script string) {
 
 // mdFuncs are the page functions of the md track and what they use.
 var mdFuncs = []string{"windowOf", "memberStep", "memberKey", "mdMetric", "hasMD", "mdBusy",
-	"mdActions", "mdBands", "mdBadges", "mdBusyNote", "mdIndex", "mdTipLines", "mdMarkers",
+	"mdActions", "mdBands", "mdMissing", "mdHealth", "mdBadges", "mdBusyNote", "mdIndex", "mdTipLines", "mdMarkers",
 	"mdLabelLayout", "chartPlugins"}
 
 const mdTestPrelude = `
@@ -582,9 +582,9 @@ assert.deepStrictEqual(mdBadges(r).map(b => b.text), ['check 20% -> 30%', 'check
 assert.deepStrictEqual(mdBadges({ts_md: [md(0, 'resync', 50, 1, 0)]}).map(b => b.text), ['resync 50%']);
 assert.strictEqual(mdBusyNote(d), true);
 // Degraded only: no sync badge.
-const g = {ts_md: [md(0, 'idle', 0, 0, 0), md(1, 'idle', 0, 0, 1)], md_events: [{t: 1, text: 'degraded 0 -> 1'}]};
-assert.deepStrictEqual(mdBadges(g), [{text: 'degraded', kind: 'degraded'}]);
-assert.deepStrictEqual(mdBadges({ts_md: [md(0, 'idle', 0, 0, 2)]}), [{text: 'degraded 2', kind: 'degraded'}]);
+const g = {ts_md: [md(0, 'idle', 0, 0, 0), md(1, 'idle', 0, 0, 1)], md_events: [{t: 1, text: 'healthy -> degraded (1 disk missing)'}]};
+assert.deepStrictEqual(mdBadges(g), [{text: 'degraded (1 disk missing)', kind: 'degraded'}]);
+assert.deepStrictEqual(mdBadges({ts_md: [md(0, 'idle', 0, 0, 2)]}), [{text: 'degraded (2 disks missing)', kind: 'degraded'}]);
 assert.strictEqual(mdBusyNote(g), true);
 // Idle all along, no event: nothing.
 const q = {ts_md: [md(0, 'idle', 0, 0, 0), md(1, 'idle', 0, 0, 0)]};
@@ -593,20 +593,26 @@ assert.strictEqual(mdBusyNote(q), false);
 assert.strictEqual(mdBusyNote({md_events: [{t: 0, text: 'sdb: in_sync -> faulty'}]}), true);
 // Hover: the md point of the window, keyed like the member grid.
 const items = x => [{raw: {x}}];
-assert.deepStrictEqual(mdTipLines(d, items(1)), ['md: resync 43% 10.0 MiB/s, degraded 0']);
-assert.deepStrictEqual(mdTipLines(d, items(0)), ['md: idle, degraded 0']);
+assert.deepStrictEqual(mdTipLines(d, items(1)), ['md: resyncing 43% at 10.0 MiB/s']);
+assert.deepStrictEqual(mdTipLines(d, items(0)), ['md: healthy']);
 assert.deepStrictEqual(mdTipLines(d, items(9)), []);
+// Health in words: degraded and syncing together, an unreadable count, no rate known.
+assert.strictEqual(mdHealth(md(0, 'recover', 12.4, 187596, 1)), 'degraded (1 disk missing), recovering 12% at 183.2 MiB/s');
+assert.strictEqual(mdHealth(md(0, 'idle', 0, 0, 3)), 'degraded (3 disks missing)');
+assert.strictEqual(mdHealth(md(0, 'resync', 0, 0, 0)), 'resyncing');
+assert.strictEqual(mdHealth(md(0, 'idle', 0, 0, -1)), 'health unknown');
+assert.strictEqual(mdHealth(md(0, 'idle', 0, 0, 0)), 'healthy');
 // Events of the window are spelt out in full.
-const e = {log_avg_msec: 1000, ts_md: [md(1, 'idle', 0, 0, 1)], md_events: [{t: 1.002, text: 'degraded 0 -> 1'}]};
-assert.deepStrictEqual(mdTipLines(e, items(1)), ['md: idle, degraded 1', 'md event: degraded 0 -> 1']);
+const e = {log_avg_msec: 1000, ts_md: [md(1, 'idle', 0, 0, 1)], md_events: [{t: 1.002, text: 'healthy -> degraded (1 disk missing)'}]};
+assert.deepStrictEqual(mdTipLines(e, items(1)), ['md: degraded (1 disk missing)', 'md event: healthy -> degraded (1 disk missing)']);
 // Sub-second windows keep their own key.
 const s = {log_avg_msec: 500, ts_md: [md(2, 'check', 10, 512, 0), md(2.5, 'check', 11, 512, 0)]};
-assert.deepStrictEqual(mdTipLines(s, items(2.5)), ['md: check 11% 0.5 MiB/s, degraded 0']);
+assert.deepStrictEqual(mdTipLines(s, items(2.5)), ['md: checking 11% at 0.5 MiB/s']);
 // The index is built once per entry and kept hidden on it: several events of
 // one window in their order, the entry's keys and JSON unchanged.
 const c = {log_avg_msec: 1000, ts_md: [md(1, 'idle', 0, 0, 0)], md_events: [{t: 1, text: 'a'}, {t: 3, text: 'x'}, {t: 0.999, text: 'b'}]};
 const before = JSON.stringify(c);
-assert.deepStrictEqual(mdTipLines(c, items(1)), ['md: idle, degraded 0', 'md event: a', 'md event: b']);
+assert.deepStrictEqual(mdTipLines(c, items(1)), ['md: healthy', 'md event: a', 'md event: b']);
 assert.deepStrictEqual(mdTipLines(c, items(3)), ['md event: x']);
 assert.strictEqual(mdIndex(c), mdIndex(c));
 assert.deepStrictEqual(Object.keys(c), ['log_avg_msec', 'ts_md', 'md_events']);

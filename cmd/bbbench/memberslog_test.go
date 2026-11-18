@@ -140,7 +140,7 @@ func TestMDEventsFromWindows(t *testing.T) {
 	chg.Action, chg.ArrayState, chg.Degraded, chg.RaidDisks = "check", "active", 1, 5
 	chg.Members = map[string]string{"sda": "in_sync", "sdb": "faulty"}
 	ev := mdEventsFrom(nil, []diskstat.MDWindow{mdw(1000, idle), mdw(2000, idle), mdw(3000, chg), mdw(4000, chg)})
-	want := []string{"sync_action idle -> check", "array_state clean -> active", "degraded 0 -> 1", "raid_disks 4 -> 5", "sdb: in_sync -> faulty"}
+	want := []string{"sync_action idle -> check", "array_state clean -> active", "healthy -> degraded (1 disk missing)", "raid_disks 4 -> 5", "sdb: in_sync -> faulty"}
 	if len(ev) != len(want) {
 		t.Fatalf("events %+v", ev)
 	}
@@ -151,7 +151,7 @@ func TestMDEventsFromWindows(t *testing.T) {
 	}
 	start := chg
 	ev = mdEventsFrom(nil, []diskstat.MDWindow{mdw(1000, start)})
-	if len(ev) != 2 || ev[0].Text != "sync_action check (at phase start)" || ev[1].Text != "degraded 1 (at phase start)" {
+	if len(ev) != 2 || ev[0].Text != "sync_action check (at phase start)" || ev[1].Text != "degraded (1 disk missing) (at phase start)" {
 		t.Errorf("first window events %+v", ev)
 	}
 	if ev := mdEventsFrom(nil, []diskstat.MDWindow{mdw(1000, idle)}); len(ev) != 0 {
@@ -237,17 +237,17 @@ func TestMDStartEventsWithRamp(t *testing.T) {
 	eq := func(got, want []string) bool { return strings.Join(got, "|") == strings.Join(want, "|") }
 	// starts non-idle, ramp drops windows, unchanged: reported once at the first visible window
 	info, _ := loadMDLog([]diskstat.MDWindow{mdw(1000, chk), mdw(2000, chk), mdw(3000, chk)}, 2000)
-	if w := []string{"sync_action check (at phase start)", "degraded 1 (at phase start)"}; !eq(texts(info), w) || info.Events[0].T != 2 {
+	if w := []string{"sync_action check (at phase start)", "degraded (1 disk missing) (at phase start)"}; !eq(texts(info), w) || info.Events[0].T != 2 {
 		t.Errorf("non-idle+ramp: %+v", info.Events)
 	}
 	// starts idle, change in the ramp: a change event only
 	info, _ = loadMDLog([]diskstat.MDWindow{mdw(1000, idle), mdw(2000, chk), mdw(3000, chk)}, 2000)
-	if w := []string{"sync_action idle -> check", "degraded 0 -> 1"}; !eq(texts(info), w) || info.Events[0].T != 2 {
+	if w := []string{"sync_action idle -> check", "healthy -> degraded (1 disk missing)"}; !eq(texts(info), w) || info.Events[0].T != 2 {
 		t.Errorf("idle+change in ramp: %+v", info.Events)
 	}
 	// starts non-idle, no ramp: unchanged behaviour
 	info, _ = loadMDLog([]diskstat.MDWindow{mdw(1000, chk)}, 0)
-	if w := []string{"sync_action check (at phase start)", "degraded 1 (at phase start)"}; !eq(texts(info), w) || info.Events[0].T != 0 {
+	if w := []string{"sync_action check (at phase start)", "degraded (1 disk missing) (at phase start)"}; !eq(texts(info), w) || info.Events[0].T != 0 {
 		t.Errorf("no ramp: %+v", info.Events)
 	}
 }
@@ -283,7 +283,7 @@ func TestMDEventsIgnoreUnreadable(t *testing.T) {
 		return m
 	}
 	check("degraded unreadable", texts(mkd(1), mkd(-1), mkd(1)))
-	check("degraded unreadable then change", texts(mkd(1), mkd(-1), mkd(0)), "degraded 1 -> 0")
+	check("degraded unreadable then change", texts(mkd(1), mkd(-1), mkd(0)), "degraded (1 disk missing) -> healthy")
 	check("unreadable then change", texts(mk("idle", 4, "in_sync"), mk("", 4, "in_sync"), mk("check", 4, "in_sync")),
 		"sync_action idle -> check")
 }
