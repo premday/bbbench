@@ -495,7 +495,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .sec-hdr:hover { background: #f8fafc; }
         .sec-hdr .chev { display: inline-block; font-size: 10px; color: #94a3b8; transition: transform 0.18s; }
         .sec-hdr.collapsed .chev { transform: rotate(-90deg); }
-        .sec-body { padding: 8px 0 4px; display: flex; flex-direction: column; gap: 0; }
+        .sec-body { padding: 8px 0 4px 18px; display: flex; flex-direction: column; gap: 0; }
         .sec-body.hidden { display: none; }
 
         /* Phase-level foldable sub-section */
@@ -515,7 +515,7 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
         .mode-toggle button { font: inherit; font-size: 11px; font-weight: 600; padding: 2px 9px; border: 0; background: #fff; color: #475569; cursor: pointer; }
         .mode-toggle button + button { border-left: 1px solid #cbd5e1; }
         .mode-toggle button.on { background: #2563eb; color: #fff; }
-        .phase-body { padding-bottom: 8px; }
+        .phase-body { padding: 0 0 8px 18px; }
         .phase-body.hidden { display: none; }
 
         .chart-grid {
