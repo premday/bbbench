@@ -2020,6 +2020,9 @@ __NAVBAR_HTML__
     // toggle redraws every phase of that metric only, so under Global the
     // untouched phases follow the new range.
     let REFILL = {};
+    // OPEN_PHASE maps '<metric key>|<phase>' to the function that unfolds
+    // that phase and its section and draws it (renderAll resets it).
+    let OPEN_PHASE = {};
     // ROW_BOXES maps '<where>|<skey>' to the checkbox of the series row now
     // shown there (where = a card's chart id or 'modal:<metric>'), so a
     // toggle gives the focus back to the rebuilt checkbox; reset in renderAll.
@@ -2269,6 +2272,7 @@ __NAVBAR_HTML__
     function renderAll() {
         destroyAllCharts();
         REFILL = {};
+        OPEN_PHASE = {};
         SCALE_PHASES = {};
         ROW_BOXES = {};
         const main = document.getElementById('main');
@@ -2307,7 +2311,10 @@ __NAVBAR_HTML__
             section.appendChild(secBody);
             main.appendChild(section);
 
-            secHdr.addEventListener('click', () => toggleSection(secHdr, secBody));
+            // Graphs are drawn only while shown: a phase draws when it and
+            // its section are open (ensures redraws what changed while folded).
+            const ensures = [];
+            secHdr.addEventListener('click', () => { toggleSection(secHdr, secBody); ensures.forEach(f => f()); });
 
             // Group data by phase, preserving encounter order. Metrics with a
             // "has" test (Flush, ftrace latency) only show disks that have
@@ -2345,7 +2352,7 @@ __NAVBAR_HTML__
                 phaseHdr.classList.add('collapsed');
                 secBody.appendChild(phaseBody);
 
-                phaseHdr.addEventListener('click', () => toggleSection(phaseHdr, phaseBody));
+                phaseHdr.addEventListener('click', () => { toggleSection(phaseHdr, phaseBody); ensure(); });
 
                 const grid = document.createElement('div');
                 grid.className = 'chart-grid';
@@ -2353,7 +2360,10 @@ __NAVBAR_HTML__
 
                 // (Re)draws this phase's cards in its current graph mode, each
                 // on its range in ext (metricScales: the Y scale criterion).
-                const fill = ext => {
+                let stale = true;
+                const shown = () => !phaseBody.classList.contains('hidden') && !secBody.classList.contains('hidden');
+                const draw = ext => {
+                    stale = false;
                     const mode = graphMode(metric, pname);
                     Object.keys(charts).forEach(id => {
                         if (id.indexOf(metric.key + ':' + pname + ':') === 0) { charts[id].destroy(); delete charts[id]; }
@@ -2365,6 +2375,21 @@ __NAVBAR_HTML__
                         grid.appendChild(makeChartCard(d, metric, cid, sc.yLow, sc.yHigh, mode, pname, phaseData));
                     });
                     toggle.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+                };
+                const fill = ext => { if (shown()) draw(ext); else stale = true; };
+                const idx = (REFILL[metric.key] || []).length;
+                const ensure = () => {
+                    if (!stale || !shown()) return;
+                    const go = () => draw(metricScales(metric)[idx]);
+                    if (typeof bbLoadingRun === 'function') bbLoadingRun('Drawing graphs\u2026', go); else go();
+                };
+                ensures.push(ensure);
+                // Opens this phase (and its section) for a link to a graph in it.
+                OPEN_PHASE[metric.key + '|' + pname] = () => {
+                    [[secHdr, secBody], [phaseHdr, phaseBody]].forEach(([h, b]) => {
+                        b.classList.remove('hidden'); h.classList.remove('collapsed');
+                    });
+                    stale && draw(metricScales(metric)[idx]);
                 };
                 // Only a phase with a per-member breakdown has a choice.
                 const toggle = document.createElement('span');
@@ -2450,6 +2475,9 @@ __NAVBAR_HTML__
     // to st.z, once the cards are drawn; nothing when the card is not there.
     function restoreModal(st) {
         if (!st || !st.o) return;
+        const e = allData[st.o[1] | 0];
+        const open = e && OPEN_PHASE[st.o[0] + '|' + phaseKey(e)];
+        if (open) open();
         const card = document.querySelector('[data-card-key="' + String(st.o[0]).replace(/[^\w.-]/g, '') + ':' + (st.o[1] | 0) + '"]');
         if (!card) return;
         const z = st.z;

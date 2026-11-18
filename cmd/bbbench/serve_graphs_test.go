@@ -1895,9 +1895,9 @@ func TestGraphsPageStateInURL(t *testing.T) {
 			t.Errorf("page lacks %q", want)
 		}
 	}
-	runPageJS(t, []string{"stateToHash", "hashToState", "currentState", "applyState", "cardKey", "restoreModal"}, `
+	runPageJS(t, []string{"stateToHash", "hashToState", "currentState", "applyState", "cardKey", "restoreModal", "phaseKey"}, `
 const assert = require('assert');
-let modalCtx = null, modalZoom = null;
+let modalCtx = null, modalZoom = null, OPEN_PHASE = {};
 const METRICS = [{key: 'iops'}, {key: 'bw'}, {key: 'lat'}];
 const SCALE_CRITERIA = [['global', 'Global'], ['phase', 'Per phase'], ['graph', 'Per graph']];
 const DATA_DIMS = ['disk', 'phase'];
@@ -1952,6 +1952,13 @@ assert.strictEqual(clicked, 1); assert.deepStrictEqual(modalZoom, {min: 30, max:
 modalZoom = null; restoreModal({o: ['iops', 0]}); assert.strictEqual(clicked, 1); assert.strictEqual(modalZoom, null);
 restoreModal({o: ['bw', 2], z: [50, 10]}); assert.strictEqual(clicked, 2); assert.strictEqual(modalZoom, null);
 restoreModal({}); assert.strictEqual(clicked, 2);
+// A graph in a folded phase is drawn (its phase opened) before its card is clicked.
+allData[2].phase_name = 'randread';
+const order = [];
+OPEN_PHASE['bw|randread'] = () => order.push('open');
+global.document.querySelector = q => { order.push('query'); return {click: () => order.push('click')}; };
+restoreModal({o: ['bw', 2]});
+assert.deepStrictEqual(order, ['open', 'query', 'click']);
 
 // Foreign, empty or damaged fragments are ignored; a new value stays selected.
 ['', '#', '#other', '#s=%7Bbad', '#s=%22str%22', '#s=null'].forEach(h => assert.strictEqual(hashToState(h), null, h));
@@ -2025,6 +2032,22 @@ func TestPagesShowALoadingOverlay(t *testing.T) {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s page lacks %q", name, want)
 			}
+		}
+	}
+}
+
+// Graphs are drawn only while shown: a folded phase is only marked stale, and
+// opening it (or its section) draws it.
+func TestGraphsPageDrawsOnlyWhenShown(t *testing.T) {
+	body := graphsPageBody(t)
+	for _, want := range []string{
+		"const fill = ext => { if (shown()) draw(ext); else stale = true; };",
+		"toggleSection(phaseHdr, phaseBody); ensure();",
+		"toggleSection(secHdr, secBody); ensures.forEach(f => f());",
+		"OPEN_PHASE[metric.key + '|' + pname] =",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
 		}
 	}
 }

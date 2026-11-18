@@ -229,7 +229,7 @@ const DATA = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
 const HTML = [], ELS = [], CHARTS = [], byId = {};
 function el(tag) {
   const e = { tag, children: [], style: {}, dataset: {}, className: '', _t: '', _h: '',
-    classList: { add() {}, remove() {}, toggle() { return false; } },
+    classList: { add() {}, remove() {}, toggle() { return false; }, contains() { return false; } },
     appendChild(c) { this.children.push(c); return c; },
     removeChild(c) { this.children = this.children.filter(x => x !== c); },
     replaceChild() {}, addEventListener() {},
@@ -493,7 +493,7 @@ const DATA = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
 const HTML = [], ELS = [], CHARTS = [], byId = {};
 function el(tag) {
   const e = { tag, children: [], style: {}, dataset: {}, className: '', _t: '', _h: '',
-    classList: { add() {}, remove() {}, toggle() { return false; } },
+    classList: { add() {}, remove() {}, toggle() { return false; }, contains() { return false; } },
     appendChild(c) { this.children.push(c); return c; },
     removeChild(c) { this.children = this.children.filter(x => x !== c); },
     replaceChild() {}, addEventListener() {},
