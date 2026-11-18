@@ -1268,7 +1268,7 @@ __NAVBAR_HTML__
     // windowTitle is the tooltip title of a time-series chart: the hovered
     // window, or its time without a window.
     function windowTitle(d) {
-        return items => windowOf(d) ? 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + windowOf(d)) + ' s' : items[0].raw.x + ' s';
+        return items => windowOf(d) ? 't+' + items[0].raw.x + ' s \u2192 t+' + (items[0].raw.x + windowOf(d)) + ' s' : 't+' + items[0].raw.x + ' s';
     }
 
     // phaseScale is the SI scale of a card (siScale): its prefix is chosen
@@ -1297,7 +1297,7 @@ __NAVBAR_HTML__
                         rampZone: { sec: rampOf(d) },
                         legend: { display: false },
                         tooltip: { callbacks: {
-                            title: items => 'window ' + items[0].raw.x + '\u2013' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
+                            title: items => 't+' + items[0].raw.x + ' s \u2192 t+' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
                             label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit +
                                 ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
                     },

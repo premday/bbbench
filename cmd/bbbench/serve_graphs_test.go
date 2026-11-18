@@ -1873,7 +1873,7 @@ global.document = {getElementById: () => el, createElement: () => mk(), createTe
 global.window = {innerHeight: 400, innerWidth: 1200};
 const chart = {canvas: {getBoundingClientRect: () => ({left: 10, top: 20})}};
 const lines = Array.from({length: 60}, (_, i) => ['series ' + i + ': 1']);
-const tip = {opacity: 1, title: ['window 0-30 s'], body: lines.map(l => ({lines: l})), labelColors: [], caretX: 100, caretY: 50};
+const tip = {opacity: 1, title: ['t+0 s → t+30 s'], body: lines.map(l => ({lines: l})), labelColors: [], caretX: 100, caretY: 50};
 htmlTooltip({chart, tooltip: tip});
 assert.strictEqual(el.style.display, 'block');
 assert.strictEqual(el.children.length, 61, 'title and all 60 series');
@@ -1940,6 +1940,18 @@ assert.strictEqual(listsUpdated, 1);
 applyState({y: 'nonsense', f: {disk: ['gone']}});
 assert.strictEqual(scaleCriterion, 'phase');
 assert.deepStrictEqual([...SEL.disk].sort(), ['sda', 'sdb']);
+console.log('OK');
+`)
+}
+
+// The tooltip title of a time-series chart reads "t+n s → t+(n+w) s" (t = the
+// start of the phase, n = the window's x value, w = its width).
+func TestGraphsPageWindowTitle(t *testing.T) {
+	runPageJS(t, []string{"windowTitle", "windowOf"}, `
+const assert = require('assert');
+const items = [{raw: {x: 30}}];
+assert.strictEqual(windowTitle({ts_iops: [{t: 10}]})(items), 't+30 s \u2192 t+40 s');
+assert.strictEqual(windowTitle({})(items), 't+30 s');
 console.log('OK');
 `)
 }
