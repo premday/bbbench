@@ -71,7 +71,7 @@ func startIOTraceWith(drive DriveInfo, logPrefix string, avgMsec, rampMs int, op
 // sessions x CPUs x the per-CPU size: at most the budget, except at the
 // floor, where it is sessions x CPUs MiB.
 const (
-	defaultTraceBufferMB = 256
+	defaultTraceBufferMB = 1024
 	maxTraceBufferMB     = 1 << 20 // 1 TiB: anything larger is a typo
 	ioTraceMinBufferKB   = 1024
 	ioTraceMaxBufferKB   = 64 * 1024

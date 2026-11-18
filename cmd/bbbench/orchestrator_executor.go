@@ -53,6 +53,7 @@ type ExecutionCoordinator struct {
 	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
 	flushTrace  bool             // trace device Flush latency during phases that fsync
 	ioTrace     bool             // trace read and write latency (kernel events) during every phase
+	ioTraceMode iotrace.Mode     // how: --io-trace, "" = auto
 	// traceBufferMB is the ring buffer budget shared by the concurrent
 	// trace sessions (--trace-buffer-mb; 0 = defaultTraceBufferMB).
 	traceBufferMB int
@@ -346,6 +347,7 @@ func (ec *ExecutionCoordinator) onSecondSignal(exit func(int)) {
 	}
 	fmt.Println("\nForce quitting...")
 	ec.cleanup()
+	closeRunLog()
 	exit(exitCodeSIGINT)
 }
 
@@ -1150,7 +1152,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	var ioTrace *ioTraceRun
 	if ec.ioTrace {
 		ioTrace, result.IOTraceNote = startIOTraceWith(drive, logPrefix, logAvgMsec, rampMs,
-			iotrace.Options{SysBlock: ec.sysBlock, BufferKB: ioTraceBufferKB(ec.traceBufferMB, sessions, cpus)})
+			iotrace.Options{SysBlock: ec.sysBlock, Mode: ec.ioTraceMode, BufferKB: ioTraceBufferKB(ec.traceBufferMB, sessions, cpus)})
 	}
 	// A force quit (cleanup) must not leave the instances behind.
 	untrack := ec.registerTrace(func() {

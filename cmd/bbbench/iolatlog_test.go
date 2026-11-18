@@ -337,7 +337,8 @@ func TestUpdateLivePhaseCarriesIOTrace(t *testing.T) {
 // second at high IOPS) and a 64 MiB cap per CPU.
 func TestIOTraceBufferKB(t *testing.T) {
 	for _, c := range []struct{ budget, sessions, cpus, want int }{
-		{0, 1, 8, 32768},     // default 256 MiB / 8 CPUs = 32 MiB
+		{0, 1, 8, 65536},     // default 1024 MiB / 8 CPUs = 128 MiB, capped at 64 MiB
+		{0, 1, 64, 16384},    // default on 64 CPUs: 16 MiB
 		{256, 1, 2, 65536},   // 128 MiB per CPU, capped at 64 MiB
 		{256, 1, 16, 16384},  // exactly the budget
 		{256, 4, 16, 4096},   // shared by 4 sessions
@@ -387,7 +388,7 @@ func TestTraceBufferLine(t *testing.T) {
 		want                   string
 	}{
 		{256, 2, 8, "ftrace buffers: 256 MiB budget (--trace-buffer-mb), 16 MiB per CPU for up to 2 concurrent sessions on 8 CPUs: 256 MiB of kernel memory"},
-		{0, 1, 2, "ftrace buffers: 256 MiB budget (--trace-buffer-mb), 64 MiB per CPU for up to 1 concurrent session on 2 CPUs: 128 MiB of kernel memory"},
+		{0, 1, 2, "ftrace buffers: 1024 MiB budget (--trace-buffer-mb), 64 MiB per CPU for up to 1 concurrent session on 2 CPUs: 128 MiB of kernel memory"},
 		{256, 12, 64, "ftrace buffers: 256 MiB budget (--trace-buffer-mb), 1 MiB per CPU for up to 12 concurrent sessions on 64 CPUs: 768 MiB of kernel memory"},
 		{4096, 1, 64, "ftrace buffers: 4096 MiB budget (--trace-buffer-mb), 64 MiB per CPU for up to 1 concurrent session on 64 CPUs: 4 GiB of kernel memory"},
 		{100, 3, 7, "ftrace buffers: 100 MiB budget (--trace-buffer-mb), 4876 KiB per CPU for up to 3 concurrent sessions on 7 CPUs: 102396 KiB of kernel memory"},

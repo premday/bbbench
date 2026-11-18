@@ -55,7 +55,11 @@ func SourceLineOf(s *Summary, kind Kind) string { return sourceLine(s, kind) }
 // of series counts as seen) and SourceLineOf (one kind).
 func sourceLine(s *Summary, kind Kind) string {
 	var b strings.Builder
-	b.WriteString("ftrace: ")
+	tool := string(s.Mode)
+	if tool == "" {
+		tool = string(ModeFtrace) // results from before the eBPF mode
+	}
+	b.WriteString(tool + ": ")
 	if len(s.Devices) == 0 {
 		b.WriteString("no device traced")
 	}

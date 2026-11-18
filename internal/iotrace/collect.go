@@ -453,12 +453,7 @@ func (c *collector) addDevice(d *device) {
 // is not possible while streaming: they arrive before the second marker is
 // known.)
 func (c *collector) feed(ev flushtrace.Event, startNs int64) {
-	if startNs != c.startNs {
-		if c.startNs != 0 {
-			c.agg.reset()
-		}
-		c.startNs = startNs
-	}
+	c.setStart(startNs)
 	switch ev.Name {
 	case "block_rq_insert", "block_rq_issue", "block_rq_merge":
 		c.blockQueued(ev)
@@ -472,6 +467,17 @@ func (c *collector) feed(ev flushtrace.Event, startNs int64) {
 		c.nvmeSetup(ev)
 	case "nvme_complete_rq":
 		c.nvmeComplete(ev, startNs)
+	}
+}
+
+// setStart takes the start marker time; a change after the first one
+// discards what was aggregated (see feed).
+func (c *collector) setStart(startNs int64) {
+	if startNs != c.startNs {
+		if c.startNs != 0 {
+			c.agg.reset()
+		}
+		c.startNs = startNs
 	}
 }
 

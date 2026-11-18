@@ -74,6 +74,7 @@ type Options struct {
 	AvgMsec      int    // window length (fio's --log-avg-msec); 0 = flushtrace.DefaultWindowMs
 	OffsetMs     int    // fio's ramp_time: completions before it are left out of the summary
 	BufferKB     int    // per-CPU ring buffer; 0 = 16384
+	Mode         Mode   // how to collect; "" = ModeFtrace (the flag defaults to auto)
 }
 
 // DeviceSummary is what was traced on one device and its phase statistics.
@@ -112,19 +113,41 @@ type Summary struct {
 	// per-CPU pages) or flushtrace.ReaderText (trace_pipe); ReaderNote why
 	// the raw reader was not used, or what it could not decode. Clock is the
 	// instance's trace clock.
+	Mode       Mode   `json:"mode,omitempty"`      // the collector used: ModeEBPF or ModeFtrace
+	ModeNote   string `json:"mode_note,omitempty"` // why the requested mode was not used
 	Reader     string `json:"reader,omitempty"`
 	ReaderNote string `json:"reader_note,omitempty"`
 	Clock      string `json:"clock,omitempty"`
 	// Late counts the events the raw reader's merge received after a newer
 	// one had been fed: they were fed out of order. A pair one broke is in
 	// Unpaired, so Late is not added to Lost.
-	Late int64  `json:"late,omitempty"`
-	Text string `json:"text"` // SourceLine
+	Late int64 `json:"late,omitempty"`
+	// EBPF is the eBPF collector's own counters (ModeEBPF only).
+	EBPF *EBPFInfo `json:"ebpf,omitempty"`
+	// Kernel is the kernel's own view of the trace instance at stop: the
+	// filters it applied, the buffer size and each CPU's counters (entries,
+	// overrun, read events). Overrun above is bbbench's count from the pages;
+	// the two should agree.
+	Kernel *flushtrace.KernelInfo `json:"kernel,omitempty"`
+	// KernelNote is KernelNote(), set by Fill, not stored in the log.
+	KernelNote string `json:"kernel_note,omitempty"`
+	Text       string `json:"text"` // SourceLine
 	// TextDevice and TextBlockLayer are SourceLineOf for each kind: the
 	// source lines of the Device and the Block-layer latency cards (a
 	// bio-based node's bio series is on the Device latency card).
 	TextDevice     string `json:"text_device"`
 	TextBlockLayer string `json:"text_blocklayer"`
+}
+
+// EBPFInfo is what the eBPF program counted over the phase. NoStart and Full
+// are shown as unpaired events of the first traced device (the counters are
+// not per device).
+type EBPFInfo struct {
+	Started   uint64   `json:"started"`            // starts stored
+	Completed uint64   `json:"completed"`          // completions that found their start
+	NoStart   uint64   `json:"no_start,omitempty"` // completions without a stored start
+	Full      uint64   `json:"full,omitempty"`     // starts dropped, the start map was full
+	Programs  []string `json:"programs,omitempty"` // tracepoints attached
 }
 
 // Fill sets Lost, the texts and each device's BlockLayerNote from the rest.
@@ -134,6 +157,7 @@ func (s *Summary) Fill() {
 		s.Lost += s.Devices[i].Unpaired
 		s.Devices[i].BlockLayerNote = blockLayerNote(s.Devices[i])
 	}
+	s.KernelNote = s.kernelNote()
 	s.Text = SourceLine(s)
 	s.TextDevice = SourceLineOf(s, KindDevice)
 	s.TextBlockLayer = SourceLineOf(s, KindBlockLayer)
@@ -145,13 +169,15 @@ type Result struct {
 	Windows []Window
 }
 
-// Session is one running I/O latency trace of a set of devices.
-type Session struct {
+// ftraceSession is one running ftrace I/O latency trace of a set of devices.
+type ftraceSession struct {
 	inst    *flushtrace.Instance
-	col     *collector
+	fan     *fanout
 	devices []DeviceSummary // in the given order; Stats and Unpaired filled at Stop
 	traced  map[string]*device
 	summary Summary
+	// modeNote says why the ftrace collector runs when another was asked for.
+	modeNote string
 }
 
 const (
@@ -171,7 +197,7 @@ const (
 // tracepoints for a bio-based node (no request events by construction), else
 // the block_rq_* tracepoints. A device that cannot be traced is listed with a
 // Note; when none can, the error wraps ErrUnsupported with the reasons.
-func Start(devices []string, opts Options) (*Session, error) {
+func startFtrace(devices []string, opts Options) (*ftraceSession, error) {
 	root, err := flushtrace.FindTracefs(flushtrace.Options{TracefsRoot: opts.TracefsRoot})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnsupported, err)
@@ -182,8 +208,8 @@ func Start(devices []string, opts Options) (*Session, error) {
 	hasMerge := hasInsert && flushtrace.HasEvents(root, evBlockMerge)
 	hasBio := flushtrace.HasEvents(root, evBioQueue, evBioDone)
 
-	s := &Session{traced: map[string]*device{}}
-	col := newCollector(opts.AvgMsec, opts.OffsetMs)
+	s := &ftraceSession{traced: map[string]*device{}}
+	var traced []*device
 	var reasons []string
 	var anyNVMe, anyBlock bool
 	var devFilter, bioFilter, ctrls []string
@@ -231,7 +257,7 @@ func Start(devices []string, opts Options) (*Session, error) {
 				}
 			}
 		}
-		col.addDevice(d)
+		traced = append(traced, d)
 		s.traced[name] = d
 		anyNVMe = anyNVMe || d.source == SourceNVMe
 		if d.usesBlock() {
@@ -301,23 +327,28 @@ func Start(devices []string, opts Options) (*Session, error) {
 	if buf == 0 {
 		buf = 16384
 	}
-	inst, err := flushtrace.OpenInstanceStart(root, name, buf, enable, filters, col.feed)
+	// One collector per device (per controller for NVMe namespaces), each on
+	// its own goroutine, so pairing scales with the devices traced.
+	fan := newFanout(traced, opts.AvgMsec, opts.OffsetMs)
+	inst, err := flushtrace.OpenInstanceStart(root, name, buf, enable, filters, fan.feed)
 	if err != nil {
+		fan.stop()
 		return nil, err
 	}
-	s.inst, s.col = inst, col
-	s.summary = Summary{AvgMsec: int(col.agg.windowMs), OffsetMs: opts.OffsetMs}
+	s.inst, s.fan = inst, fan
+	s.summary = Summary{AvgMsec: int(fan.shards[0].col.agg.windowMs), OffsetMs: opts.OffsetMs}
 	return s, nil
 }
 
 // Stop ends tracing and returns the result. The Result is valid even when
 // the error is non-nil; the error then describes a cleanup problem.
-func (s *Session) Stop() (Result, error) {
+func (s *ftraceSession) Stop() (Result, error) {
 	err := s.inst.Stop()
 	var res Result
 	var stats map[string]map[Kind]map[Dir]Stats
 	s.inst.Locked(func() {
-		res.Windows, stats = s.col.finish()
+		s.fan.stop()
+		res.Windows, stats = s.fan.finish()
 		sum := s.summary
 		sum.Devices = make([]DeviceSummary, len(s.devices))
 		for i, ds := range s.devices {
@@ -330,8 +361,10 @@ func (s *Session) Stop() (Result, error) {
 		res.Summary = sum
 	})
 	res.Summary.Overrun = s.inst.Overrun()
+	res.Summary.Mode, res.Summary.ModeNote = ModeFtrace, s.modeNote
 	res.Summary.Reader, res.Summary.ReaderNote = s.inst.Reader(), s.inst.ReaderNote()
 	res.Summary.Clock, res.Summary.Late = s.inst.Clock(), s.inst.Late()
+	res.Summary.Kernel = s.inst.Kernel()
 	res.Summary.StartMissing = s.inst.StartNs() == 0
 	res.Summary.Fill()
 	return res, err
@@ -339,11 +372,15 @@ func (s *Session) Stop() (Result, error) {
 
 // MarkStart moves time zero to now, e.g. once a start gate opens: windows
 // count from the last start marker (flushtrace.Instance.MarkStart).
-func (s *Session) MarkStart() { s.inst.MarkStart() }
+func (s *ftraceSession) MarkStart() { s.inst.MarkStart() }
 
 // Close ends the trace quickly without a result, for a force quit; a later
 // Stop still returns what was collected.
-func (s *Session) Close() error { return s.inst.Close() }
+func (s *ftraceSession) Close() error {
+	err := s.inst.Close()
+	s.inst.Locked(s.fan.stop)
+	return err
+}
 
 // nvmeControllers returns the controllers ("nvme1") of an NVMe namespace,
 // from sysfs: <sysBlock>/<name>/device links to the controller, or, for a
@@ -376,4 +413,36 @@ func nvmeControllers(sysBlock, name string) []string {
 // isController reports whether name is "nvme<N>".
 func isController(name string) bool {
 	return strings.HasPrefix(name, "nvme") && len(name) > len("nvme") && skipDigits(name, len("nvme")) == len(name)
+}
+
+// kernel returns Kernel, created on first use (reading a log).
+func (s *Summary) kernel() *flushtrace.KernelInfo {
+	if s.Kernel == nil {
+		s.Kernel = &flushtrace.KernelInfo{}
+	}
+	return s.Kernel
+}
+
+// kernelNote says what the kernel's own counters add to the loss figures:
+// filters it did not apply (every device's events then fill the buffer) and
+// its overrun against bbbench's count. "" when nothing was recorded or all
+// agree.
+func (s *Summary) kernelNote() string {
+	if e := s.EBPF; e != nil && e.Full > 0 {
+		return fmt.Sprintf("the eBPF start map filled up: %d requests were not timed", e.Full)
+	}
+	k := s.Kernel
+	if k == nil {
+		return ""
+	}
+	var parts []string
+	for _, f := range k.Unfiltered() {
+		parts = append(parts, fmt.Sprintf("the kernel did not apply the filter of %s (wanted %q, shows %q): events of other devices fill the buffer", f.Event, f.Wanted, f.Applied))
+	}
+	if len(k.CPUs) > 0 {
+		if ko := k.Overrun(); ko != s.Overrun {
+			parts = append(parts, fmt.Sprintf("kernel overrun %d, bbbench counted %d", ko, s.Overrun))
+		}
+	}
+	return strings.Join(parts, "; ")
 }

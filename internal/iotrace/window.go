@@ -111,6 +111,14 @@ func (a *aggregator) addTo(s *series, relNs, latNs int64) {
 	}
 }
 
+// sortWindows orders windows by end, device, kind, direction.
+func sortWindows(ws []Window) {
+	slices.SortFunc(ws, func(x, y Window) int {
+		return cmp.Or(cmp.Compare(x.EndMs, y.EndMs), cmp.Compare(x.Dev, y.Dev),
+			cmp.Compare(x.Kind, y.Kind), cmp.Compare(x.Dir, y.Dir))
+	})
+}
+
 // finish closes the open windows and returns every window (sorted by end,
 // device, kind, direction) and the phase summary per device, kind and direction.
 func (a *aggregator) finish() ([]Window, map[string]map[Kind]map[Dir]Stats) {
@@ -120,10 +128,7 @@ func (a *aggregator) finish() ([]Window, map[string]map[Kind]map[Dir]Stats) {
 		}
 	}
 	ws := a.done
-	slices.SortFunc(ws, func(x, y Window) int {
-		return cmp.Or(cmp.Compare(x.EndMs, y.EndMs), cmp.Compare(x.Dev, y.Dev),
-			cmp.Compare(x.Kind, y.Kind), cmp.Compare(x.Dir, y.Dir))
-	})
+	sortWindows(ws)
 	sum := map[string]map[Kind]map[Dir]Stats{}
 	for _, s := range a.all {
 		if s.phase.Count() == 0 {

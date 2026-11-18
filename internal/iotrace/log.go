@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"bbbench/internal/flushtrace"
 )
 
 // LogName is the file holding the I/O latency of a phase, named like fio's
@@ -39,14 +41,20 @@ func statsFields(s Stats) string {
 // The kind is device, blocklayer or bio (the bios of a bio-based node).
 // bio_based=true marks a device without a blk-mq queue (an md or dm node);
 // it is absent when false, so logs written before it read the same. The
-// header's reader, clock, late and reader_note (URL-escaped) are absent in
-// older logs.
+// header's mode, mode_note, reader, clock, late and reader_note (URL-escaped)
+// are absent in older logs (an absent mode reads as ftrace).
 func WriteLog(w io.Writer, r Result) error {
 	bw := bufio.NewWriter(w)
 	s := &r.Summary
 	fmt.Fprintf(bw, "%s avg_msec=%d offset_ms=%d overrun=%d lost=%d", logMagic, s.AvgMsec, s.OffsetMs, s.Overrun, s.Lost)
 	if s.StartMissing {
 		fmt.Fprint(bw, " start_missing=true")
+	}
+	if s.Mode != "" {
+		fmt.Fprintf(bw, " mode=%s", s.Mode)
+	}
+	if s.ModeNote != "" {
+		fmt.Fprintf(bw, " mode_note=%s", url.QueryEscape(s.ModeNote))
 	}
 	if s.Reader != "" {
 		fmt.Fprintf(bw, " reader=%s", s.Reader)
@@ -61,6 +69,25 @@ func WriteLog(w io.Writer, r Result) error {
 		fmt.Fprintf(bw, " reader_note=%s", url.QueryEscape(s.ReaderNote))
 	}
 	fmt.Fprintln(bw)
+	if k := s.Kernel; k != nil {
+		if k.BufferKB != "" {
+			fmt.Fprintf(bw, "# kernel buffer_kb=%s\n", url.QueryEscape(k.BufferKB))
+		}
+		for _, f := range k.Filters {
+			fmt.Fprintf(bw, "# filter %s wanted=%s applied=%s", f.Event, url.QueryEscape(f.Wanted), url.QueryEscape(f.Applied))
+			if f.Err != "" {
+				fmt.Fprintf(bw, " err=%s", url.QueryEscape(f.Err))
+			}
+			fmt.Fprintln(bw)
+		}
+		for _, c := range k.CPUs {
+			fmt.Fprintf(bw, "# kernel_cpu %d entries=%d overrun=%d commit_overrun=%d bytes=%d dropped_events=%d read_events=%d\n",
+				c.CPU, c.Entries, c.Overrun, c.CommitOverrun, c.Bytes, c.Dropped, c.Read)
+		}
+	}
+	if e := s.EBPF; e != nil {
+		fmt.Fprintf(bw, "# ebpf started=%d completed=%d no_start=%d full=%d programs=%s\n", e.Started, e.Completed, e.NoStart, e.Full, strings.Join(e.Programs, ","))
+	}
 	for _, d := range s.Devices {
 		fmt.Fprintf(bw, "# device %s", d.Name)
 		if d.Source != "" {
@@ -122,6 +149,10 @@ func ReadLog(rd io.Reader) (Result, error) {
 					res.Summary.Overrun = n
 				case "start_missing":
 					res.Summary.StartMissing = v == "true"
+				case "mode":
+					res.Summary.Mode = Mode(v)
+				case "mode_note":
+					res.Summary.ModeNote, _ = url.QueryUnescape(v)
 				case "reader":
 					res.Summary.Reader = v
 				case "clock":
@@ -132,6 +163,86 @@ func ReadLog(rd io.Reader) (Result, error) {
 					res.Summary.ReaderNote, _ = url.QueryUnescape(v)
 				}
 			}
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "# kernel "); ok {
+			if v, ok := strings.CutPrefix(rest, "buffer_kb="); ok {
+				res.Summary.kernel().BufferKB, _ = url.QueryUnescape(v)
+			}
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "# filter "); ok {
+			f := strings.Fields(rest)
+			if len(f) == 0 {
+				continue
+			}
+			fs := flushtrace.FilterState{Event: f[0]}
+			for _, kv := range f[1:] {
+				k, v, _ := strings.Cut(kv, "=")
+				v, _ = url.QueryUnescape(v)
+				switch k {
+				case "wanted":
+					fs.Wanted = v
+				case "applied":
+					fs.Applied = v
+				case "err":
+					fs.Err = v
+				}
+			}
+			k := res.Summary.kernel()
+			k.Filters = append(k.Filters, fs)
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "# ebpf "); ok {
+			e := &EBPFInfo{}
+			for _, kv := range strings.Fields(rest) {
+				k, v, _ := strings.Cut(kv, "=")
+				n, _ := strconv.ParseUint(v, 10, 64)
+				switch k {
+				case "started":
+					e.Started = n
+				case "completed":
+					e.Completed = n
+				case "no_start":
+					e.NoStart = n
+				case "full":
+					e.Full = n
+				case "programs":
+					if v != "" {
+						e.Programs = strings.Split(v, ",")
+					}
+				}
+			}
+			res.Summary.EBPF = e
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "# kernel_cpu "); ok {
+			f := strings.Fields(rest)
+			if len(f) == 0 {
+				continue
+			}
+			n, _ := strconv.Atoi(f[0])
+			c := flushtrace.CPUStats{CPU: n}
+			for _, kv := range f[1:] {
+				k, v, _ := strings.Cut(kv, "=")
+				x, _ := strconv.ParseInt(v, 10, 64)
+				switch k {
+				case "entries":
+					c.Entries = x
+				case "overrun":
+					c.Overrun = x
+				case "commit_overrun":
+					c.CommitOverrun = x
+				case "bytes":
+					c.Bytes = x
+				case "dropped_events":
+					c.Dropped = x
+				case "read_events":
+					c.Read = x
+				}
+			}
+			k := res.Summary.kernel()
+			k.CPUs = append(k.CPUs, c)
 			continue
 		}
 		if rest, ok := strings.CutPrefix(line, "# device "); ok {
@@ -217,6 +328,9 @@ func ReadLog(rd io.Reader) (Result, error) {
 	}
 	if first {
 		return Result{}, fmt.Errorf("empty I/O latency log")
+	}
+	if res.Summary.Mode == "" {
+		res.Summary.Mode = ModeFtrace // logs before the eBPF mode
 	}
 	res.Summary.Fill()
 	return res, nil

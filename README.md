@@ -11,6 +11,19 @@ Block-device benchmark tool. Discovers drives, generates [fio](https://github.co
 
 `bbbench orchestrator` checks these when it starts, before anything interactive: a missing `fio`, or an I/O engine a selected workload needs that this fio lacks, stops the run with what to install; a missing optional program is a warning saying what is lost; an unavailable tracefs is a warning that the fsync phases will report fio's fsync latency only. `bbbench doctor` runs the same program checks.
 
+## Kernel tracing: ftrace and eBPF
+
+bbbench looks inside the kernel in two places, both read-only and both needing root:
+
+- **Flush latency** (phases that fsync) is timed from ftrace events in a private tracefs instance (see *Flush tracing*), because fio only times the whole `fsync()` call.
+- **Read and write latency** of every phase is timed at the device and in the block layer by one of two collectors, chosen with `--io-trace auto|ebpf|ftrace` (see *I/O latency tracing*): **eBPF**, a small program that aggregates latencies into histograms inside the kernel so nothing is lost at high IOPS, or **ftrace**, which reads every trace event out of the kernel. `auto` (the default) uses eBPF and falls back to ftrace, with the reason in the run log and the result; `--no-io-trace` turns it off. The graphs page names the collector of each latency graph (`ebpf` or `ftrace`).
+
+**Why eBPF is preferred for read and write latency.** Every I/O of a phase has to be timed, and at about 1 M IOPS on several drives the ftrace pipeline (one reader per CPU copying each event out of the kernel, then merging and pairing them in bbbench) handles only roughly 0.3-0.85 M events per second, so most events overrun the ring buffers and the result is incomplete. The eBPF program keeps the work in the kernel (start time per request, latency added to a histogram on completion) and bbbench reads only the histograms, so nothing is lost to a ring buffer at any IOPS and the tracing costs far less CPU and kernel memory. The price is precision of the tail: percentiles come from log-spaced buckets (1.6 % bound) and min and max are bucket edges, where ftrace pairs every I/O exactly. That is why `auto` picks eBPF and keeps ftrace as the fallback and as an explicit choice.
+
+**Why Flush stays on ftrace.** The eBPF program times only reads and writes that carry data; a Flush is a zero-length command, so it is not timed, and there is no eBPF Flush collector. The Flush trace stays on ftrace because it needs no more than ftrace gives: a Flush happens once per `fsync()`, a rate far below the one that overruns the ring buffers, and the ftrace collector already pairs each Flush exactly and reports exact percentiles, the whole-call time fio measures being what it is meant to be told apart from. Moving it to eBPF would add a second program for no gain in completeness; it can be revisited if Flush rates ever reach the ring buffer limits.
+
+What they need: root, a mounted tracefs, the block (and for NVMe, `nvme_core`) tracepoints; eBPF also needs a kernel with BTF and is built for amd64 and arm64. Without them the run goes on and says what is missing. The eBPF program is committed as an object file built from `internal/iotrace/ebpf/bpf/iolat.bpf.c`; rebuild it with `go generate ./internal/iotrace/ebpf` (needs clang and llvm-strip; `make check` verifies that the object matches its source). Neither collector has been run on every kernel: the eBPF one is not verified on a real kernel yet.
+
 ## Build
 
 ```bash
@@ -143,7 +156,8 @@ sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
 - `--dmi-path`, `--sys-block` — override `/sys/class/dmi/id` and `/sys/block` (for tests)
 - `--no-flush-trace` — do not trace device Flush latency during fsync phases (see [Flush tracing](#flush-tracing))
 - `--no-io-trace` — do not trace read and write latency from kernel trace events (see [I/O latency tracing](#io-latency-tracing))
-- `--trace-buffer-mb N` — MiB of kernel ring buffer shared by the concurrent trace sessions (default 256; see [I/O latency tracing](#io-latency-tracing), "Cost and opt-out"); raise it when the trace reports events lost in the ring buffer
+- `--io-trace auto|ebpf|ftrace` — how read and write latency is collected: `ebpf` times requests in the kernel (no events lost at high IOPS, root + BTF, amd64/arm64), `ftrace` reads every trace event, `auto` (default) uses eBPF when it loads and says why when it falls back (see [I/O latency tracing](#io-latency-tracing))
+- `--trace-buffer-mb N` — MiB of kernel ring buffer shared by the concurrent trace sessions (default 1024; see [I/O latency tracing](#io-latency-tracing), "Cost and opt-out"); raise it when the trace reports events lost in the ring buffer
 - `--config` — path to config file
 - `--dist` — override dist path
 
@@ -442,7 +456,40 @@ the time spent before it. It is **on by default** and needs root and a mounted
 tracefs; if tracing is unavailable the phase still runs, a warning is printed
 once and the phase carries a note saying why. Use `--no-io-trace` to turn it
 off. The terminal prints a line such as
-`ftrace device (nvme): read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only, with its source, `nvme` or `block`; the rest is in the log and the web UI). For an md or dm target, which has no request events of its own, it gives the node's bio-level latency and then the members' device mean over all their requests, e.g. `ftrace bio (md0, block_bio_queue -> block_bio_complete): read avg 310.2 us p99 920.0 us, write avg 640.8 us p99 1800.0 us; 4 members traced (block), members' device read avg 95.2 us, write avg 130.4 us`; without the bio tracepoints it says `target bio-based` and gives the members' mean only.
+`ftrace device (nvme): read avg 85.0 us p99 120.0 us, write avg 120.0 us p99 210.0 us` for the target (device latency only, with its source, `nvme` or `block`; the rest is in the log and the web UI).
+
+**Collectors (`--io-trace`).** The events can be read two ways, and the summary
+line, the `_iolat.1.log` header (`mode=`, and `mode_note=` when a requested
+mode was not used) and the run log say which one produced a result.
+`ftrace` copies every trace event out of the kernel (per-CPU ring buffers,
+read, merged and paired by bbbench): exact per-I/O pairing of NVMe commands and
+percentiles, but one reader pipeline that handles roughly 0.3-0.85 M events per
+second, so at about 1 M IOPS on several drives most events overrun the ring
+buffers. `ebpf` keeps the work in the kernel: a small program stores each
+request's (or bio's) start under its pointer, and its completion adds the
+latency to a log-bucketed histogram per device, kind and direction;
+bbbench reads the histograms once per `--log-avg-msec` window. Nothing is
+copied per I/O, so nothing is lost to a ring buffer at any IOPS; the mean and
+count are exact, the percentiles keep the same 1.6 % bound, and min and max
+are the edges of the lowest and highest bucket used. The eBPF mode times NVMe
+namespaces from `nvme_setup_cmd` to `nvme_complete_rq` like ftrace (the two
+tracepoints are in the `nvme_core` module's BTF; without them, or with the
+module not loaded, the device is timed from `block_rq_issue` to
+`block_rq_complete` and the source line says so), needs root, a kernel with
+BTF and the block tracepoints, and is built for amd64 and arm64; `auto` (the
+default) falls back to ftrace otherwise. Start map overflow (a very deep queue)
+is counted and shown as unpaired. Only reads and writes that carry data are
+timed (Flushes and discards are not: the Flush phases have their own
+trace), a request that completes in several parts is timed once, at its last
+part, and the disk is taken from the request queue, so it works with
+`queue/iostats` at 0. Each session holds about 18 KB x 2 x 2 histograms per
+traced device and CPU (a device timed through requests has a device and a
+block-layer series) and a 262144-entry start map, and detaches when its phase
+ends. **The eBPF mode has not been run on a real
+kernel yet:** if the program is rejected, the run continues on ftrace and the
+reason is in the run log.
+
+Every run also writes everything it prints to `<output>/run_<id>.log`. For an md or dm target, which has no request events of its own, it gives the node's bio-level latency and then the members' device mean over all their requests, e.g. `ftrace bio (md0, block_bio_queue -> block_bio_complete): read avg 310.2 us p99 920.0 us, write avg 640.8 us p99 1800.0 us; 4 members traced (block), members' device read avg 95.2 us, write avg 130.4 us`; without the bio tracepoints it says `target bio-based` and gives the members' mean only.
 
 **What is measured** (reads and writes only; Flush, discard and admin commands
 are left out, Flush has its own tracing above):
@@ -527,14 +574,14 @@ tracing off.
 **Cost and opt-out.** Tracing every read and write costs CPU, and at very high
 IOPS it can disturb the numbers it measures; this is why `--no-io-trace` exists.
 The kernel allocates the trace ring buffer per CPU. Concurrent sessions share a
-budget, `--trace-buffer-mb` (default 256 MiB): every drive running a phase at
+budget, `--trace-buffer-mb` (default 1024 MiB): every drive running a phase at
 the same time has one I/O latency session and, in a phase that fsyncs, one
 Flush session, each counting as one session. Each CPU of an I/O session gets
 budget / (sessions x CPUs), at least 1 MiB and at most 64 MiB; of a Flush
 session the same, at most 8 MiB. The kernel memory taken is sessions x CPUs x
 the per-CPU size: at most the budget, except at the 1 MiB floor, where it is
 exceeded rather than buffers shrunk further (one drive on 16 CPUs: 16 MiB per
-CPU, 256 MiB; one drive on 2 CPUs: 64 MiB per CPU, 128 MiB; 12 drives on 64
+CPU, 256 MiB; one drive on 64 CPUs: 16 MiB per CPU, 1 GiB; one drive on 2 CPUs: 64 MiB per CPU, 128 MiB; 12 drives on 64
 CPUs: the floor, 768 MiB in total, twice that in an fsync phase;
 `--trace-buffer-mb 4096` with one drive on 64 CPUs: 64 MiB per CPU, 4 GiB).
 The run prints the size it uses, e.g. `ftrace buffers: 256 MiB budget
@@ -582,7 +629,7 @@ it the controller filter is left out); how requeues, front merges that move the
 start sector and partial completions are paired (they are counted as unpaired or
 understate the block layer latency, see the package comment in
 `internal/iotrace/session.go`); the cost of the per-CPU ring buffers and the
-256 MiB default budget with its 1-64 MiB per-CPU range; and the effect of
+1024 MiB default budget with its 1-64 MiB per-CPU range; and the effect of
 tracing on the measured I/O. Run it first on a test machine, and use `--no-io-trace` if it
 disturbs a measurement.
 

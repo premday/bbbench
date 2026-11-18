@@ -492,7 +492,6 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             background: #fff; border-radius: 8px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         }
-        .sec-hdr .sec-trace { font-size: 11px; font-weight: 400; color: #64748b; margin-top: 2px; }
         .sec-hdr:hover { background: #f8fafc; }
         .sec-hdr .chev { display: inline-block; font-size: 10px; color: #94a3b8; transition: transform 0.18s; }
         .sec-hdr.collapsed .chev { transform: rotate(-90deg); }
@@ -748,8 +747,8 @@ __NAVBAR_HTML__
         // A bio-based node's own series on the Device card are its bios.
         const own = iolatStatsHas(dev, kind) || (kind === 'device' && iolatStatsHas(dev, 'bio'));
         if (own || iolatMembersHave(d, kind)) return '';
-        if (kind === 'device') return dev.note || 'ftrace saw no read or write requests on ' + dev.name;
-        return 'no block-layer series: ' + (dev.block_layer_note || dev.note || 'ftrace saw no block-layer requests on ' + dev.name);
+        if (kind === 'device') return dev.note || (d.io_trace.mode || 'ftrace') + ' saw no read or write requests on ' + dev.name;
+        return 'no block-layer series: ' + (dev.block_layer_note || dev.note || (d.io_trace.mode || 'ftrace') + ' saw no block-layer requests on ' + dev.name);
     }
     // iolatNodeNote: the Block-layer card of a bio-based target (an md or
     // dm node: no request queue) draws its members only; the target's
@@ -779,6 +778,7 @@ __NAVBAR_HTML__
         const out = [], only = iolatKind(metric);
         if (metric.key !== 'lat' && !only) return out;
         const full = !!only;
+        const tool = (d.io_trace && d.io_trace.mode) || 'ftrace';
         const base = {fill: false, tension: 0.2, pointRadius: 0, pointHoverRadius: 3, borderWidth: 1.5, spanGaps: true};
         const rgb = {r: [37, 99, 235], w: [220, 38, 38]}, P99 = [8, 3, 2, 3];
         const mk = (label, data, skey, dir, color, dash, extra) => Object.assign({}, base,
@@ -789,13 +789,13 @@ __NAVBAR_HTML__
         const rows = [];
         ['r', 'w'].forEach(dir => kinds.forEach(([kind, kname, dash]) => {
             const name = (dir === 'r' ? 'Read ' : 'Write ') + kname;
-            rows.push([kind, 'mean', dir, name + (full ? ' mean' : '') + ' (ftrace)', dash, 0.9, {}]);
-            if (full) rows.push([kind, 'p99', dir, name + ' p99 (ftrace)', P99, 0.6, {}]);
+            rows.push([kind, 'mean', dir, name + (full ? ' mean' : '') + ' (' + tool + ')', dash, 0.9, {}]);
+            if (full) rows.push([kind, 'p99', dir, name + ' p99 (' + tool + ')', P99, 0.6, {}]);
         }));
         if (!only || only === 'device') ['r', 'w'].forEach(dir => {
             const name = 'Array ' + (dir === 'r' ? 'read' : 'write') + ' bio ';
-            rows.push(['bio', 'mean', dir, name + 'mean (ftrace)', [6, 3], 0.95, {borderWidth: 2}]);
-            if (full) rows.push(['bio', 'p99', dir, name + 'p99 (ftrace)', P99, 0.6, {borderWidth: 2}]);
+            rows.push(['bio', 'mean', dir, name + 'mean (' + tool + ')', [6, 3], 0.95, {borderWidth: 2}]);
+            if (full) rows.push(['bio', 'p99', dir, name + 'p99 (' + tool + ')', P99, 0.6, {borderWidth: 2}]);
         });
         rows.forEach(([kind, stat, dir, label, dash, a, extra]) => {
             const data = iolatPoints(d, d.ts_iolat, kind, dir, stat);
@@ -807,7 +807,7 @@ __NAVBAR_HTML__
             ['r', 'w'].forEach(dir => names.forEach(n => {
                 const data = iolatPoints(d, d.ts_iolat_members[n], only, dir, 'mean');
                 if (!data.length) return;
-                out.push(mk(n + (dir === 'r' ? ' read ' : ' write ') + kname + ' mean (ftrace)', data, 'ftrace.member:' + n, dir,
+                out.push(mk(n + (dir === 'r' ? ' read ' : ' write ') + kname + ' mean (' + tool + ')', data, 'ftrace.member:' + n, dir,
                     rgba(colors[n], 0.9), dir === 'w' ? [4, 2] : [], {borderWidth: 1.2}));
             }));
         }
@@ -853,7 +853,7 @@ __NAVBAR_HTML__
         const target = devs.length ? devs[0].name : d.disk;
         const out = [];
         (series || []).forEach(s => {
-            const label = (s.label || '').replace(/ \(ftrace\)$/, '');
+            const label = (s.label || '').replace(/ \((ftrace|ebpf)\)$/, '');
             if (s.skey === 'flush') { out.push({label, dev: '', kind: 'flush'}); return; }
             if (!s.skey || s.skey.indexOf('ftrace.') !== 0) return;
             const rest = s.skey.slice('ftrace.'.length);
@@ -878,7 +878,7 @@ __NAVBAR_HTML__
         if (metric.key === 'flush') {
             const n = (d.flush && d.flush.lost) || 0;
             if (n <= 0) return null;
-            const label = ls[0].label + ' (ftrace)';
+            const label = ls[0].label + ' (ftrace)'; // the Flush session is always ftrace
             const headline = '\u26a0 ' + fmtCount(n) + ' Flush command' + (n === 1 ? '' : 's') + ' never seen completing: ' + label + ' is incomplete';
             const lines = ['Issued during the trace but their completion was never seen: still in flight when the phase ended, or the completion event was dropped (the Flush session\'s ring-buffer overruns are not recorded).'];
             const seen = d.flush.count || 0;
@@ -888,6 +888,7 @@ __NAVBAR_HTML__
         if (metric.key !== 'lat' && !iolatKind(metric)) return null;
         const t = d.io_trace;
         if (!t) return null;
+        const tool = t.mode || 'ftrace';
         const devs = t.devices || [];
         const allUnpaired = devs.reduce((a, x) => a + (x.unpaired || 0), 0);
         const overrun = Math.max(t.overrun || 0, (t.lost || 0) - allUnpaired);
@@ -907,12 +908,12 @@ __NAVBAR_HTML__
         if (overrun > 0) parts.push('ring buffer ' + fmtCount(overrun));
         if (unpaired > 0) parts.push('unpaired ' + fmtCount(unpaired));
         const headline = '\u26a0 ' + fmtCount(lost) + ' trace events lost (' + parts.join(', ') + '): ' +
-            (overrun > 0 ? 'every ftrace series on this card is incomplete' : 'incomplete: ' + unp.map(e => e.dev).join(', '));
+            (overrun > 0 ? 'every ' + tool + ' series on this card is incomplete' : 'incomplete: ' + unp.map(e => e.dev).join(', '));
         const lines = [];
         if (overrun > 0) {
             const labels = ls.map(s => s.label).filter((l, k, a) => a.indexOf(l) === k);
             lines.push('Ring buffer: ' + fmtCount(overrun) + ' events dropped by the kernel because the trace buffers filled before bbbench read them (typically very high IOPS). ' +
-                'This makes every ftrace series of this phase incomplete, every device and kind; on this card (' + labels.length + '): ' + labels.join(', ') + '. ' +
+                'This makes every ' + tool + ' series of this phase incomplete, every device and kind; on this card (' + labels.length + '): ' + labels.join(', ') + '. ' +
                 'Their statistics come from the events that did arrive: a sample, in which a busy period may be under-represented. ' +
                 'To avoid it: __TRACE_LOSS_HINT__.');
         }
@@ -920,6 +921,9 @@ __NAVBAR_HTML__
             lines.push('Unpaired (a request or bio that never completed within the trace, or whose start or end event was lost; counted per device): ' +
                 unp.map(e => e.dev + ': ' + fmtCount(e.n) + ' unpaired: ' + e.labels.join(', ')).join('; ') + '.');
         }
+        // the kernel's own counters and filters (io_trace.kernel_note): where
+        // they disagree with the count above, one of the two is wrong
+        if (t.kernel_note) lines.push('Kernel check: ' + t.kernel_note + '.');
         // requests timed in the card's devices (the phase summary counts of
         // the card's kinds; the kinds of a device time the same requests,
         // so the largest one counts)
@@ -948,21 +952,28 @@ __NAVBAR_HTML__
         warnEl.className = warnEl.className.includes('modal') ? 'modal-ts-warn' : 'ts-warn';
         warnEl.textContent = (warnEl.textContent ? warnEl.textContent + ' \u00b7 ' : '') + n;
     }
-    // ftraceRef is the static reference of the kernel tracepoints (trace
-    // events) behind an ftrace metric and the pair each latency spans, per
-    // source: NVMe vs everything else. '' for a metric without ftrace data.
-    function ftraceRef(metric) {
+    // ftraceRef is the static reference of what a trace metric measures, per
+    // collector (tool: ftrace or ebpf): the kernel tracepoints and the pair
+    // each latency spans, per source (NVMe vs everything else), and how the
+    // latency is obtained. '' for a metric without trace data.
+    function ftraceRef(metric, tool) {
+        const ebpf = tool === 'ebpf';
+        const how = ebpf
+            ? 'timed inside the kernel by eBPF programs (tp_btf) attached to the tracepoints: the start time is stored per request, the completion adds the difference to a per-CPU log histogram, bbbench reads the histograms once per window (no event leaves the kernel, none is lost at high IOPS); reads and writes with data only; mean exact, percentiles and min/max from histogram buckets (error under 2 %)'
+            : 'timed from the kernel trace events (ftrace) bbbench reads one by one and pairs by timestamp; mean exact, percentiles from histogram buckets (error under 2 %); events lost when the ring buffer overruns';
         const bio = 'a bio-based md/dm node (no request queue): block_bio_queue -> block_bio_complete';
         const flush = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (flush opcode); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (rwbs F, 0 sectors); ' + bio + ' (its flush bios: rwbs F, 0 sectors)';
-        const dev = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (read and write commands); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (read and write requests); ' + bio + ' (its read and write bios)';
-        const blk = 'every device, NVMe included: block_rq_insert -> block_rq_complete (a request issued without an insert counts from block_rq_issue; merges via block_rq_merge); none on a bio-based md/dm node';
+        const dev = 'NVMe: nvme_setup_cmd -> nvme_complete_rq (read and write commands: the time the drive holds a command, from its setup in the driver); any other device, or NVMe without those tracepoints: block_rq_issue -> block_rq_complete (read and write requests: issue to the device driver until completion); ' + bio + ' (its read and write bios)';
+        const blk = 'every device, NVMe included: block_rq_insert -> block_rq_complete (insert in the I/O scheduler or software queue until completion: queueing time included; a request issued without an insert counts from block_rq_issue; merges via block_rq_merge); none on a bio-based md/dm node';
+        let r = '';
         switch (metric.key) {
         case 'flush': return flush;
-        case 'iolat': return dev;
-        case 'iolatblk': return blk;
-        case 'lat': return 'device: ' + dev + ' \u00b7 block layer: ' + blk;
+        case 'iolat': r = dev; break;
+        case 'iolatblk': r = blk; break;
+        case 'lat': r = 'device: ' + dev + ' \u00b7 block layer: ' + blk; break;
+        default: return '';
         }
-        return '';
+        return r + '\nMeasured ' + how + '.';
     }
     // ftraceEvents is the union of the tracepoint pairs actually monitored in
     // the shown runs for a metric (Flush summary events, io_trace device
@@ -988,19 +999,37 @@ __NAVBAR_HTML__
     // and, for the ftrace metrics, the kernel tracepoints (static reference)
     // plus those monitored in the shown runs (data, when there are any).
     function srcTitleOf(metric, data) {
-        let t = metric.srcTitle || SRC_TITLE[metric.source];
-        const ref = ftraceRef(metric);
-        if (!ref) return t;
-        t += metric.key === 'lat' ? '\nDashed ftrace lines, kernel tracepoints: ' + ref
-            : '\nKernel tracepoints: ' + ref;
+        const tools = traceToolOf(metric, data);
+        let t = (metric.srcTitle || SRC_TITLE[metric.source]).replace('ftrace', metric.source === 'ftrace' ? tools : 'ftrace');
+        if (!ftraceRef(metric, 'ftrace')) return t;
+        tools.split('/').forEach(tool => {
+            t += (metric.key === 'lat' ? '\nDashed ' + tool + ' lines, ' : '\n' + tool + ', ') + 'kernel tracepoints: ' + ftraceRef(metric, tool).replace(/\n/g, '\n  ');
+        });
         const mon = ftraceEvents(data, metric);
         if (mon.length) t += '\nMonitored in the shown runs: ' + mon.join('; ');
+        const progs = [];
+        (data || []).forEach(d => (d.io_trace && d.io_trace.ebpf && d.io_trace.ebpf.programs || []).forEach(x => { if (progs.indexOf(x) < 0) progs.push(x); }));
+        if (progs.length && metric.key !== 'flush') t += '\neBPF programs attached: ' + progs.join(', ');
         return t;
+    }
+    // traceToolOf is the collector behind a trace metric in the shown runs
+    // (ftrace or ebpf, both joined when they differ); the Flush session and
+    // runs recorded before the eBPF mode are ftrace.
+    function traceToolOf(metric, data) {
+        if (metric.key === 'flush') return 'ftrace';
+        if (metric.source !== 'ftrace' && metric.key !== 'lat') return metric.source;
+        const seen = [];
+        (data || []).forEach(d => { if (d.io_trace) { const t = d.io_trace.mode || 'ftrace'; if (seen.indexOf(t) < 0) seen.push(t); } });
+        return seen.length ? seen.sort().join('/') : 'ftrace';
+    }
+    // metricLabel is the title of a metric, naming that collector.
+    function metricLabel(metric, data) {
+        return metric.label.replace('(ftrace)', '(' + traceToolOf(metric, data) + ')');
     }
     function srcBadge(metric, data) {
         const b = document.createElement('span');
         b.className = 'src src-' + metric.source;
-        b.textContent = metric.source;
+        b.textContent = metric.source === 'ftrace' ? traceToolOf(metric, data) : metric.source;
         b.title = srcTitleOf(metric, data);
         return b;
     }
@@ -1127,7 +1156,7 @@ __NAVBAR_HTML__
                 updateCount();
             });
             lbl.appendChild(cb);
-            lbl.appendChild(document.createTextNode('\u00a0' + label));
+            lbl.appendChild(document.createTextNode('\u00a0' + metricLabel(METRICS.find(m => m.key === v), allData)));
             lbl.appendChild(document.createTextNode(' '));
             lbl.appendChild(srcBadge(METRICS.find(m => m.key === v), allData));
             li.appendChild(lbl);
@@ -1869,7 +1898,7 @@ __NAVBAR_HTML__
         if (kind) {
             if (ftrace.length > 0) return {stacked: false, bars: false, datasets: ftrace.filter(shown)};
             const kname = kind === 'device' ? 'device' : 'block layer';
-            return barsFor(dir => 'ftrace.' + kind + '.mean.' + dir, name => name + ' ' + kname + ' (ftrace)');
+            return barsFor(dir => 'ftrace.' + kind + '.mean.' + dir, name => name + ' ' + kname + ' (' + ((d.io_trace && d.io_trace.mode) || 'ftrace') + ')');
         }
         if ((ts && ts.length > 0) || ftrace.length > 0) {
             const shift = fioShift(d), out = [];
@@ -2071,7 +2100,7 @@ __NAVBAR_HTML__
         document.getElementById('modal-title').textContent = d.disk + settingTag(d, RPV) + (mt ? ' \u00b7 ' + mt : '');
         const tech = d.technology ? d.technology.toUpperCase() : '';
         document.getElementById('modal-subtitle').textContent =
-            [d.vendor, d.model, d.serial, tech, metric.label, 'source: ' + metric.source].filter(Boolean).join('  \u00b7  ');
+            [d.vendor, d.model, d.serial, tech, metricLabel(metric, [d]), 'source: ' + traceToolOf(metric, [d])].filter(Boolean).join('  \u00b7  ');
         const mdEl = document.getElementById('modal-md');
         mdEl.innerHTML = '';
         const mdh = mdHeader(d, metric);
@@ -2203,15 +2232,8 @@ __NAVBAR_HTML__
 
             const secHdr = document.createElement('div');
             secHdr.className = 'sec-hdr';
-            secHdr.innerHTML = '<span class="chev">▼</span>' + metric.label + ' ';
+            secHdr.innerHTML = '<span class="chev">▼</span>' + metricLabel(metric, data) + ' ';
             secHdr.appendChild(srcBadge(metric, data));
-            const mon = ftraceEvents(data, metric);
-            if (mon.length) {
-                const sub = document.createElement('div');
-                sub.className = 'sec-trace';
-                sub.textContent = 'tracepoints monitored: ' + mon.join('; ');
-                secHdr.appendChild(sub);
-            }
             section.appendChild(secHdr);
 
             const secBody = document.createElement('div');

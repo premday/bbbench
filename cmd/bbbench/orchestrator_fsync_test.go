@@ -286,3 +286,15 @@ func TestFormatIOTraceSummary(t *testing.T) {
 		t.Errorf("no devices: %q", got)
 	}
 }
+
+func TestFormatIOTraceSummaryNamesTheMode(t *testing.T) {
+	rw := map[iotrace.Kind]map[iotrace.Dir]iotrace.Stats{iotrace.KindDevice: {iotrace.DirRead: {Count: 10, MeanNs: 85_000, P99Ns: 120_000}}}
+	s := &iotrace.Summary{Mode: iotrace.ModeEBPF, Devices: []iotrace.DeviceSummary{{Name: "nvme0n1", Source: "nvme", Stats: rw}}}
+	if got, want := formatIOTraceSummary(s), "ebpf device (nvme): read avg 85.0 us p99 120.0 us"; got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	s.Mode, s.ModeNote = iotrace.ModeFtrace, "ebpf: no BTF"
+	if got, want := formatIOTraceSummary(s), "ftrace device (nvme): read avg 85.0 us p99 120.0 us [ebpf not used: ebpf: no BTF]"; got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}

@@ -124,6 +124,9 @@ type Instance struct {
 	overrun    atomic.Int64  // events the kernel dropped ([LOST N EVENTS], missed-events flags)
 	stopOnce   sync.Once
 	stopErr    error
+	wanted     map[string]string // filters written, by event
+	filterErr  map[string]string
+	kernel     *KernelInfo
 }
 
 // Clocks the private instance uses, in order of preference: both are
@@ -203,9 +206,13 @@ func OpenInstanceStart(root, name string, bufferKB int, enable []string, filters
 		go i.read()
 	}
 
+	i.wanted, i.filterErr = map[string]string{}, map[string]string{}
 	for _, e := range enable {
 		if f, ok := filters[e]; ok {
-			_ = i.write(e+"/filter", f)
+			i.wanted[e] = f
+			if err := i.write(e+"/filter", f); err != nil {
+				i.filterErr[e] = err.Error()
+			}
 		}
 		if err := i.write(e+"/enable", "1"); err != nil {
 			i.disable()
@@ -362,6 +369,7 @@ func (i *Instance) stop(wait time.Duration) error {
 		errs = append(errs, "trace reader did not finish")
 	}
 	_ = i.write("tracing_on", "0")
+	i.snapshot()
 	if err := i.cleanup(); err != nil {
 		errs = append(errs, err.Error())
 	}
@@ -391,6 +399,7 @@ func (i *Instance) stopRaw(wait time.Duration) error {
 		case <-time.After(time.Second):
 		}
 	}
+	i.snapshot()
 	if err := i.cleanup(); err != nil {
 		errs = append(errs, err.Error())
 	}

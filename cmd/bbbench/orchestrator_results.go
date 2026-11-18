@@ -243,6 +243,15 @@ func formatFlushSummary(s *flushtrace.Summary) string {
 	return fmt.Sprintf("%s (%d flushes)", out, s.Count)
 }
 
+// ioTraceTool names the collector that produced s ("ftrace" for results
+// recorded before the eBPF mode).
+func ioTraceTool(s *iotrace.Summary) string {
+	if s.Mode == "" {
+		return string(iotrace.ModeFtrace)
+	}
+	return string(s.Mode)
+}
+
 // formatIOTraceSummary renders the kernel-measured device latency of the
 // target (the first traced device) for the run summary, naming the sources
 // (nvme, block). A bio-based target (an md or dm node) has no request events
@@ -251,7 +260,7 @@ func formatFlushSummary(s *flushtrace.Summary) string {
 // mean over all their requests. Per-member figures are on the pages.
 func formatIOTraceSummary(s *iotrace.Summary) string {
 	if len(s.Devices) == 0 {
-		return "ftrace: no request events seen"
+		return ioTraceTool(s) + ": no request events seen"
 	}
 	var sources []string
 	for _, d := range s.Devices {
@@ -260,7 +269,8 @@ func formatIOTraceSummary(s *iotrace.Summary) string {
 		}
 	}
 	slices.Sort(sources)
-	head := "ftrace (" + strings.Join(sources, ", ") + ")"
+	tool := ioTraceTool(s)
+	head := tool + " (" + strings.Join(sources, ", ") + ")"
 	lost := ""
 	switch {
 	case s.Overrun > 0:
@@ -268,9 +278,15 @@ func formatIOTraceSummary(s *iotrace.Summary) string {
 	case s.Lost > 0:
 		lost = fmt.Sprintf(" (%d events lost)", s.Lost)
 	}
+	if s.KernelNote != "" {
+		lost += " [" + s.KernelNote + "]"
+	}
+	if s.ModeNote != "" {
+		lost += " [ebpf not used: " + s.ModeNote + "]"
+	}
 	target := s.Devices[0]
 	if parts := ioTraceDirParts(target.Stats[iotrace.KindDevice], true); len(parts) > 0 {
-		return "ftrace device (" + target.Source + "): " + strings.Join(parts, ", ") + lost
+		return tool + " device (" + target.Source + "): " + strings.Join(parts, ", ") + lost
 	}
 	members, msources := 0, []string{}
 	for _, m := range s.Devices[1:] {
@@ -298,7 +314,7 @@ func formatIOTraceSummary(s *iotrace.Summary) string {
 	}
 	memberParts := ioTraceDirParts(merged, false)
 	if parts := ioTraceDirParts(target.Stats[iotrace.KindBio], true); len(parts) > 0 {
-		out := "ftrace bio (" + target.Name + ", " + strings.Join(target.Events, ", ") + "): " + strings.Join(parts, ", ")
+		out := tool + " bio (" + target.Name + ", " + strings.Join(target.Events, ", ") + "): " + strings.Join(parts, ", ")
 		if members > 0 {
 			out += fmt.Sprintf("; %d member%s traced (%s)", members, plural, strings.Join(msources, ", "))
 			if len(memberParts) > 0 {

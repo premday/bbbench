@@ -50,6 +50,7 @@ import (
 	"bbbench/internal/diskinfo"
 	"bbbench/internal/dmi"
 	"bbbench/internal/inuse"
+	"bbbench/internal/iotrace"
 	"bbbench/internal/rungroup"
 	"bbbench/internal/settings"
 	"bbbench/internal/templating"
@@ -88,6 +89,7 @@ func runOrchestrator(args []string) error {
 	skipWriteThrough := fs.Bool("skip-write-through", false, "do not run fsync (Flush-latency) phases on write-through devices, where the kernel sends no Flush (default: run them and warn)")
 	noFlushTrace := fs.Bool("no-flush-trace", false, "do not trace device Flush latency (kernel trace events) during fsync phases")
 	noIOTrace := fs.Bool("no-io-trace", false, "do not trace read and write latency (kernel trace events) during phases")
+	ioTraceMode := fs.String("io-trace", "auto", "how to time read and write latency: auto (eBPF when it loads, else ftrace), ebpf (aggregates in the kernel, no events lost at high IOPS) or ftrace (reads every trace event)")
 	logAvgMsec := fs.Int("log-avg-msec", 1000, "fio log averaging interval in milliseconds (--log_avg_msec)")
 	traceBufferMB := fs.Int("trace-buffer-mb", defaultTraceBufferMB, "MiB of kernel ring buffer shared by the concurrent ftrace sessions (I/O and Flush latency). "+
 		"Each CPU of each session gets an equal share, at least 1 MiB and at most 64 MiB: kernel memory = sessions x CPUs x per-CPU size, "+
@@ -97,6 +99,10 @@ func runOrchestrator(args []string) error {
 	_ = fs.Parse(args)
 	if err := checkTraceBufferMB(*traceBufferMB); err != nil {
 		return err
+	}
+	ioMode, err := iotrace.ParseMode(*ioTraceMode)
+	if err != nil {
+		return fmt.Errorf("invalid --io-trace: %w", err)
 	}
 
 	if os.Geteuid() != 0 {
@@ -368,6 +374,7 @@ func runOrchestrator(args []string) error {
 		Verbose:          *verbose,
 		FlushTrace:       !*noFlushTrace,
 		IOTrace:          !*noIOTrace,
+		IOTraceMode:      ioMode,
 		TraceBufferMB:    *traceBufferMB,
 		SkipWriteThrough: *skipWriteThrough,
 		LogAvgMsec:       *logAvgMsec,
@@ -463,7 +470,8 @@ type runOptions struct {
 	DryRun, Verbose  bool
 	FlushTrace       bool
 	IOTrace          bool
-	TraceBufferMB    int // --trace-buffer-mb; 0 = defaultTraceBufferMB
+	IOTraceMode      iotrace.Mode // --io-trace; "" = auto
+	TraceBufferMB    int          // --trace-buffer-mb; 0 = defaultTraceBufferMB
 	SkipWriteThrough bool
 	LogAvgMsec       int
 	// OnStarted, when non-nil, is called once the run's live result is in
@@ -475,8 +483,7 @@ type runOptions struct {
 // registerLiveRun creates the live result for the web view (updated
 // incrementally as phases complete), adds it to the results store, and then
 // calls opts.OnStarted.
-func registerLiveRun(opts runOptions, spec runSpec, coordinator *ExecutionCoordinator) *BenchmarkResult {
-	runID := fmt.Sprintf("run_%d", time.Now().Unix())
+func registerLiveRun(opts runOptions, spec runSpec, coordinator *ExecutionCoordinator, runID string) *BenchmarkResult {
 	liveResult := &BenchmarkResult{
 		ID:        runID,
 		Timestamp: time.Now(),
@@ -524,6 +531,7 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 	coordinator.logAvgMsec = opts.LogAvgMsec
 	coordinator.flushTrace = opts.FlushTrace
 	coordinator.ioTrace = opts.IOTrace
+	coordinator.ioTraceMode = opts.IOTraceMode
 	coordinator.traceBufferMB = opts.TraceBufferMB
 	coordinator.labels = spec.Labels
 	coordinator.groupID = spec.GroupID
@@ -553,7 +561,15 @@ func executeRun(ctx context.Context, opts runOptions, spec runSpec) (*BenchmarkR
 		}
 	}()
 
-	liveResult := registerLiveRun(opts, spec, coordinator)
+	runID := fmt.Sprintf("run_%d", time.Now().Unix())
+	// Everything the run prints also goes to <runID>.log, next to its summary.
+	if stopLog, logPath, err := startRunLog(opts.OutDir, runID, runLogHeader(opts)); err != nil {
+		logger.Warn("run log", "err", err)
+	} else {
+		defer stopLog()
+		logger.Info("run log", "path", logPath)
+	}
+	liveResult := registerLiveRun(opts, spec, coordinator, runID)
 
 	// Execute based on mode
 	var execErr error

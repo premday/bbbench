@@ -957,7 +957,7 @@ console.log('OK');
 
 // A loss note shown in the modal must not survive into the next one.
 func TestGraphsPageModalClearsWarn(t *testing.T) {
-	runPageJS(t, []string{"openModal", "iolatKind", "fmtCount", "lossShare", "lossSeries", "lossInfo", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote"}, `
+	runPageJS(t, []string{"openModal", "iolatKind", "fmtCount", "lossShare", "lossSeries", "lossInfo", "lossNote", "addLossNote", "sourceLine", "iolatNodeNote", "metricLabel", "traceToolOf"}, `
 const assert = require('assert');
 const els = {};
 const el = id => els[id] || (els[id] = {id, textContent: '', className: '', innerHTML: '',
@@ -1483,7 +1483,7 @@ console.log('OK');
 }
 
 func TestGraphsPageSrcBadgeTracepoints(t *testing.T) {
-	runPageJS(t, []string{"ftraceRef", "ftraceEvents", "srcTitleOf", "srcBadge"}, `
+	runPageJS(t, []string{"ftraceRef", "ftraceEvents", "srcTitleOf", "srcBadge", "traceToolOf"}, `
 const assert = require('assert');
 const SRC_TITLE = {fio: 'Measured by fio'};
 const document = {createElement: () => ({})};
@@ -1505,7 +1505,7 @@ for (const m of [flush, iolat, blk, lat]) {
 assert.ok(ftraceRef(flush).includes('nvme_setup_cmd -> nvme_complete_rq') && ftraceRef(flush).includes('block_rq_issue -> block_rq_complete') && ftraceRef(flush).includes('rwbs F'));
 assert.ok(ftraceRef(iolat).includes('NVMe') && ftraceRef(iolat).includes('any other device'));
 assert.ok(ftraceRef(blk).includes('block_rq_insert -> block_rq_complete') && ftraceRef(blk).includes('block_rq_merge'));
-assert.ok(ftraceRef(lat).includes(ftraceRef(iolat)) && ftraceRef(lat).includes(ftraceRef(blk)));
+assert.ok(ftraceRef(lat).includes(ftraceRef(iolat).split('\n')[0]) && ftraceRef(lat).includes(ftraceRef(blk).split('\n')[0]));
 assert.strictEqual(ftraceRef(iops), '');
 // monitored events: union, per kind, in first-seen order
 assert.deepStrictEqual(ftraceEvents([nv, hdd], flush), ['nvme_setup_cmd -> nvme_complete_rq', 'block_rq_issue -> block_rq_complete']);
@@ -1518,8 +1518,13 @@ assert.deepStrictEqual(ftraceEvents(undefined, flush), []);
 // the badge title: the source, the static reference, then what the data monitored
 let t = srcBadge(flush, [hdd]).title;
 assert.ok(t.startsWith('Measured from kernel ftrace events (device Flush commands)'), t);
-assert.ok(t.includes('\nKernel tracepoints: NVMe: nvme_setup_cmd -> nvme_complete_rq'), t);
+assert.ok(t.includes('\nftrace, kernel tracepoints: NVMe: nvme_setup_cmd -> nvme_complete_rq'), t);
 assert.ok(t.endsWith('\nMonitored in the shown runs: block_rq_issue -> block_rq_complete'), t);
+const eb = {io_trace: {mode: 'ebpf', ebpf: {programs: ['block_rq_issue']}, devices: [{events: ['block_rq_issue -> block_rq_complete']}]}};
+t = srcBadge(iolat, [eb]).title;
+assert.ok(t.includes('Measured from kernel ebpf events') && t.includes('\nebpf, kernel tracepoints: ') && t.includes('eBPF programs (tp_btf)') && t.endsWith('eBPF programs attached: block_rq_issue'), JSON.stringify(t));
+assert.ok(!t.includes('ftrace'), JSON.stringify(t));
+assert.strictEqual(srcBadge(iolat, [eb]).textContent, 'ebpf');
 assert.ok(!srcBadge(flush, []).title.includes('Monitored'), 'no data, no monitored line');
 assert.ok(!srcBadge(flush).title.includes('Monitored'));
 t = srcBadge(blk, [nv]).title;
