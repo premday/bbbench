@@ -104,7 +104,7 @@ var chartFuncs = []string{"rampOf", "windowOf", "fioShift", "siScale", "fmtScale
 	"memberNames", "memberColors", "memberStep", "memberKey", "memberGrid", "memberLabel", "hasDir", "rgba",
 	"stackedMemberDatasets", "memberLatencyDatasets", "arrayDatasets", "makeMembersChart",
 	"mdMetric", "hasMD", "mdBusy", "mdActions", "mdBands", "mdIndex", "mdTipLines", "mdMarkers", "mdOptions",
-	"chartPlugins", "yAxisTitle", "lineScales", "barAxis", "barChart", "windowTitle", "makeFlushChart", "barData", "iolatKind", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart",
+	"chartPlugins", "yAxisTitle", "lineScales", "barAxis", "barChart", "windowTitle", "fmtDuration", "makeFlushChart", "barData", "iolatKind", "iolatPoints", "ftraceDatasets", "ftraceOnGrid", "makeIOLatChart", "makeChart",
 	"isShown", "chartDatasets", "phaseKey"}
 
 // TestGraphsPageChartPhaseScale: a card plots its values in the base unit,

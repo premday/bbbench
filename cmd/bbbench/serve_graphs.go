@@ -1239,8 +1239,8 @@ __NAVBAR_HTML__
     function lineScales(d, sc, yLow, yHigh, extra) {
         return {
             x: { type: 'linear', min: 0, max: PHASE_X[phaseKey(d)] || undefined,
-                 title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
-                 ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
+                 title: { display: true, text: 'time since the phase start (t)', color: '#94a3b8', font: {size: 9} },
+                 ticks: { callback: v => fmtDuration(v), font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
             y: Object.assign({ min: yLow * sc.mul, max: yHigh * sc.mul, title: yAxisTitle(sc),
                  ticks: { callback: v => fmtScaled(v, sc), font: {size: 9}, color: '#64748b' },
                  grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } }, extra)
@@ -1268,7 +1268,7 @@ __NAVBAR_HTML__
     // windowTitle is the tooltip title of a time-series chart: the hovered
     // window, or its time without a window.
     function windowTitle(d) {
-        return items => windowOf(d) ? 't+' + items[0].raw.x + ' s \u2192 t+' + (items[0].raw.x + windowOf(d)) + ' s' : 't+' + items[0].raw.x + ' s';
+        return items => windowOf(d) ? 't+' + fmtDuration(items[0].raw.x) + ' \u2192 t+' + fmtDuration(items[0].raw.x + windowOf(d)) : 't+' + fmtDuration(items[0].raw.x);
     }
 
     // phaseScale is the SI scale of a card (siScale): its prefix is chosen
@@ -1297,9 +1297,9 @@ __NAVBAR_HTML__
                         rampZone: { sec: rampOf(d) },
                         legend: { display: false },
                         tooltip: { callbacks: {
-                            title: items => 't+' + items[0].raw.x + ' s \u2192 t+' + (items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)) + ' s',
+                            title: items => 't+' + fmtDuration(items[0].raw.x) + ' \u2192 t+' + fmtDuration(items[0].raw.x + (d.flush && d.flush.avg_msec ? d.flush.avg_msec / 1000 : 1)),
                             label: ctx => 'Flush latency: ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit +
-                                ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + d.flush.avg_msec / 1000 + ' s' : '') + ')' } }
+                                ' (mean' + (d.flush && d.flush.avg_msec ? ' per ' + fmtDuration(d.flush.avg_msec / 1000) : '') + ')' } }
                     },
                     scales: lineScales(d, sc, 0, yHigh, { grid: { color: '#f1f5f9' } })
                 }

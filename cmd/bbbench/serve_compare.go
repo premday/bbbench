@@ -525,14 +525,14 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'right',
                             labels: { boxWidth: 12, font: {size: 11}, padding: 10 } },
                         tooltip: { mode: 'index', intersect: false, callbacks: {
-                            title: items => 'at ' + items[0].raw.x + ' s',
+                            title: items => 'at ' + fmtDuration(items[0].raw.x),
                             label: ctx => ctx.dataset.label + ': ' + fmtScaled(ctx.raw.y, sc, true) + ' ' + sc.unit,
                         }}
                     },
                     scales: {
                         x: { type: 'linear', min: 0,
-                             title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 10} },
-                             ticks: { font: {size: 10}, color: '#64748b', maxTicksLimit: 8 } },
+                             title: { display: true, text: 'time since the phase start', color: '#94a3b8', font: {size: 10} },
+                             ticks: { callback: v => fmtDuration(v), font: {size: 10}, color: '#64748b', maxTicksLimit: 8 } },
                         y: { min: 0,
                              ticks: { callback: tick, font: {size: 10}, color: '#64748b' },
                              grid: { color: '#f1f5f9' },

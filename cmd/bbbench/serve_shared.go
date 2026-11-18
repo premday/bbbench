@@ -63,6 +63,16 @@ const chartSharedJS = `function rampOf(d) {
         return Math.max(...ts.map(p => p.t)) + shift;
     }
 
+    // fmtDuration writes a time in seconds for people: under a minute as
+    // seconds (45s, 0.5s), from a minute on in whole seconds as h/m/s with
+    // the zero parts left out (160 -> 2m40s, 3690 -> 1h1m30s, 3600 -> 1h).
+    function fmtDuration(sec) {
+        if (!(sec >= 0)) return '';
+        if (sec < 60) return String(Math.round(sec * 100) / 100) + 's';
+        const t = Math.round(sec), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+        return (h ? h + 'h' : '') + (m ? m + 'm' : '') + (s ? s + 's' : '');
+    }
+
     function fmtTick(v) {
         const a = Math.abs(v);
         if (a === 0) return '0';
