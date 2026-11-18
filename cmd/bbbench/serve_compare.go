@@ -381,7 +381,7 @@ __NAVBAR_HTML__
 
     function axisTitle(metric, sc) {
         // "bytes per second (B/s)": the unit spelled out (unitName).
-        return unitName(sc.unit);
+        return unitName(sc.unit, sc.prefix);
     }
 
     // chartScale is the SI scale of one compare chart (siScale), its prefix

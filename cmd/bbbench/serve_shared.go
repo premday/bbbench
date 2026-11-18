@@ -137,10 +137,17 @@ const chartSharedJS = `function rampOf(d) {
         if (s.indexOf('.') !== -1 && s.indexOf('e') === -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
         return s + pre;
     }
-    // unitName spells a base unit out for an axis title: second (s), bytes
-    // per second (B/s), IO per second (IOPS); another unit is kept as is.
-    function unitName(unit) {
-        return {'s': 'second (s)', 'bytes/s': 'bytes per second (B/s)', 'IOPS': 'IO per second (IOPS)'}[unit] || unit;
+    // unitName spells a unit out for an axis title, with the SI prefix of the
+    // ticks: second (s), millisecond (ms), bytes per second (B/s), gigabytes
+    // per second (GB/s), IO per second (IOPS), kilo IO per second (kIOPS);
+    // another unit is kept as is.
+    function unitName(unit, prefix) {
+        const p = prefix || '';
+        const word = {'n': 'nano', '\u03bc': 'micro', 'm': 'milli', 'k': 'kilo', 'M': 'mega', 'G': 'giga', 'T': 'tera', 'P': 'peta'}[p] || '';
+        if (unit === 's') return word + 'second (' + p + 's)';
+        if (unit === 'bytes/s') return word + 'bytes per second (' + p + 'B/s)';
+        if (unit === 'IOPS') return (word ? word + ' ' : '') + 'IO per second (' + p + 'IOPS)';
+        return unit;
     }
     // fmtSI is fmtScaled with its unit: the number, a space, then the SI
     // prefix and the unit glued together (2.41 Gbytes/s, 1.5 MIOPS, 120 \u03bcs,
